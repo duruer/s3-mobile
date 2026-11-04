@@ -1,0 +1,28 @@
+[package]
+name = "s3-android"
+description = "Android NativeActivity frontend for the Settlers III port (libs3android.so)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "s3android"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+s3-runtime.workspace = true
+s3-engine = { workspace = true, optional = true }
+log = "0.4"
+# 8x8 bitmap font (MIT) for the status / test-pattern screen.
+font8x8 = { version = "0.3", default-features = false }
+
+[features]
+# The real engine. Without it (--no-default-features) the app is only the shell: status screen, input, audio.
+default = ["engine"]
+engine = ["dep:s3-engine"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+ndk = { version = "0.9", features = ["audio", "nativewindow", "api-level-26"] }
+android_logger = "0.14"

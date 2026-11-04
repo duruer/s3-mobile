@@ -1,0 +1,10 @@
+[package]
+name = "s3-mem"
+description = "Guest 32-bit address space: 4 GiB host reservation, VirtualAlloc regions, guest heaps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libc.workspace = true

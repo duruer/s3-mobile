@@ -1,0 +1,17 @@
+[package]
+name = "s3-desktop"
+description = "s3run: desktop/headless runner for the Settlers III port"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "s3run"
+path = "src/main.rs"
+
+[dependencies]
+s3-runtime.workspace = true
+s3-engine.workspace = true
+png = "0.17"
+minifb = { version = "0.29", default-features = false, features = ["x11"] }

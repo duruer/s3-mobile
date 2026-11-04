@@ -1,0 +1,15 @@
+[package]
+name = "s3-runtime"
+description = "Machine (memory, CPU threads, scheduler, thunk registry, handles, VFS, Host trait) for the Settlers III port"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+s3-mem.workspace = true
+s3-cpu.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "intel", "code_asm"] }

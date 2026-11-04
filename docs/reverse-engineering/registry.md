@@ -7,11 +7,11 @@ Source: GOG `regs.cmd` (writes 32-bit view, HKLM). Our port must provide a fake 
 | Value | Type | GOG default | Note |
 | --- | --- | --- | --- |
 | SingleNumber | SZ | long 4x repeated key | `SerialNumber` in the multiplayer exe ([exe-variants](../game-files/exe-variants.md)) |
-| Resolution | DWORD | 0 | 0 = 800x600? HYPOTHESIS |
+| Resolution | DWORD | 0 | in-game mode, clamped 0..2: **0 = 640x480, 1 = 800x600, 2 = 1024x768**, always 16 bpp (static `0x405c80`, read at `0x40deb8`). Menus use 800x600 |
 | NoAlpha | DWORD | 0 | |
 | FogSpeed | DWORD | 1 | |
 | GDIMouse | DWORD | 1 | GDI cursor instead of software cursor |
-| WaitVBlank | DWORD | 1 | |
+| WaitVBlank | DWORD | 1 | HYPOTHESIS: settings `+0x5C` → `WaitForVerticalBlank` before each Blt (`0x42cddb`) |
 | ScrollMode / ScrollSpeed | DWORD | 0 / 5 | |
 | SoundFormat | DWORD | 1 | |
 | CDAudio | DWORD | 2 | |

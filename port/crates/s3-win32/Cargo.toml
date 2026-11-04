@@ -1,0 +1,19 @@
+[package]
+name = "s3-win32"
+description = "HLE of the Win32 DLLs imported by S3.EXE (kernel32, user32, gdi32, advapi32, winmm, ole32, ...)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+s3-mem.workspace = true
+s3-cpu.workspace = true
+s3-runtime.workspace = true
+# user32/gdi32/advapi32/winmm helpers (font rendering, registry JSON, CD-audio ogg music).
+fontdue = "0.9"
+lewton = "0.10"
+serde_json = "1"
+
+[dev-dependencies]
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "intel", "code_asm"] }

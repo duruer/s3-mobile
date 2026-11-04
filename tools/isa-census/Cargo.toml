@@ -1,0 +1,11 @@
+[package]
+name = "isa-census"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Recursive-descent instruction census of a 32-bit PE (reads the user's local file, prints statistics only)"
+
+[dependencies]
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "intel"] }
+
+[workspace]

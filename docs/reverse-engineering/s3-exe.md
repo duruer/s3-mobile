@@ -51,6 +51,6 @@ MCI (music/video), DirectPlay (multiplayer; later).
 
 ## TODO
 
-- List the exact DirectDraw/DirectSound COM methods used (vtable call sites).
-- Which resolution/pixel formats the game requests (registry `Resolution`).
-- Locate the main loop and game-tick (for pause/resume on mobile).
+- ~~List the exact DirectDraw/DirectSound COM methods used~~, ~~resolution/pixel formats~~ → [directx-surface](directx-surface.md#static-details-for-the-hle-2026-11-05-static-re-pass-see-also-static-startupmd) (2026-11-05).
+- ~~Main loop and game tick~~ → [static-startup](static-startup.md) (2026-11-05). Instruction census → [static-isa](static-isa.md).
+- CRT range: `_except_handler3` `0x622230`, `__CxxFrameHandler` `0x61ec26`, `__CxxThrowException` `0x61f027`, `_ftol` `0x61fe98`, `_beginthreadex` `0x62279a`, `exit` `0x61f097` (confirms the CRT sits at ≈ `0x61e000-0x630000`).

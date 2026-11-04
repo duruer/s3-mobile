@@ -1,6 +1,9 @@
 # Porting strategy
 
-Status: **DRAFT, no decision yet** (2026-11-05). Next step is a feasibility study like
+Status: **DECIDED 2026-11-05: option B** (own host, iced-x86 interpreter + HLE), implementation in `port/`, see
+[architecture.md](architecture.md). Original draft notes below.
+
+Previous status: DRAFT (2026-11-05). Next step is a feasibility study like
 `~/Projects/blockheads-club/blockheads-pc/docs/feasibility/PLAN.md`.
 
 ## Constraints
@@ -46,3 +49,9 @@ Recommended direction (to confirm in feasibility): **B**, with C as a later spee
 2. From the trace, list the actually-used APIs and COM methods → size the HLE.
 3. Benchmark: how many x86 instructions/sec the game needs in a typical match (count via trace/`perf`), to choose interpreter vs JIT.
 4. Write feasibility PLAN with milestones and kill gates.
+
+## Decision: app shell (2026-11-05, user-confirmed)
+
+- The game is **never** rendered inside a WebView. The Rust engine draws straight to a native surface (NativeActivity / ANativeWindow) in the same APK.
+- Planned after the core runs: a **Tauri 2 + Svelte 5 + SvelteKit launcher** for the GOG folder picker (SAF), file validation, settings, i18n and saves. Its "Play" button starts the native game activity.
+- Tonight's Gradle-less NativeActivity shell (`port/crates/s3-android`) is the game part of that design. It will be embedded later in the Tauri Gradle project.

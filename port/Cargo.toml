@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/s3-mem",
+    "crates/s3-cpu",
+    "crates/s3-runtime",
+    "crates/s3-pe",
+    "crates/s3-win32",
+    "crates/s3-dx",
+    "crates/s3-engine",
+    "crates/s3-desktop",
+    "crates/s3-android",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+s3-mem = { path = "crates/s3-mem" }
+s3-cpu = { path = "crates/s3-cpu" }
+s3-runtime = { path = "crates/s3-runtime" }
+s3-pe = { path = "crates/s3-pe" }
+s3-win32 = { path = "crates/s3-win32" }
+s3-dx = { path = "crates/s3-dx" }
+s3-engine = { path = "crates/s3-engine" }
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "intel"] }
+libc = "0.2"
+log = "0.4"
+
+# The interpreter is unusably slow without optimisation; keep tests/dev builds fast too.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+debug = 1
+panic = "unwind"

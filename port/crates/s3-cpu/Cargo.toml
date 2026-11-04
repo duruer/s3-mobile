@@ -1,0 +1,14 @@
+[package]
+name = "s3-cpu"
+description = "x86-32 interpreter (iced-x86 decoder + decoded-block cache) for the Settlers III port"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+s3-mem.workspace = true
+iced-x86.workspace = true
+
+[dev-dependencies]
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "intel", "code_asm"] }

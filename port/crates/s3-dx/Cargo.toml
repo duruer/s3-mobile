@@ -1,0 +1,12 @@
+[package]
+name = "s3-dx"
+description = "HLE of DirectDraw, DirectSound, DirectInput and DirectPlay as used by S3.EXE"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+s3-mem.workspace = true
+s3-cpu.workspace = true
+s3-runtime.workspace = true

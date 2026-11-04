@@ -9,7 +9,7 @@ Checked 2026-11-05.
 | REA MCP (`mcp__rea__*`) 6.5.0 | `~/.local/bin/rea` | Load the `reverse-engineer-anything` skill first. Backend: Ghidra 12.1.2 at `/opt/ghidra` (JDK 21). |
 | Ghidra zip (backup) | `~/Projects/reverse-engineering/tools/ghidra.zip` | Same Ghidra, not needed while `/opt/ghidra` exists |
 | rizin, objdump, python-pefile | system | `tools/pe_imports.py` uses pefile |
-| wine 11.x + wine-mono + winetricks | system | Run S3.EXE on Linux as reference; `WINEDEBUG=+relay,+ddraw,+dsound,+dinput` for API traces |
+| wine 11.x + wine-mono + winetricks | system | Run S3.EXE on Linux as reference; `WINEDEBUG=+relay,+ddraw,+dsound,+dinput` for API traces. Working setup (Xvfb + wine virtual desktop required, relay filtering): [wine-trace](reverse-engineering/wine-trace.md) |
 | Blockheads RE workspace | `~/Projects/reverse-engineering/` | Other project. `docs/REA_USAGE.md` has general REA + gdb tips |
 
 **REA sharing rule.** `~/Projects/reverse-engineering/docs/REA_USAGE.md` describes a setup where **one REA server
@@ -27,6 +27,7 @@ calling `open_binary`. S3.EXE auto-analysis takes about 1-2 minutes.
 | System images | android-30 and android-35 `google_apis` **x86_64** |
 | Existing AVDs | `bhmod_m7_api30`, `bhmod_m9_api30`, `bhwt_api30`, `fold_compat_30/35`, `kabuk_api35`, `pulsar_api35` — they belong to other projects; **do not reuse or kill them** |
 | Running now | `bhwt_api30` headless on `emulator-5600` (Blockheads world-tool). Leave it alone |
+| Our AVD | `s3_api35` (ours): API 35 x86_64, pixel_6, 3 GB RAM, 6 GB data, console port 5610 (`emulator-5610`). Managed by `port/scripts/run-emulator.sh`, see [porting/android.md](porting/android.md) |
 
 ABI notes: the API 30 x86_64 image reports `x86_64,x86,arm64-v8a,armeabi-v7a,armeabi` (it has ARM translation).
 The API 35 image reports only `x86_64`. Plan: build our app for **arm64-v8a + x86_64**, test x86_64 on the emulator,

@@ -1,0 +1,11 @@
+[package]
+name = "s3-pe"
+description = "PE32 loader (sections, imports via the thunk registry, resources) for the Settlers III port"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+s3-mem.workspace = true
+s3-runtime.workspace = true
