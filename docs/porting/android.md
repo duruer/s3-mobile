@@ -1,13 +1,30 @@
 # Android app (s3-android)
 
-Status (2026-11-05): **the original S3.EXE reaches the main menu on the emulator** (AVD `s3_api35`, x86_64,
-release build). The intro video fails with the game's own "Error during video play ... (Error code 266/275)"
-dialog (the MCI/AVI path is not implemented yet; not this crate's job). Tapping OK closes the dialog and the
-full "Gold Edition" main menu is shown, letterboxed 800x600 -> 1334x600 buffer on a 2400x1080 screen. Touch
-reaches the engine (logcat `engine <- MouseButton {..}`). Screenshots (local only):
-`scratch/android-shots/main-menu.png`, `final-launch.png`, `shell-missing-exe.png`, `engine-stopped.png`.
-Measured: about 7-10 M guest instructions from launch to the menu in under 1 s on the emulator.
-The engine then mostly waits (about 80 k instructions per 10 s while the menu is idle).
+Status (2026-11-05, android-integration-1): **the original S3.EXE is playable on the emulator** (AVD `s3_api35`,
+x86_64, release APK with arm64-v8a + x86_64). Same point as desktop s3run:
+
+| Step | Result on the emulator |
+| --- | --- |
+| Launch -> main menu 800x600x16 | < 1 s, all buttons, logo, "Version 1.60" (intro AVI is skipped, no error dialog any more) |
+| Tap "Single Player: Scenario" | Game Setup dialog |
+| Tap OK | players screen |
+| Tap OK (**twice**: the first tap on this screen is ignored, same on desktop where the inject recipe also clicks twice) | loading (3 threads, 640x480x16), in game after about 20-25 s |
+| In game | castle, settlers, AI thread messages, music `MCI cdaudio play tracks 7..8` |
+| Tap build menu, category, building, then a ghost site on the map | construction site placed (stakes + flag) |
+| One-finger drag on the map | map scrolls with the finger (see Controls) |
+| Home, then reopen | pause/resume, game continues where it was |
+
+Screenshots (local only, not in git): `scratch/android-shots/attempt1-1.png` (menu), `-2` (Game Setup), `-5` (in game),
+`-6`/`-7` (build menu, placement markers), `-9` (construction site), `-16` (after resume).
+
+Performance (x86_64 emulator, 4 vCPU, release): menu idle; loading ~125 M guest instructions/s; in game about
+**30 presents/s at ~95 M instructions/s**, engine thread ~77-92 % of one core, `android_main` ~11 %. RSS ~200 MB.
+Desktop showed ~48 presents/s at a similar instruction rate on another random map, so frames cost more here
+(HYPOTHESIS: busier map; not profiled). The game stays responsive. A real arm64 phone was not tested yet.
+
+Tap coordinates used for testing (emulator screen 2400x1080, landscape): menu 800x600 is drawn at scale 1.8 with x
+offset 267 buffer px, so `screen = ((267 + gx) * 1.8, gy * 1.8)`: Single Player: Scenario `778 423`, Game Setup OK
+`1615 841`, players OK `1795 1021`. In game 640x480: scale 2.25, offset 214: build menu `538 376`.
 
 Code: `port/crates/s3-android` (crate `s3-android`, library `libs3android.so`), `port/android/` (manifest, icon),
 `port/scripts/build-apk.sh`, `port/scripts/run-emulator.sh`.
@@ -133,7 +150,8 @@ callback (device change) reopens the stream. If AAudio cannot open, the app runs
 | --- | --- |
 | Tap | left click (cursor moves to the finger, button down, up 60 ms later) |
 | Long press (500 ms without moving) | right click |
-| One-finger drag (beyond ~3 % of the screen height) | move with the left button held; released on lift |
+| One-finger drag (beyond ~3 % of the screen height) in menus, or in game on the left control panel (x < 170 game px) | move with the left button held; released on lift |
+| One-finger drag on the map (in game = any display mode other than the 800x600 menu mode) | **scroll**: right button held, the mouse path is mirrored around the start point and halved so the map follows the finger (S3 scrolls the view *in* the right-drag direction, accelerated; measured +40 px drag -> +53 px view, +89 -> +187) |
 | Two-finger tap | right click at the first finger |
 | Finger touches down | cursor moves there at once (hover highlight) |
 
@@ -146,6 +164,32 @@ keyboard letters, digits, arrows, Enter, Space, Tab, Backspace, Delete, Shift/Ct
 Home/End/Insert. Only `HostEvent::Key` is sent (no `Char`). HYPOTHESIS: USER32's TranslateMessage creates
 WM_CHAR from the key messages. Volume keys stay with the system.
 
+Arrow keys (hardware keyboard, `adb shell input keyevent DPAD_RIGHT`) also scroll the map (verified).
+
 Not done yet: an on-screen keyboard for text input (save names, player name), pinch zoom, a scroll gesture
-(the game scrolls with the right mouse button held or at the screen edge), immersive mode (hiding the
+immersive mode (hiding the
 navigation bar needs Java/JNI on the UI thread). The letterboxing handles the bar area.
+
+## Install for users (phone)
+
+1. Install the APK (`adb install -r -g settlers3port.apk`, or copy it to the phone and open it; allow unknown sources).
+2. Start the app once (it creates its folder and shows "Game files missing").
+3. Copy the **contents** of your GOG install folder (the folder that contains `S3.EXE`, `GFX`, `SND`, `MUSIC`, `Map`,
+   `S3`, ...) to `Android/data/com.settlers3port.app/files/game/` on the phone's internal storage. With a PC:
+   `port/scripts/run-emulator.sh push` logic, or simply `adb push <GOG folder>/. /sdcard/Android/data/com.settlers3port.app/files/game/`.
+   Android 11+ file managers often cannot open `Android/data`; adb or a PC USB connection (MTP) usually can.
+   Minimum: `S3.EXE`, `regs.cmd`, top-level `*.DAT`, `GFX/*.f8007e01f.dat`, `SND`, `MUSIC`, `S3`, `Map`.
+4. Open the app again (or wait: it checks every 2 s). Saves and settings go to `.../files/data/`.
+
+Uninstalling the app deletes both folders.
+
+## Known issues (2026-11-05)
+
+| Issue | Notes |
+| --- | --- |
+| No mouse cursor is drawn | the game uses the Windows cursor (`GDIMouse`=1); SetCursor only stores the handle. Taps work without it; a real mouse user sees no pointer |
+| First tap on the players screen ("Waiting for Players") OK is ignored | tap OK again; same on desktop (not Android specific) |
+| No on-screen keyboard | save names / player name need a hardware keyboard |
+| Intro and mission videos are skipped | MCI AVI faked |
+| Long press needs < ~3 % screen movement within 500 ms | a slow drag turns into a right click |
+| Not tested on a real arm64 phone | the arm64 library is built and in the APK |

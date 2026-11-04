@@ -1,6 +1,6 @@
 # Port architecture (binding contract)
 
-Status: foundation in place (2026-11-05). Code: `port/` (Cargo workspace, GPL-3.0-or-later).
+Status: implemented; the game runs on desktop and Android (2026-11-06, see [status.md](status.md)). Contract written 2026-11-05. Code: `port/` (Cargo workspace, GPL-3.0-or-later).
 Approach: our own host = PE loader + x86-32 **interpreter** (iced-x86 decoder) + **HLE** of the Win32/DirectX
 APIs S3.EXE uses. The user's own `S3.EXE` and data run unmodified; nothing of the game is shipped.
 
@@ -253,7 +253,10 @@ most 300 PNGs.
 Android: `scripts/build-apk.sh` (APK, both ABIs) and `scripts/run-emulator.sh start install push launch shot`;
 details in [android.md](android.md). cargo-ndk lives in `~/.cargo/bin`, which is not on the default PATH.
 
-## First integration result (2026-11-05)
+## First integration result (2026-11-05, HISTORICAL)
+
+STALE: superseded the same night; the game now reaches the menu and in-game play, see
+[integration-log.md](integration-log.md) and [status.md](status.md). Original note:
 
 `s3run --headless` against the GOG S3.EXE: loads (entry 0x621BC6, 219 imports, all declared), runs the CRT
 startup: GetVersion, HeapCreate, HeapAlloc, then stops at

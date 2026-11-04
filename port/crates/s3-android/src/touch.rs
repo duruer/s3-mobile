@@ -11,17 +11,40 @@
 use s3_runtime::{HostEvent, MouseButton};
 
 pub const LONG_PRESS_MS: u64 = 500;
+
+/// Width of the in-game control panel (minimap, menus) at the left edge, in game pixels (640x480: ~135 px).
+pub const PANEL_W: i32 = 170;
+
+/// Which mouse button a one-finger drag starting at `game` holds.
+/// Menus run at 800x600 (left drag: scroll bars). In game (any other mode; default 640x480) a drag that starts on
+/// the map holds the right button, which scrolls the map in S3; drags on the left panel stay left.
+/// HYPOTHESIS: a user who sets the in-game resolution to 800x600 gets left drags on the map (arrow keys still scroll).
+pub fn drag_button_for(game_w: u32, game_h: u32, game: (i32, i32)) -> MouseButton {
+    let in_menu = game_w == 800 && game_h == 600;
+    if !in_menu && game.0 >= PANEL_W { MouseButton::Right } else { MouseButton::Left }
+}
 pub const CLICK_MS: u64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum State {
     Idle,
     /// Finger down, not yet classified.
-    Pending { id: i32, win: (f32, f32), game: (i32, i32), t0: u64 },
-    /// Left button held, following the finger.
-    Dragging { id: i32 },
+    Pending { id: i32, win: (f32, f32), game: (i32, i32), t0: u64, drag: MouseButton },
+    /// `drag` button held, following the finger.
+    Dragging { id: i32, drag: MouseButton, origin: (i32, i32) },
     /// Gesture finished (long press / two-finger tap fired); ignore until all fingers are up.
     Consumed,
+}
+
+/// Mouse position sent while dragging. A right drag scrolls the S3 map *in* the mouse direction (measured on the
+/// emulator: +40 game px moved the view ~+53 px, +89 px moved it ~+187 px; the game seems to accelerate), so it is
+/// mirrored around the start point and halved: the map then follows the finger roughly 1:1 ("grab" scrolling).
+/// The frontend clamps the result to the game screen.
+fn drag_pos(drag: MouseButton, origin: (i32, i32), cur: (i32, i32)) -> (i32, i32) {
+    match drag {
+        MouseButton::Right => (origin.0 - (cur.0 - origin.0) / 2, origin.1 - (cur.1 - origin.1) / 2),
+        _ => cur,
+    }
 }
 
 pub struct TouchMapper {
@@ -57,8 +80,13 @@ impl TouchMapper {
 
     /// First finger (ACTION_DOWN).
     pub fn down(&mut self, id: i32, win: (f32, f32), game: (i32, i32), t: u64) {
+        self.down_with_drag(id, win, game, t, MouseButton::Left)
+    }
+
+    /// First finger; a drag that starts here holds `drag` (Right = scroll the map in game).
+    pub fn down_with_drag(&mut self, id: i32, win: (f32, f32), game: (i32, i32), t: u64, drag: MouseButton) {
         self.fingers = 1;
-        self.state = State::Pending { id, win, game, t0: t };
+        self.state = State::Pending { id, win, game, t0: t, drag };
         // Hover the cursor there right away (menus highlight under the cursor).
         self.push(t, HostEvent::MouseMove { x: game.0, y: game.1 });
     }
@@ -75,9 +103,9 @@ impl TouchMapper {
     /// A finger other than the last one lifted (ACTION_POINTER_UP).
     pub fn pointer_up(&mut self, id: i32, t: u64) {
         self.fingers = self.fingers.saturating_sub(1);
-        if let State::Dragging { id: d } = self.state {
+        if let State::Dragging { id: d, drag, .. } = self.state {
             if d == id {
-                self.push(t, HostEvent::MouseButton { button: MouseButton::Left, down: false });
+                self.push(t, HostEvent::MouseButton { button: drag, down: false });
                 self.state = State::Consumed;
             }
         }
@@ -86,16 +114,20 @@ impl TouchMapper {
     /// Finger moved (ACTION_MOVE), for the pointer with `id`.
     pub fn moved(&mut self, id: i32, win: (f32, f32), game: (i32, i32), t: u64) {
         match self.state {
-            State::Pending { id: p, win: w0, game: g0, .. } if p == id => {
+            State::Pending { id: p, win: w0, game: g0, drag, .. } if p == id => {
                 let (dx, dy) = (win.0 - w0.0, win.1 - w0.1);
                 if dx * dx + dy * dy > self.slop * self.slop {
                     self.push(t, HostEvent::MouseMove { x: g0.0, y: g0.1 });
-                    self.push(t, HostEvent::MouseButton { button: MouseButton::Left, down: true });
-                    self.push(t, HostEvent::MouseMove { x: game.0, y: game.1 });
-                    self.state = State::Dragging { id };
+                    self.push(t, HostEvent::MouseButton { button: drag, down: true });
+                    let p = drag_pos(drag, g0, game);
+                    self.push(t, HostEvent::MouseMove { x: p.0, y: p.1 });
+                    self.state = State::Dragging { id, drag, origin: g0 };
                 }
             }
-            State::Dragging { id: d } if d == id => self.push(t, HostEvent::MouseMove { x: game.0, y: game.1 }),
+            State::Dragging { id: d, drag, origin } if d == id => {
+                let p = drag_pos(drag, origin, game);
+                self.push(t, HostEvent::MouseMove { x: p.0, y: p.1 })
+            }
             _ => {}
         }
     }
@@ -104,7 +136,7 @@ impl TouchMapper {
     pub fn up(&mut self, t: u64) {
         match self.state {
             State::Pending { game, .. } => self.click(t, game, MouseButton::Left),
-            State::Dragging { .. } => self.push(t, HostEvent::MouseButton { button: MouseButton::Left, down: false }),
+            State::Dragging { drag, .. } => self.push(t, HostEvent::MouseButton { button: drag, down: false }),
             _ => {}
         }
         self.fingers = 0;
@@ -113,8 +145,8 @@ impl TouchMapper {
 
     /// Gesture cancelled by the system (ACTION_CANCEL).
     pub fn cancel(&mut self, t: u64) {
-        if let State::Dragging { .. } = self.state {
-            self.push(t, HostEvent::MouseButton { button: MouseButton::Left, down: false });
+        if let State::Dragging { drag, .. } = self.state {
+            self.push(t, HostEvent::MouseButton { button: drag, down: false });
         }
         self.fingers = 0;
         self.state = State::Idle;
@@ -216,6 +248,19 @@ mod tests {
         );
         // No long press after a drag.
         assert!(t.drain_due(2000).is_empty());
+    }
+
+    #[test]
+    fn map_drag_holds_right() {
+        let mut t = TouchMapper::new(20.0);
+        t.down_with_drag(0, (100.0, 100.0), (50, 50), 0, R);
+        t.moved(0, (200.0, 100.0), (100, 50), 50);
+        t.up(70);
+        let ev = t.drain_due(70);
+        assert!(ev.contains(&MouseMove { x: 25, y: 50 }), "mirrored: {ev:?}");
+        assert!(ev.contains(&HostEvent::MouseButton { button: R, down: true }));
+        assert!(ev.contains(&HostEvent::MouseButton { button: R, down: false }));
+        assert!(!ev.iter().any(|e| matches!(e, HostEvent::MouseButton { button: MouseButton::Left, .. })));
     }
 
     #[test]

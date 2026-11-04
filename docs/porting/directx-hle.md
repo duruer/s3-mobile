@@ -1,8 +1,9 @@
 # DirectX HLE (`port/crates/s3-dx`)
 
 Status 2026-11-05: DirectDraw, DirectSound, DirectInput 3 and DirectPlay stubs implemented; 13 unit tests
-(`cargo test -p s3-dx -j 4`). Not yet exercised by the real S3.EXE, because integration still stops in the
-kernel32 CRT startup. What the game uses comes from [directx-surface.md](../reverse-engineering/directx-surface.md)
+(`cargo test -p s3-dx -j 4`). Exercised by the real S3.EXE since integration round 1 (menu 800x600x16, in game
+640x480x16, WaitForVerticalBlank pacing, DirectInput mouse, DirectSound mixer; see
+[integration-log.md](integration-log.md)). DirectPlay is still only stubs (multiplayer menus not exercised). What the game uses comes from [directx-surface.md](../reverse-engineering/directx-surface.md)
 (static) and [wine-trace.md](../reverse-engineering/wine-trace.md) (runtime).
 
 ## Files
@@ -111,7 +112,7 @@ dplay.h (HYPOTHESIS until multiplayer menus are exercised).
 
 ## Open points
 
-- Not yet run against S3.EXE (blocked on earlier kernel32/user32 gaps). Watch for: unexpected QueryInterface IIDs
+- Runs against S3.EXE (menu + in game, 2026-11-05). Still watch for: unexpected QueryInterface IIDs
   (logged as warnings), Lock/GetDC on the primary, unknown Blt flags.
 - Present happens on every primary write; if a frame is assembled from several Blts to the primary, the host sees
   intermediate frames (S3 does one full-screen Blt per frame, so fine).

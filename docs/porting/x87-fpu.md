@@ -45,7 +45,8 @@ MMX only in one optional blitter).
 
 ## Notes for other agents
 
-- `exec.rs` `cpuid` currently reports **MMX (EDX bit 23) = 1**; static-isa.md recommends 0. With MMX reported the
+- STALE (fixed by cpu-int): `cpuid` now reports family 5 with **no MMX** (EDX bit 23 = 0), see [cpu.md](cpu.md).
+  Old note: `exec.rs` `cpuid` reported MMX = 1; static-isa.md recommends 0. With MMX reported the
   surface-copy benchmark at 0x5c3740 may pick the MMX `movq` routine (0x5c3ee0); that routine only uses `movq` and
   `emms`, which are implemented, so either choice works.
 - The SEH `CONTEXT.FloatSave` (s3-runtime) can be filled with the same layout as `fnsave` (108 bytes + Cr0NpxState);

@@ -27,6 +27,7 @@ This file is an **index only**. Facts live in `docs/`. Keep this file short; add
 
 | Topic | Doc |
 | --- | --- |
+| **Current port status: what works, evidence, performance, known issues, next steps, licensing** | [docs/porting/status.md](docs/porting/status.md) |
 | Chronological log of sessions and findings | [docs/journal.md](docs/journal.md) |
 | Where the game files came from, layout, sizes, hashes | [docs/game-files/inventory.md](docs/game-files/inventory.md) |
 | S3.EXE variants (GOG / Settlers United / multi / alobby) and byte patches | [docs/game-files/exe-variants.md](docs/game-files/exe-variants.md) |
@@ -58,6 +59,7 @@ This file is an **index only**. Facts live in `docs/`. Keep this file short; add
 ```
 settlers-3/
   AGENTS.md          this index (CLAUDE.md -> @AGENTS.md)
+  LICENSE            GPL-3.0 text (our code is GPL-3.0-or-later)
   docs/              all knowledge, see Map
   tools/             our own analysis scripts (e.g. tools/pe_imports.py)
   port/              Rust workspace: the emulator/HLE host and frontends (see docs/porting/architecture.md)

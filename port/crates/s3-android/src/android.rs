@@ -267,7 +267,8 @@ fn android_main(app: AndroidApp) {
                                     touches_logged += 1;
                                     log::info!("touch down at window ({:.0},{:.0}) -> game {:?}", win.0, win.1, game);
                                 }
-                                touch.down(p.pointer_id(), win, game, t)
+                                let drag = crate::touch::drag_button_for(lb.game_w, lb.game_h, game);
+                                touch.down_with_drag(p.pointer_id(), win, game, t, drag)
                             }
                             MotionAction::PointerDown => touch.pointer_down(t),
                             MotionAction::PointerUp => touch.pointer_up(p.pointer_id(), t),
@@ -308,7 +309,11 @@ fn android_main(app: AndroidApp) {
                 }
             }
         }
-        for ev in touch.drain_due(now_ms(t0)) {
+        for mut ev in touch.drain_due(now_ms(t0)) {
+            if let (HostEvent::MouseMove { x, y }, Some(lb)) = (&mut ev, ui.lb) {
+                *x = (*x).clamp(0, lb.game_w as i32 - 1);
+                *y = (*y).clamp(0, lb.game_h as i32 - 1);
+            }
             if let HostEvent::MouseButton { .. } = ev {
                 log::info!("touch -> {ev:?}");
             }
