@@ -1,0 +1,9 @@
+# User's own game files — NEVER commit or distribute
+/game-files/
+# local scratch
+/scratch/
+*.pyc
+/port/target/
+/scratch/
+*.apk
+*.keystore
