@@ -449,3 +449,18 @@ fn music_decodes_local_gog_track() {
     assert_eq!(p.mix(&mut buf, 2, 22050, 0), None);
     assert!(buf.iter().any(|&s| s != 0), "decoded audio is silent");
 }
+
+/// Integration r1: S3.EXE (0x4a8233) checks `SelectObject(CreateCompatibleDC(0), bitmap) != 0` and throws a C++
+/// exception otherwise (-> "abnormal program termination" when opening the build menu).
+#[test]
+fn select_bitmap_into_memory_dc_returns_previous() {
+    let (mut m, _d) = direct("gdi-memdc");
+    let mdc = api(&mut m, "gdi32.dll", "CreateCompatibleDC", &[0]);
+    assert_ne!(mdc, 0);
+    let bmp = api(&mut m, "gdi32.dll", "CreateCompatibleBitmap", &[mdc, 16, 16]);
+    assert_ne!(bmp, 0);
+    let old = api(&mut m, "gdi32.dll", "SelectObject", &[mdc, bmp]);
+    assert_ne!(old, 0, "first SelectObject(bitmap) must return the default bitmap");
+    assert_eq!(api(&mut m, "gdi32.dll", "SelectObject", &[mdc, old]), bmp);
+    assert_eq!(api(&mut m, "gdi32.dll", "SelectObject", &[mdc, bmp]), old);
+}

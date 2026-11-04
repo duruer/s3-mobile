@@ -51,6 +51,7 @@ This file is an **index only**. Facts live in `docs/`. Keep this file short; add
 | KERNEL32 HLE: OS identity, threads/waits/timers/critical sections, files+VFS+mapped files, locale, SEH, resources | [docs/porting/kernel32.md](docs/porting/kernel32.md) |
 | x87 FPU / MMX emulation: model, instruction coverage, precision limits | [docs/porting/x87-fpu.md](docs/porting/x87-fpu.md) |
 | DirectX HLE (DirectDraw surfaces/present, DirectSound mixer, DirectInput, DirectPlay stubs) | [docs/porting/directx-hle.md](docs/porting/directx-hle.md) |
+| Integration runs of s3run against the real game: how far it gets, blockers, performance, inject recipes | [docs/porting/integration-log.md](docs/porting/integration-log.md) |
 
 ## Layout
 

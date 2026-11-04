@@ -47,7 +47,10 @@ Exposed for other crates: `user32::screen_size`, `set_screen_size`, `post_messag
   `s3_runtime::gdi::release_dc(m, hdc)`. `gdi32::register` installs the implementation as a process-global hook.
 - **Objects.** GDI handles are `0x00C0_0000 + 4n`; stock objects are `0x00BF_0000 + index`. Supported: fonts, solid
   brushes, pens, rectangular regions, bitmaps (DIB sections, compatible bitmaps) and palettes (dummies).
-  `SelectObject` returns the previous object of the same kind. Selecting a region sets the clip. `DeleteObject`
+  `SelectObject` returns the previous object of the same kind. New DCs hold the stock 1x1 `DEFAULT_BITMAP`
+  (`0x00BF_0015`), so the first `SelectObject(memDC, bitmap)` returns non-zero (S3.EXE at `0x4a8233` throws a C++
+  exception -> "abnormal program termination" if it gets 0; found by integration r1 when opening the build menu).
+  Selecting a region sets the clip. `DeleteObject`
   never deletes stock objects or DCs. `SaveDC/RestoreDC`.
 - **Clipping.** `CreateRectRgn` + `SelectClipRgn` (the region is copied, NULL removes clipping) and `IntersectClipRect`.
   Every drawing call clips to the target bounds ∩ clip rect.

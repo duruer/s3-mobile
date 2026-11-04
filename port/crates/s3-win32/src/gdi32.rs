@@ -291,7 +291,7 @@ impl Dc {
             font: STOCK_BASE + SYSTEM_FONT,
             brush: STOCK_BASE + WHITE_BRUSH,
             pen: STOCK_BASE + BLACK_PEN,
-            bitmap: 0,
+            bitmap: STOCK_BASE + DEFAULT_BITMAP,
             palette: STOCK_BASE + DEFAULT_PALETTE,
             text_color: 0,
             bk_color: 0xFF_FFFF,
@@ -322,6 +322,8 @@ const BLACK_PEN: u32 = 7;
 const NULL_PEN: u32 = 8;
 const SYSTEM_FONT: u32 = 13;
 const DEFAULT_PALETTE: u32 = 15;
+/// Stock 1x1 monochrome bitmap selected into new DCs (Windows' DEFAULT_BITMAP); SelectObject must return it.
+const DEFAULT_BITMAP: u32 = 21;
 const OBJ_BASE: u32 = 0x00C0_0000;
 
 const OPAQUE: u32 = 2;
@@ -706,6 +708,12 @@ fn select_object(m: &mut Machine) -> ThunkResult {
             std::mem::replace(&mut dc.bitmap, h)
         }
         Some(GdiObj::Palette) => std::mem::replace(&mut dc.palette, h),
+        None if h == STOCK_BASE + DEFAULT_BITMAP => {
+            if dc.memory {
+                dc.pixels = None;
+            }
+            std::mem::replace(&mut dc.bitmap, h)
+        }
         _ => 0,
     };
     ThunkResult::stdcall(prev, 2)

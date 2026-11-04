@@ -349,6 +349,9 @@ fn main() {
     let start = Instant::now();
     let mut win = if args.headless { None } else { Some(window::Win::new()) };
     let mut shown_serial = 0;
+    let sample = std::env::var_os("S3_SAMPLE").is_some();
+    let mut last_sample = Instant::now();
+    let mut sample_prev: Vec<u64> = Vec::new();
     loop {
         if let Some(max) = args.max_seconds {
             if start.elapsed().as_secs_f64() >= max {
@@ -357,6 +360,17 @@ fn main() {
             }
         }
         let r = engine.run_for_ms(16);
+        // Diagnostics: S3_SAMPLE=1 prints per-thread instruction deltas and EIP once per second.
+        if sample && last_sample.elapsed().as_secs_f64() >= 1.0 {
+            last_sample = Instant::now();
+            let mut line = format!("[sample {:>5.1}s]", start.elapsed().as_secs_f64());
+            for (i, t) in engine.machine.threads.iter().enumerate() {
+                let prev = sample_prev.get(i).copied().unwrap_or(0);
+                line.push_str(&format!(" t{i}:{}M@{:#x}/{:?}", (t.cpu.instructions - prev) / 1_000_000, t.cpu.eip, t.state));
+            }
+            sample_prev = engine.machine.threads.iter().map(|t| t.cpu.instructions).collect();
+            eprintln!("{line}");
+        }
         if let Some(w) = &mut win {
             let frame = {
                 let s = shared.lock().unwrap();
