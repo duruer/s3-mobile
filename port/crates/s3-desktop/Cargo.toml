@@ -10,6 +10,11 @@ publish.workspace = true
 name = "s3run"
 path = "src/main.rs"
 
+# Deterministic headless run with per-interval state hashes (determinism test, docs/porting/determinism.md).
+[[bin]]
+name = "s3det"
+path = "src/bin/s3det.rs"
+
 [dependencies]
 s3-runtime.workspace = true
 s3-engine.workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "s3-mods"
+description = "Mod/hook framework for the Settlers III port: guest hooks, struct views, guest calls, per-exe patch sets, overlay drawing, touch gestures, settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+s3-mem.workspace = true
+s3-cpu.workspace = true
+s3-runtime.workspace = true
+# Overlay text (bundled Liberation Sans, SIL OFL 1.1; same files as s3-win32). MIT/Apache/Zlib.
+fontdue = "0.9"
+# Settings JSON. MIT/Apache.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "intel", "code_asm"] }

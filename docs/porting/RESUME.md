@@ -42,3 +42,14 @@ The workflow cache does not carry over to a new session. Do this instead:
 - Second workflow `wf_3257fcea-201` (polish): cursor, save/load, soft keyboard, players-screen OK bug, audio verification, Android UX.
   Script copy: `tools/workflows/s3-port-polish-night.js`. Same resume rules as above.
   If it is interrupted, the last good state is commit `39f0731` (working APK build).
+
+## Mobile UX + online workflow (started 2026-11-06)
+
+- The polish workflow `wf_3257fcea-201` **finished** (commit `1ffc264`).
+- Third workflow `wf_0ab9b0c8-5e1`: hook framework, game-state RE, determinism, multiplayer protocol, then context touch,
+  UI mode A/B and DirectPlay over relay, then verify and wrap-up. Script copy: `tools/workflows/s3-mobile-ux-and-online.js`.
+  Goals and decisions: [mobile-vision.md](mobile-vision.md). Last known-good state before it: commit `64e681d`.
+- **Stopped by the user on 2026-11-06 (PC going to sleep)** during the Foundation phase. Snapshot: `refs/wip/autosave` commit
+  "workflow wf_0ab9b0c8-5e1 stopped by user". Finished Foundation agents return cached results on resume (same session).
+  Unfinished agents restart and should read their `docs/progress/<label>.md` first.
+  Resume (same session): `Workflow({scriptPath: <session copy of s3-mobile-ux-and-online js>, resumeFromRunId: "wf_0ab9b0c8-5e1"})`.

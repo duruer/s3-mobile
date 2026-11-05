@@ -23,11 +23,17 @@ I="1000:move 165 235;1200:click 165 235;3000:move 630 467;3200:click 630 467;500
 - `S3_TRACE=calls S3_TRACE_LIMIT=100000000` traces every HLE call (pipe through `grep -v` of hot calls:
   `CriticalSection|TlsGetValue|LastError|HeapSize|IntersectRect|...`, and of `guest t5` AI debug strings).
 - Inject coordinates are in the **current** display mode: 800x600 in menus, 640x480 in game.
+- Touch inject commands (2026-11-06, raw pointer events through the s3-mods gesture recognizer, like Android):
+  `tap x y`, `tap2 x y`, `drag x1 y1 x2 y2 [ms]`, `longpress x y [ms]`, `pinch cx cy scale [ms]`; `S3_MODS_DEBUG=1`
+  draws fingers and gesture names. See [mods.md](mods.md#desktop-testing-s3run---inject-touch-commands).
 - Useful in-game coordinates (640x480): build menu (house icon) `25 167`; first building category `25 200`;
   first building in the list `37 237`.
 - More inject commands (2026-11-05): `t:shot file.png` writes the current frame at time t (several per run, no need
   for `--screenshot-every-present`); `t:text abc` presses one key per character 120 ms apart (letters, digits, space,
   `-`; capitals with Shift). Careful: in game, letters are hotkeys (typing opened the build menu).
+- Read-only memory inspection for RE (re-units, 2026-11-05): `t:xpeek EXPR LEN`, `t:xdump EXPR LEN FILE` (EXPR with
+  `@` pointer steps, e.g. game data `0x700ffee0@0x3a0@0x2d280`), `t:scan VALUE [MAX]`; see
+  [game-state-units.md](../reverse-engineering/game-state-units.md#tools).
 - **Save/load round trip** (in game at ~45 s when other jobs run; it can take 16-45 s): computer icon `21 452` ->
   "Save Game" `68 225` -> slot 1 line `40 244` saves at once ("Game Saved", no name prompt; slots 2-8 are 21 px
   apart) -> computer icon `21 452` -> "Quit Game" `68 420` -> YES `38 420` -> Game Statistics (click anywhere,

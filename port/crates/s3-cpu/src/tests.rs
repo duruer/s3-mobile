@@ -891,3 +891,33 @@ fn movzx_movsx_all_forms_fast_vs_generic() {
     assert_eq!(cpu.regs[EDI], 0xFFFF_80F0);
     assert_eq!(cpu.regs[ESI], 0x81);
 }
+
+#[test]
+fn hook_exits_mid_block_and_skip_once() {
+    // mov eax,1 (5 bytes) ; mov ebx,2 (5 bytes, hooked at CODE+5) ; ret
+    let (mut cpu, mut mem) = setup(|a| {
+        a.mov(eax, 1u32).unwrap();
+        a.mov(ebx, 2u32).unwrap();
+    });
+    // Warm the cache without hooks first: set_hooks must drop the old unsplit block.
+    let mut warm = Cpu::new();
+    warm.eip = CODE;
+    let _ = warm.run(&mut mem, 1);
+    let mut set = HookAddrs::new();
+    set.insert(CODE + 5);
+    cpu.set_hooks(Some(std::sync::Arc::new(set)));
+    assert_eq!(cpu.run(&mut mem, 100), CpuExit::Hook(CODE + 5));
+    assert_eq!(cpu.regs[EAX], 1);
+    assert_eq!(cpu.regs[EBX], 0, "hooked instruction must not have run");
+    assert_eq!(cpu.eip, CODE + 5);
+    // Running again without skip exits again (no progress).
+    assert_eq!(cpu.run(&mut mem, 100), CpuExit::Hook(CODE + 5));
+    cpu.skip_hook_once(CODE + 5);
+    assert_eq!(cpu.run(&mut mem, 100), CpuExit::ReturnMagic);
+    assert_eq!(cpu.regs[EBX], 2);
+    // Removing hooks restores plain execution.
+    cpu.set_hooks(None);
+    cpu.eip = CODE;
+    cpu.push32(&mut mem, layout::MAGIC_RETURN);
+    assert_eq!(cpu.run(&mut mem, 100), CpuExit::ReturnMagic);
+}

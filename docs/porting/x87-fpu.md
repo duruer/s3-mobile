@@ -1,7 +1,10 @@
 # x87 FPU and MMX emulation (`s3-cpu`)
 
 Code: `port/crates/s3-cpu/src/fpu.rs` (state + dispatch), `fpu_conv.rs` (pure numeric helpers: 80-bit/BCD
-conversion, rounding/precision control, `ldexp`), `fpu_tests.rs` (hand-assembled snippets, no game bytes).
+conversion, bit-exact f32<->f64, rounding/precision control, `ldexp`), `fpu_math.rs` (deterministic
+transcendentals, exact `fprem`, x87 NaN rules, host FP environment check), `fpu_tests.rs` (hand-assembled
+snippets, no game bytes), `fpu_golden.rs` (golden-vector determinism hashes). **Determinism contract:
+[determinism.md](determinism.md)** — never call host libm / `%` on floats / let the host create NaNs in fpu*.rs.
 Entry point: `fpu::exec(cpu, mem, ins) -> Option<R>`, called by `exec.rs` for every mnemonic the integer core does not
 handle. `None` = not an FPU instruction / not implemented -> `FaultKind::Unimplemented`.
 
@@ -26,7 +29,8 @@ MMX only in one optional blitter).
 - Stores: `fst/fstp m32/m64/m80/st(i)`, `fist/fistp m16/m32/m64` (out of range or NaN -> integer indefinite 0x8000.. + IE), `fisttp`, `fbstp` (BCD indefinite on overflow).
 - Arithmetic incl. reverse and pop forms and integer-memory forms: `fadd/fsub/fsubr/fmul/fdiv/fdivr` (+`p`, `fi*`). Operand roles come from iced's decoded operands (op0 = destination), so the `DC/DE` reg-reg encodings are correct without special cases.
 - `fchs fabs fsqrt frndint fscale fxtract fprem fprem1 fsin fcos fsincos fptan fpatan f2xm1 fyl2x fyl2xp1`.
-  - `fprem/fprem1` always produce the complete remainder (C2=0) using exact `fmod`; quotient bits Q2/Q1/Q0 go to C0/C3/C1 (exact only while the quotient fits in an f64 mantissa).
+  - `fprem/fprem1` always produce the complete remainder (C2=0) by exact integer long division (`math::fprem`); quotient bits Q2/Q1/Q0 (exact for any exponent difference) go to C0/C3/C1.
+  - Transcendentals use the pinned pure-Rust `libm` crate (fdlibm port), not the host libm; `f2xm1` uses an exact x*ln2 product (<= 1 ulp). See determinism.md.
   - trig: |x| >= 2^63 -> C2=1, operand unchanged (like hardware); inf -> IE + indefinite.
 - Compares: `fcom/fcomp/fcompp/ficom/ficomp/fucom/fucomp/fucompp/ftst` (C3 C2 C0: > 000, < 001, = 100, unordered 111; fucom raises IE only for SNaN), `fcomi/fcomip/fucomi/fucomip` (ZF PF CF, OF SF AF cleared), `fxam` (C1 = sign; f64 subnormals report "normal" since they are normal in 80-bit), `fcmovcc`.
 - Control: `fninit/finit`, `fnclex/fclex`, `fldcw`, `fnstcw`, `fnstsw ax/m16` (also the `9B` `fstsw` form iced decodes as one instruction), `fnstenv/fldenv` (28-byte and 14-byte protected-mode formats; fnstenv then masks all exceptions), `fnsave/fsave/frstor` (108/94 bytes: env + ST(0)..ST(7) as 80-bit in stack order; fnsave then does fninit), `ffree/ffreep/fincstp/fdecstp/fxch/fnop`, 287 no-ops (`fneni/fndisi/fnsetpm`). `fwait` is handled by the integer core as a no-op.
@@ -40,7 +44,8 @@ MMX only in one optional blitter).
   precision (e.g. compares of `a*b` against a stored double) can differ in the last bit. HYPOTHESIS (from static-isa.md):
   game logic is integer, floats do not feed lockstep-synced state.
 - Values outside the f64 exponent range (|x| > 1.8e308 or < 4.9e-324) become inf / 0 when loaded from m80.
-- `fsin/fcos/fptan` use the host libm (correctly reduced), not the x87's 66-bit pi approximation.
+- `fsin/fcos/fptan` use fdlibm (exact argument reduction, < 1 ulp), not the x87's 66-bit pi approximation.
+- NaN results follow x87 rules (larger significand wins; invalid -> indefinite `0xFFF8...`), never the host's.
 - Arithmetic ignores RC (always round-to-nearest).
 
 ## Notes for other agents

@@ -105,3 +105,10 @@ roughly 0.5-0.7x (HYPOTHESIS, not measured yet). Next steps if it is too slow: l
   rep with ECX=0, a fault in the middle of a rep), `67 E3` jcxz, loops, BCD, pushfd/popfd probes, cpuid, int3/int n/
   ud2/invalid bytes/in, xlat, enter with nesting, xchg/cmpxchg/lock inc on memory, the FS-relative SEH prologue,
   0x66 16-bit operations, the 16-bit addressing wrap, and the MIPS benchmark (ignored).
+
+## Hook point (2026-11-06, mods-w1)
+
+`Cpu::set_hooks(Option<Arc<HookAddrs>>)`: decoded blocks end before any hooked address and blocks starting at one carry
+`Block::hooked`; at block entry a hooked block exits with `CpuExit::Hook(eip)` unless `skip_hook_once(eip)` was called.
+Cost: one byte test per executed block; `bench_mips` showed no measurable difference (details in [mods.md](mods.md)).
+Test: `hook_exits_mid_block_and_skip_once`.

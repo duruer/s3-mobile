@@ -7,6 +7,7 @@
 pub mod audio;
 pub mod com;
 pub mod cursor;
+pub mod ext;
 pub mod gdi;
 pub mod handles;
 pub mod host;
@@ -26,7 +27,8 @@ mod tests;
 pub use com::Guid;
 pub use gdi::DcTarget;
 pub use handles::{HandleTable, KernelObject};
-pub use host::{FrameBuffer, Host, HostEvent, LogLevel, MouseButton, NullHost};
+pub use ext::{HookFlow, MachineExt};
+pub use host::{FrameBuffer, Host, HostEvent, LogLevel, MouseButton, NullHost, PointerPhase};
 pub use machine::{Machine, ProcessInfo, Service, Shared, SliceResult, Stats, StopReason, Thread, ThreadState, WaitPoll};
 pub use registry::{normalize_dll, Handler, Registry, ThunkEntry, ThunkResult};
 pub use vfs::{Vfs, GUEST_GAME_DIR};

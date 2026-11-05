@@ -14,7 +14,8 @@ APIs S3.EXE uses. The user's own `S3.EXE` and data run unmodified; nothing of th
 | `s3-pe` | PE32 parse/load, imports via the registry, `find_resource` / `load_string` | runtime |
 | `s3-win32` | one module per DLL: kernel32, user32, gdi32, advapi32, shell32, rpcrt4, ole32, winmm (`_inmm` alias), comctl32, comdlg32, wsock32, wininet | per-DLL agents |
 | `s3-dx` | ddraw, dsound, dinput, dplay: COM objects, blitter, software audio mixer, input pump, CLSID factories ([directx-hle.md](directx-hle.md)) | dx agents |
-| `s3-engine` | `Engine::new(host, exe)`: registers modules, loads PE, creates the main thread; `run_slice`, `run_for_ms`, `summary` | runtime |
+| `s3-engine` | `Engine::new(host, exe)`: registers modules, loads PE, creates the main thread, installs `s3-mods`; `run_slice`, `run_for_ms`, `summary` | runtime |
+| `s3-mods` | Mod/hook framework: guest-address hooks, struct views, guest calls, per-exe-sha256 patch sets, overlay drawing, touch gestures + fallback touch->mouse, settings JSON ([mods.md](mods.md)) | mods |
 | `s3-desktop` | `s3run` binary: headless or minifb window, PNG screenshots, input injection | desktop |
 | `s3-android` | `libs3android.so` (NativeActivity via android-activity): engine thread, letterboxed RGB565 window, touch -> mouse, AAudio. See [android.md](android.md) | android |
 
@@ -49,7 +50,8 @@ heap handle = guest address of the first segment, `GetProcessHeap` = `mem.proces
 - `Cpu { regs: [u32; 8] (EAX..EDI in encoding order, consts EAX..EDI), eip, eflags, fs_base, gs_base, fpu, instructions, cache }`.
 - `run(&mut mem, max_instructions) -> CpuExit`:
   `Thunk(addr)` (EIP entered the thunk page; ESP points at the return address), `ReturnMagic`, `Budget`,
-  `Halt`, `Fault { eip, kind, detail }` (EIP rewound to the faulting instruction), `Interrupt(n)` (`int3` = 3).
+  `Halt`, `Fault { eip, kind, detail }` (EIP rewound to the faulting instruction), `Interrupt(n)` (`int3` = 3),
+  `Hook(eip)` (EIP reached an address in the installed `HookAddrs`; see [mods.md](mods.md)).
 - Decode cache: basic blocks (<= 64 instructions, end at any control flow) keyed by start EIP, one cache per
   `Cpu` (i.e. per guest thread; TODO share it if memory becomes an issue). `invalidate_range` /
   `Machine::invalidate_code` after code writes. S3.EXE does not modify its code (see s3-exe.md).
@@ -166,6 +168,9 @@ pub trait Host: Send {
     fn idle(&mut self, ms: u32) {}                      // all threads blocked
 }
 ```
+Mod extension points (`Machine::ext`, `s3-runtime/src/ext.rs`): hook dispatch, an input filter in front of `m.input`
+(raw `HostEvent::Pointer` touch events go to the `s3-mods` gesture recognizer), and an overlay step in `present`
+(guest frame -> overlay -> cursor). See [mods.md](mods.md).
 Input consumers (USER32 queue, DirectInput) read `m.input` (current mouse/buttons/keys) and
 `m.input.events_since(&mut cursor)` (each keeps its own cursor; start with `cursor_now()`).
 `Machine::present` composes the mouse cursor (`s3_runtime::cursor::CursorState`) into a host copy of the frame before

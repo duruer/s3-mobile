@@ -82,8 +82,36 @@ pub fn f80_to_f64(mant: u64, se: u16) -> f64 {
     }
 }
 
+/// f32 -> f64 as `fld m32` does it. Non-NaN values convert exactly; NaNs are quieted with the payload kept
+/// (bit-level, so the host's NaN conversion rules never matter).
+pub fn f32_to_f64(x: f32) -> f64 {
+    if x.is_nan() {
+        let b = x.to_bits() as u64;
+        let sign = (b >> 31) << 63;
+        let payload = (b & 0x003F_FFFF) << 29;
+        return f64::from_bits(sign | 0x7FF8_0000_0000_0000 | payload);
+    }
+    x as f64
+}
+
+/// f64 -> f32 as `fst m32` does it: round to nearest even (IEEE conversion, identical on all hosts);
+/// NaNs are quieted and the payload truncated (bit-level).
+pub fn f64_to_f32(x: f64) -> f32 {
+    if x.is_nan() {
+        let b = x.to_bits();
+        let sign = ((b >> 63) as u32) << 31;
+        let payload = ((b >> 29) & 0x003F_FFFF) as u32;
+        return f32::from_bits(sign | 0x7FC0_0000 | payload);
+    }
+    x as f32
+}
+
 /// Round to an integral value using x87 rounding control (0 nearest-even, 1 down, 2 up, 3 truncate).
+/// NaN is returned quieted (never through the host's rounding functions, which may be libm calls).
 pub fn round_rc(v: f64, rc: u16) -> f64 {
+    if v.is_nan() {
+        return f64::from_bits(v.to_bits() | (1u64 << 51));
+    }
     match rc & 3 {
         0 => v.round_ties_even(),
         1 => v.floor(),
@@ -225,5 +253,16 @@ mod tests {
         assert_eq!(ldexp(1.0, -1074), 5e-324);
         assert_eq!(ldexp(3.0, 4), 48.0);
         assert_eq!(exponent_of(48.0), 5);
+    }
+
+    #[test]
+    fn f32_nan_conversion_is_bit_exact() {
+        // SNaN f32 0x7F800001 -> quiet f64 with payload << 29
+        assert_eq!(f32_to_f64(f32::from_bits(0x7F80_0001)).to_bits(), 0x7FF8_0000_2000_0000);
+        assert_eq!(f32_to_f64(f32::from_bits(0xFFC0_0000)).to_bits(), 0xFFF8_0000_0000_0000);
+        assert_eq!(f64_to_f32(f64::from_bits(0xFFF8_0000_0000_0000)).to_bits(), 0xFFC0_0000);
+        assert_eq!(f64_to_f32(f64::from_bits(0x7FF0_0000_2000_0000)).to_bits(), 0x7FC0_0001);
+        assert_eq!(f64_to_f32(0.1), 0.1f32);
+        assert_eq!(f32_to_f64(0.1f32), 0.1f32 as f64);
     }
 }

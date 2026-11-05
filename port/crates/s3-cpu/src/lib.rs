@@ -90,7 +90,18 @@ pub enum CpuExit {
     Fault { eip: u32, kind: FaultKind, detail: String },
     /// `int n` (`int3` => 3). EIP points after the instruction.
     Interrupt(u8),
+    /// EIP reached a registered hook address ([`Cpu::set_hooks`]); nothing at that address has executed yet.
+    /// The host runs its hook, then either resumes at the same EIP after [`Cpu::skip_hook_once`] (run the
+    /// original code) or redirects EIP itself.
+    Hook(u32),
 }
+
+/// Guest addresses that stop execution with [`CpuExit::Hook`] (shared by all CPUs of a machine).
+///
+/// Decoded blocks end *before* any hooked address, so a hooked address is always a block start and the check
+/// costs one byte compare per executed block (`Block::hooked`). Changing the set requires clearing the decode
+/// caches ([`Cpu::set_hooks`] does that).
+pub type HookAddrs = std::collections::HashSet<u32>;
 
 /// Register snapshot (for host->guest calls, thread switches and SEH `CONTEXT`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -109,6 +120,8 @@ pub struct Block {
     pub insns: Vec<Instruction>,
     /// Handler per instruction (threaded dispatch, see `fast.rs`).
     handlers: Vec<fast::Handler>,
+    /// `start` is a hook address (see [`HookAddrs`]).
+    pub hooked: bool,
 }
 
 #[derive(Default)]
@@ -144,6 +157,8 @@ pub struct DecodeCache {
     l1: Vec<(u32, u32)>,
     /// Use only the generic `exec::step` handler (tests / debugging; see `Cpu::set_generic_only`).
     generic_only: bool,
+    /// Hook addresses (blocks are split before them and flagged).
+    hooks: Option<std::sync::Arc<HookAddrs>>,
 }
 
 impl DecodeCache {
@@ -191,7 +206,7 @@ impl DecodeCache {
         let idx = match self.map.get(&eip) {
             Some(&i) => i as usize,
             None => {
-                let b = decode_block(eip, mem, self.generic_only)?;
+                let b = decode_block(eip, mem, self.generic_only, self.hooks.as_deref())?;
                 self.blocks.push(b);
                 let i = self.blocks.len() - 1;
                 self.map.insert(eip, i as u32);
@@ -208,7 +223,7 @@ impl DecodeCache {
     }
 }
 
-fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool) -> Result<Block, CpuExit> {
+fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool, hooks: Option<&HookAddrs>) -> Result<Block, CpuExit> {
     let avail = (layout::THUNK_BASE as u64).saturating_sub(eip as u64).min(16 * MAX_BLOCK_INSNS as u64) as usize;
     let bytes = mem.slice(eip, avail.max(1));
     let mut dec = Decoder::with_ip(32, bytes, eip as u64, DecoderOptions::NONE);
@@ -238,13 +253,20 @@ fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool) -> Result<Block
         if end >= layout::THUNK_BASE {
             break;
         }
+        // A hooked address must start its own block.
+        if let Some(h) = hooks {
+            if h.contains(&end) {
+                break;
+            }
+        }
     }
     if insns.is_empty() {
         return Err(CpuExit::Fault { eip, kind: FaultKind::InvalidOpcode, detail: "truncated".into() });
     }
     insns.shrink_to_fit();
     handlers.shrink_to_fit();
-    Ok(Block { start: eip, end, insns, handlers })
+    let hooked = hooks.is_some_and(|h| h.contains(&eip));
+    Ok(Block { start: eip, end, insns, handlers, hooked })
 }
 
 /// One guest CPU (one per guest thread).
@@ -264,6 +286,8 @@ pub struct Cpu {
     pub cache: DecodeCache,
     /// Address of the instruction currently executing (valid during `run`).
     pub cur_ip: u32,
+    /// Hook address whose next block entry must not exit with [`CpuExit::Hook`] (0 = none).
+    hook_skip: u32,
 }
 
 impl Default for Cpu {
@@ -284,6 +308,7 @@ impl Cpu {
             instructions: 0,
             cache: DecodeCache::default(),
             cur_ip: 0,
+            hook_skip: 0,
         }
     }
 
@@ -324,6 +349,23 @@ impl Cpu {
         self.cache.generic_only = on;
     }
 
+    /// Install the hook address set (`None` = no hooks). Clears the decode cache so blocks are re-split.
+    pub fn set_hooks(&mut self, hooks: Option<std::sync::Arc<HookAddrs>>) {
+        self.cache.clear();
+        self.cache.hooks = hooks.filter(|h| !h.is_empty());
+        self.hook_skip = 0;
+    }
+
+    /// The installed hook address set.
+    pub fn hooks(&self) -> Option<&std::sync::Arc<HookAddrs>> {
+        self.cache.hooks.as_ref()
+    }
+
+    /// After a [`CpuExit::Hook`] at `eip`: execute the original code at `eip` once without exiting again.
+    pub fn skip_hook_once(&mut self, eip: u32) {
+        self.hook_skip = eip;
+    }
+
     /// Invalidate decoded code in `[start, start+len)` (call after the guest or host writes code).
     pub fn invalidate_range(&mut self, start: u32, len: u32) {
         self.cache.invalidate_range(start, len);
@@ -355,6 +397,13 @@ impl Cpu {
                 Err(e) => return e,
             };
             let blk = &cache.blocks[idx];
+            if blk.hooked {
+                if self.hook_skip == self.eip {
+                    self.hook_skip = 0;
+                } else {
+                    return CpuExit::Hook(self.eip);
+                }
+            }
             let n = blk.insns.len().min(left.min(usize::MAX as u64) as usize);
             for (ins, h) in blk.insns[..n].iter().zip(&blk.handlers[..n]) {
                 let next = ins.next_ip32();

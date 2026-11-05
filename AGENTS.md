@@ -38,6 +38,8 @@ This file is an **index only**. Facts live in `docs/`. Keep this file short; add
 | Startup, window, message loop, threads, timers, SEH/C++ EH (static) | [docs/reverse-engineering/static-startup.md](docs/reverse-engineering/static-startup.md) |
 | DirectX/COM objects and methods the game uses (HLE scope) | [docs/reverse-engineering/directx-surface.md](docs/reverse-engineering/directx-surface.md) |
 | Registry keys the game reads | [docs/reverse-engineering/registry.md](docs/reverse-engineering/registry.md) |
+| **Game state RE (W2) part 1**: settler/building/tile tables, selection, on-screen hit list, screen->map, click dispatch (left/right), player command requests; `s3run` xdump/xpeek/scan | [docs/reverse-engineering/game-state-units.md](docs/reverse-engineering/game-state-units.md) |
+| **Game state RE (W2) part 2**: camera, screen layout per resolution (+ runtime F1-F3 switch), left panel pages/tabs/build list (programmatic build select), cursor modes, in-game menu, stock from piles, text ids/tooltips, panel/tooltip render hooks | [docs/reverse-engineering/game-state-ui.md](docs/reverse-engineering/game-state-ui.md) |
 | Open questions / unknowns | [docs/reverse-engineering/unknowns.md](docs/reverse-engineering/unknowns.md) |
 | Wine reference run: what S3.EXE does at runtime (registry, files, DirectDraw modes/surfaces, DSound, DInput, MCI, threads, API counts) | [docs/reverse-engineering/wine-trace.md](docs/reverse-engineering/wine-trace.md) |
 | Data formats (GFX, SND, maps, saves, music) | [docs/formats/README.md](docs/formats/README.md) |
@@ -52,7 +54,10 @@ This file is an **index only**. Facts live in `docs/`. Keep this file short; add
 | x86-32 integer interpreter: decode cache, threaded dispatch, exact flag semantics, tests, MIPS | [docs/porting/cpu.md](docs/porting/cpu.md) |
 | KERNEL32 HLE: OS identity, threads/waits/timers/critical sections, files+VFS+mapped files, locale, SEH, resources | [docs/porting/kernel32.md](docs/porting/kernel32.md) |
 | x87 FPU / MMX emulation: model, instruction coverage, precision limits | [docs/porting/x87-fpu.md](docs/porting/x87-fpu.md) |
+| **Determinism** (lockstep MP prerequisite): x87 determinism contract (no host libm, NaN rules, golden vectors), time/RNG/GUID sources, `s3det` virtual-clock state-hash test | [docs/porting/determinism.md](docs/porting/determinism.md) |
 | DirectX HLE (DirectDraw surfaces/present, DirectSound mixer + music stream, audio verification via `s3run --audio-wav`, DirectInput, DirectPlay stubs) | [docs/porting/directx-hle.md](docs/porting/directx-hle.md) |
+| **Online multiplayer (W5)**: how S3.EXE uses DirectPlay 6 (RE), relay/lobby design, wire protocol, `s3-net` client + `s3-relay` server, HLE plan, PC crossplay options | [docs/porting/multiplayer.md](docs/porting/multiplayer.md) |
+| **Mod/hook framework (W1)**: guest hooks, struct views, guest calls, per-exe patch sets, overlay drawing, touch gestures, settings, `s3run` touch inject | [docs/porting/mods.md](docs/porting/mods.md) |
 | Integration runs of s3run against the real game: how far it gets, blockers, performance, inject recipes (clicks, text, screenshots, save/load round trip) | [docs/porting/integration-log.md](docs/porting/integration-log.md) |
 
 ## Layout

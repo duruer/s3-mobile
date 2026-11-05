@@ -9,6 +9,9 @@ publish.workspace = true
 [dependencies]
 s3-mem.workspace = true
 iced-x86.workspace = true
+# Deterministic transcendentals for the x87 (pure Rust musl/fdlibm port, MIT). Pinned exactly: a version bump can
+# change results and desync multiplayer peers (see docs/porting/determinism.md, golden-vector test in fpu_math.rs).
+libm = { version = "=0.2.16", default-features = false }
 
 [dev-dependencies]
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "intel", "code_asm"] }

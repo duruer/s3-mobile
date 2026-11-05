@@ -12,3 +12,4 @@ s3-runtime.workspace = true
 s3-pe.workspace = true
 s3-win32.workspace = true
 s3-dx.workspace = true
+s3-mods.workspace = true

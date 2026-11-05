@@ -1,0 +1,304 @@
+# Game state RE part 2: camera, screen layout, left panel, cursor modes, menus, resources, text (W2)
+
+Target: GOG `S3.EXE` sha256 `00a925cfdcfc3349b5d0f3b8a4c312f01b813e363b4464f6f3d6de17804d950b` (all addresses for this
+exe only). Workstream W2 of [mobile-vision.md](../porting/mobile-vision.md). Part 1 (units, buildings, selection,
+commands, click dispatch, settler/building/pile tables): [game-state-units.md](game-state-units.md).
+
+Status words: **VERIFIED** = seen at runtime in s3run (2026-11-05, re-ui task); **STATIC** = read from code, not
+exercised; **HYPOTHESIS** = a guess. No decompiled code is reproduced here, only addresses, layouts and behaviour.
+
+Names used below:
+
+- `gd` = `CGameData` = `[logic+0x3a0]` (part 1). Also `*(0x7e3408)` (= `*(0x7e7b60)`). `0x18790000` in every s3run run
+  so far (deterministic in our emulator; mods should take it from the ctor hook `0x4fc990` instead of hard-coding).
+- `logic` = `CLogicThread` (part 1). `HandleInput` = `0x524fa0` (thiscall logic), runs on the logic thread.
+- `gfx` = the render-side screen object (`new 0x5f700` at `0x42c6b9`, ctor `0x42c820`, vtable `0x656aec`; `0x1011def8`
+  in s3run). Owns the string table `[gfx+0x5f6b8]` and the text renderer `[gfx+0x5f6e0]`. Runs on the render thread.
+- `snap` = the per-frame UI snapshot that the logic thread fills for the renderer (`[logic+0x3d0]`, function `0x51f110`).
+
+## Summary for hook / HUD authors
+
+| Need | How | Status |
+| --- | --- | --- |
+| Camera position | `[gd+0x2d25c]` x, `[gd+0x2d260]` y (world pixels, top-left of the map view). Write, then the clamp `0x51b4d0` (thiscall gd) | VERIFIED (poke moves the view) |
+| Center camera on a tile | `0x51b560` thiscall gd, `(x, y)` stdcall (`ret 8`); clamps itself | STATIC (used by minimap click, hotkeys) |
+| Scroll step | arrow keys: +-40 px (`0x525977..`) | VERIFIED (Up: y `0x5e7 -> 0x5bf`) |
+| Screen layout per resolution | globals `0x730f08..0x730f40`, set by `0x4c6d70(resIndex)` (table below) | VERIFIED (all three) |
+| Bigger map view ("zoom out") | switch to 800x600 / 1024x768 at runtime: F2 / F3 (F1 = 640x480), or registry `Resolution` 1 / 2 | VERIFIED |
+| Panel page | `[gd+0x2d284]`: 1 build, 2 goods, 3 settlers, 4 building selected, 5 units selected, 7 Save/Quit menu, 8 messages, 9 paused | VERIFIED (1, 2, 3, 7, 9; 4/5 from part 1) |
+| Build category / slot / type | `[gd+0x2d288]` cat 1..4, `[gd+0x2d28c]` list slot (0 = none), `[gd+0x2d2f0]` building type | VERIFIED |
+| Start build placement for type T | write page 1, cat, slot, type T, then `[gd+0x2d27c] = 1`; the next map left-click places a site | VERIFIED (site count 6 -> 7) |
+| Open the in-game menu | page 7, `[gd+0x2d298] = 0`, `[gd+0x2d27c] = 1` (ESC is not a hotkey) | VERIFIED |
+| Redraw panel | `[gd+0x2d27c] = 1` ("panel dirty") | VERIFIED |
+| Tooltip text id | `[logic+0x54]` (set by the hover pass of HandleInput) -> `snap+0x270` -> drawn by `0x4b3de1..` | STATIC + VERIFIED text ids |
+| Text id -> string | `0x5faaa0` thiscall `[gfx+0x5f6b8]`, `(id, lang = -1)`, returns `char*`; id = `table<<16 | index` | VERIFIED (resolver `tools/re-ui/strings.py`) |
+| Building names | text `0x80000 + type` (table 8) | VERIFIED |
+| Goods in stock | sum of `amount` over the pile table (part 1) by good | VERIFIED (one map, panel = sum) |
+| Panel renderer | `0x4b4d00` thiscall gfx, `(snap)`; called from the frame renderer at `0x4b2dc5` | STATIC |
+| Safe place to change UI state | a hook at `HandleInput` entry `0x524fa0` (logic thread, before input is processed) | STATIC (s3run pokes between slices also worked) |
+
+## 1. Camera and viewport
+
+### Camera
+
+| Field | Meaning | Status |
+| --- | --- | --- |
+| `gd+0x2d25c` | camera x, world pixels (left edge of the map view) | VERIFIED (poke moves the view) |
+| `gd+0x2d260` | camera y, world pixels (top edge) | VERIFIED |
+| `gd+0x2d254`, `gd+0x2d258` | second copy (equal to the above when idle; HYPOTHESIS: the value of the previous frame / scroll origin) | VERIFIED values |
+| `gd+0x2d264` | cleared by arrow-key scrolling (HYPOTHESIS: "follow"/scroll-to target active) | STATIC |
+| `gd+0x2d2d0` | world size `W` in tiles (384 on a 384 map) | VERIFIED |
+
+- **Clamp** `0x51b4d0` (thiscall gd, no args): `x` into `[0, 24*W + 0x167 - mapW]`, `y` into `[0, 9*W + 0x176 - mapW]`
+  where `mapW = [0x730f18]` (yes, the y limit also uses the view width in this build). Call it after writing the camera.
+- **Center on tile** `0x51b560` (thiscall gd, `(tx, ty)`, `ret 8`): `x = (W + 2*tx + 24 - ty)*8 - mapW/2`,
+  `y = 9*ty + 200 - mapH/2 - height(tx,ty)` with `height` = byte `gd+0x67448 + (tx*768+ty)*0x18` (tile +4) and
+  `mapH = [0x730f1c]`; then calls the clamp. Callers: minimap click (`0x525438`), `0x4fef2d`, `0x51b6d4`, `0x526a90`,
+  `0x52e1ef` (HYPOTHESIS: "go to event" from a message).
+- Tile geometry implied by these formulas: a tile is 16 px wide (x step 8 per half tile), rows are 9 px high, rows are
+  sheared (x shifts by 8 px per row). The renderer converts camera pixels to a first tile column with `/16` and row
+  with `/18` in `0x51f9xx` (STATIC). Exact map -> screen formula for HUD markers: still open (see part 1).
+- **Scrolling**: arrow keys (VK 0x25..0x28) change the camera by 40 px and clamp (`0x525977`, `0x5259b1`, `0x5259ea`,
+  `0x525a0a`); right-drag scroll is in HandleInput (part 1, `[0x7dfd80]`). Edge scrolling: not looked at.
+- Two-finger pan for touch: write `x/y` (`+0x2d25c/+0x2d260`) on the logic thread and call `0x51b4d0`, or keep
+  `delta` in host and write absolute values each frame. Centering: call `0x51b560`.
+
+### Screen layout per resolution (`0x4c6d70(resIndex)`, stdcall, `ret 4`)
+
+Panel grid: the left panel is a grid of `cell x cell` pixel cells; `col = (x - [0x730f3c]) / cell`,
+`row = (y - [0x730f40]) / cell`, 40 columns (0..0x27) x 106 rows (0..0x69). All panel buttons are defined in grid
+units, so **the same (col,row) works at every resolution**.
+
+| Global | Meaning | 640x480 | 800x600 | 1024x768 |
+| --- | --- | --- | --- | --- |
+| `0x730f08` | resolution index + 1 | 1 | 2 | 3 |
+| `0x730f0c` / `0x730f10` | screen width / height | 640 / 480 | 800 / 600 | 1024 / 768 |
+| `0x730f24` | panel width (x < this = panel or minimap) | 136 | 176 | 216 |
+| `0x730f18` / `0x730f1c` | map view width / height (`= screen - panel`, full height) | 504 / 480 | 624 / 600 | 808 / 768 |
+| `0x730f2c` / `0x730f30` | minimap origin x / y | 5 / 10 | 8 / 5 | 6 / 8 |
+| `0x730f28` | minimap width (in pixels; the map is drawn as a sheared parallelogram) | 128 | 160 | 208 |
+| `0x730f34` | minimap bottom y | 142 | 170 | 224 |
+| `0x730f38` | panel grid cell size (px) | 3 | 4 | 5 |
+| `0x730f3c` / `0x730f40` | panel grid origin x / y | 8 / 152 | 8 / 171 | 8 / 228 |
+| `0x730f14` | 16 (HYPOTHESIS: tile width) | 16 | 16 | 16 |
+| `0x730f20` | 437 / 540 / 697 (HYPOTHESIS: top of the bottom button bar region) | 437 | 540 | 697 |
+
+Values VERIFIED with `peek 0x730f08` at 640x480, 800x600 (`Resolution=1`) and 1024x768 (F3). `[0x7dfd58]` is cleared
+by the same function.
+
+- **Minimap hit test** (HandleInput `0x52537b..`): `y < [0x730f34]` and
+  `[0x730f2c] + d < x < [0x730f24] + d` with `d = ([0x730f34] - y)/2` (sheared). Tile:
+  `ty = W*(y - [0x730f30]) / [0x730f28]`, `tx = W*((y - [0x730f30])/2 - [0x730f28]/2 - [0x730f2c] + x) / [0x730f28]`,
+  then `0x51b560(tx, ty)` (STATIC).
+- **Map rect**: `x >= [0x730f24]` (the minimap's sheared right edge overlaps the map at the top). The map is rendered
+  under the panel frame; the view origin is the camera.
+- **Other resolutions**: `0x4c6d70` only knows indexes 0..2 (other values leave the table unchanged) and the panel art
+  exists in three variants (resource `0x40000`, variant `[0x730f08]-1`, `0x4b4dfb`). Registry `Resolution` (part of
+  `HKLM\Software\BlueByte\Siedler3\1.0\General`, see [registry.md](registry.md)) selects 0/1/2 at start; values 1 and 2
+  VERIFIED. A custom resolution (e.g. 1280x720) would need: our DirectDraw mode, a patched `0x4c6d70` case (map view
+  sizes are used generically via `0x730f18/0x730f1c`) and reuse of variant 2 panel art. HYPOTHESIS, untested.
+- **Runtime switch** (VERIFIED in s3run): F1/F2/F3 (VK 0x70..0x72, handlers `0x525a77`, `0x525b36`, `0x525bfb`) write
+  the wanted index to `[0x7a7af0+0x70]` (setter `0x49ded0`) and signal the render thread; the game re-runs
+  `SetDisplayMode` and the layout. Ignored when `[0x7dfd44] != 0` (HYPOTHESIS: multiplayer/replay) or already active.
+  This is the cheapest "zoom out / more map" for mobile: switch to 1024x768 and let our presenter scale the frame.
+
+## 2. The left panel
+
+### Page state (all in `gd`, copied every frame to the render snapshot by `0x51f110` at `0x51f5ff..`)
+
+| Field | snap | Meaning | Status |
+| --- | --- | --- | --- |
+| `+0x2d284` | `+0x60` | page: 0 none, 1 build, 2 goods, 3 settlers, 4 building selected, 5 units selected, 6 (TAB key; HYPOTHESIS: next unit group), 7 Save/Quit menu, 8 messages, 9 game paused, 0xb (`G` key, unknown) | VERIFIED 1,2,3,7,9; 4,5 part 1 |
+| `+0x2d288` | `+0x64` | build category 1..4 (page 1) | VERIFIED |
+| `+0x2d28c` | `+0x68` | build list slot 1..12, 0 = nothing selected (cleared after a site is placed and by right-click) | VERIFIED |
+| `+0x2d290` | `+0x6c` | goods page tab 1..4 | VERIFIED (1) |
+| `+0x2d294` | `+0x70` | goods page sub-selection (cleared when tab 2 is chosen) | STATIC |
+| `+0x2d298` | `+0x74` | menu sub-page (page 7: 0 main, 1 quit confirmation, 2 save slot list) / building page action (page 4, part 1) | STATIC (0 VERIFIED) |
+| `+0x2d29c`, `+0x2d2a4`, `+0x2d2a8` | `+0x78`, `+0x80`, `+0x84` | further page state (not analysed) | |
+| `+0x2d2a0` | `+0x7c` | settlers page tab 1..4 | VERIFIED (1) |
+| `+0x2d27c` | – | panel dirty: set to 1 after every change | VERIFIED (needed after a poke) |
+| `+0x2d280` | – | set together with settlers tab 4 (HYPOTHESIS: statistics refresh) | STATIC |
+| `+0x2d2f0` | – | building type to place | VERIFIED |
+| `+0x2d320 + n*0x4b0` (n = 0..3) | `+0x88` bits | message categories (battle, general, resources, trade): a bottom button works only when its slot is non-zero; bit n of `snap+0x88` = "has messages", blinking with bit 5 of the step counter | STATIC |
+
+Each click handler also plays the click sound (`0x53f560(0x3d)`, thiscall logic) and calls `0x542630` (thiscall logic;
+HYPOTHESIS: refresh/notify). After choosing a building type it calls `0x4ff3f0` (thiscall gd; HYPOTHESIS: recompute the
+placement ghost map). Poking without these calls still showed the placement ghosts and placed the site (VERIFIED), so
+a HUD may poke + set the dirty flag; calling the same functions from a logic-thread hook is the cleaner option.
+
+### Click handling
+
+All panel clicks are handled inside `HandleInput` (`0x524fa0`), left-down branch at `0x526aaa`: if `x < [0x730f24]`
+the grid cell is computed and a long chain of `(col range, row range)` tests follows (`0x526aaa..0x532fa2`). Page
+specific blocks start with `cmp [gd+0x2d284], page`: build list `0x526f8a..0x528a37`, goods `0x528a38`, settlers
+`0x52c237`, building selected (4) `0x52xxxx/0x53xxxx` (part 1), units (5) `0x52ec5a`, menu (7) `0x52e21a`,
+messages (8) `0x52e1b0`, `0xb` `0x532f4f`. `tools/re-ui/panelmap.py` lists every state write with the preceding
+column/row tests (heuristic, linear).
+
+The **same code is also the tooltip query**: `HandleInput` counts calls without input in `[logic+0x74]`; on the 10th
+idle call it sets `[logic+0x78] = 3` and copies the mouse to `[logic+0x7c]/[logic+0x80]`; with `[logic+0x78] != 0`
+every button block stores its tooltip text id in `[logic+0x54]` instead of acting (STATIC). `[logic+0x78]`: 0 = an
+input event is being handled, 2 = queue empty, 3 = tooltip pass (idle count == 10), 1 = idle count > 10. So a tooltip appears
+when the pointer rests ~10 logic ticks on a button. For touch, a host "hover" (mouse move without button) shows the
+same tooltip.
+
+Grid map of the common buttons (all VERIFIED by tooltip text ids and clicks at 640x480; pixel = origin + grid*cell):
+
+| Button | cols | rows | Action | Tooltip id |
+| --- | --- | --- | --- | --- |
+| Build tab | 2..13 | 1..8 | page 1, slot 0 | `0x8004a` "Buildings" |
+| Goods tab | 15..26 | 1..8 | page 2 | `0x8004b` "Goods" |
+| Settlers tab | 28..39 | 1..8 | page 3 | `0x8004c` "Settlers" |
+| Category 1..4 (page 1) | 0..9, 10..19, 20..29, 30..39 | 11..18 | cat = 1..4, slot 0 | `0x8004d..0x80050` Resource / Food / Military / Misc. Buildings |
+| Goods tabs 1..4 (page 2) | 0..9, 10..19, 20..29, 30..39 | 11..18 | `+0x2d290` = 1..4 | `0x80051` Inventory, `0x80052` Tools and Weapons, `0x80081` Priority of Buildings, `0x80082` Priority of Goods |
+| Settlers tabs 1..4 (page 3) | same | 11..18 | `+0x2d2a0` = 1..4 | `0x8005a` Population, `0x8005b` Occupations, `0x8005c` Recruitment, `0x80155` Production statistics |
+| Build list slot `2k+1` / `2k+2` (k = 0..5) | 1..19 / 21..39 | `22+12k .. 31+12k` | slot, type (table below) | `0x80000 + type` |
+| Menu (computer icon) | 0..7 | 97..103 | page 7, sub-page 0 | `0x8008f` "Save/Quit" |
+| Messages 1..4 | 8..15, 16..23, 24..31, 32..39 | 97..103 | page 8, `0x4fee90(n)` (thiscall gd) | `0x800ad` Battle, `0x800ae` General, `0x800af` Resources, `0x800b0` Trade Messages |
+| Menu: "Save Game" (page 7, sub 0) | 3..37 | 22..29 | opens the save slot list (`0x50b670` enumerates `slot%2i.sav`; HYPOTHESIS: sub-page 2) | – |
+| Menu: "Quit Game" (page 7, sub 0) | 3..37 | 87..91 | sub-page 1 (confirmation) | – |
+
+Recipe from [integration-log.md](../porting/integration-log.md) (640x480 pixels): menu icon `21 452`, "Save Game"
+`68 225`, slot 1 `40 244` (slots 21 px apart), "Quit Game" `68 420`, YES `38 420`.
+
+### Build list: category / slot -> building type (STATIC table from `0x526f8a..0x528a37`, names from text table 8)
+
+Race = `[gd+0x11943e0 + player*0x148]` (player record +0). Race names are a HYPOTHESIS from the race-specific drinks:
+0 Romans (Winery), 1 Egyptians (Brewery), 2 Asians (Distillery, Rice Farm), 3 Amazons (Mead). A slot with no entry for
+a race is empty for that race.
+
+| Cat | Slot | Type (race) | Name |
+| --- | --- | --- | --- |
+| 1 Resource | 1 / 2 / 3 / 4 | 0x02 / 0x04 / 0x03 / 0x05 | Woodcutter's Hut / Sawmill / Stonecutter's Hut / Forester's Hut |
+| 1 | 5 / 6 / 7 / 8 | 0x09 / 0x0b / 0x08 / 0x0a | Iron Ore Mine / Iron Smelter / Gold Mine / Gold Smelter |
+| 1 | 9 / 10 | 0x07 / 0x0c | Coal Mine / Tool Smith |
+| 1 | 11 | 0x27 (0), 0x25 (1), 0x1d (2), 0x38 (3) | Charcoal Maker's Hut / Gem Mine / Sulfur Mine / Sulfur Mine (Amazon type) |
+| 1 | 12 | 0x28 (2), 0x25 (3) | Gunpowder Maker / Gem Mine |
+| 2 Food | 1..4 | 0x19 / 0x18 / 0x17 / 0x11 | Fisherman's Hut / Grain Farm / Pig Farm / Grain Mill |
+| 2 | 5..8 | 0x15 / 0x14 / 0x1e / 0x31 | Slaughterhouse / Bakery / Waterworks / Donkey Farm |
+| 2 | 9 | 0x0e (0), 0x26 (1), 0x16 (2), 0x33 (3) | Winery / Brewery / Distillery / Beekeeper's Hut (text `0x8015f`) |
+| 2 | 10 | 0x24 (2), 0x34 (3) | Rice Farm / Meadmaker's Hut (text `0x80160`) |
+| 3 Military | 1..5 | 0x0f / 0x10 / 0x12 / 0x06 / 0x0d | Guard Tower / Large Guard Tower / Castle / Lookout Tower / Weapon Smith |
+| 3 | 6 | 0x1f (0), 0x2f (1), 0x30 (2), 0x32 (3) | Catapult / Ballista / Cannon / Gong Hall (text `0x8015e`) |
+| 3 | 7 / 8 / 9 | 0x13 / 0x20 / 0x23 | Barracks / Shipyard / Healer's Quarters |
+| 4 Misc. | 1..3 | 0x1a / 0x1b / 0x1c | Small / Medium / Large Residence |
+| 4 | 4 / 5 / 6 | 0x01 / 0x22 / 0x21 | Storage Area / Marketplace / Landing Dock |
+| 4 | 7 | 0x2c (0), 0x2a (1), 0x2e (2), 0x36 (3) | Small Temple / Sphinx / Small Temple / Small Temple |
+| 4 | 8 | 0x2b (0), 0x29 (1), 0x2d (2), 0x37 (3) | Large Temple / Pyramid / Large Temple / Large Temple |
+| 4 | 9 | 0x35 (3) | Alchemist's Den (text `0x80161`) |
+
+Text `0x80000 + type` gives the name for types < 0x33 (`0x80000` "Building Site", `0x80001` "Storage Area", ...
+`0x80032` "Magic Eye"); the Amazon types 0x33..0x38 use the text ids shown. Text ids `0x80033..` are spell names.
+VERIFIED at runtime: type 2 (Woodcutter's Hut) placed via poke; `0x8000f` = "Guard Tower" = type 15 (start building,
+part 1).
+
+### Programmatic tab switch / building selection (for the Mobile HUD)
+
+VERIFIED sequence (s3run pokes, `scratch/re-ui/t1`): `[gd+0x2d284]=1, [gd+0x2d288]=cat, [gd+0x2d28c]=slot,
+[gd+0x2d2f0]=type, [gd+0x2d27c]=1` -> the panel shows the build list with the slot highlighted and the map shows the
+placement ghosts; the next left-click on the map places the construction site (building count `[gd+0x1499e60]` 6 -> 7)
+and resets the slot to 0 (page and category stay). Alternatives:
+
+- Send command 1 directly (part 1) after checking `AddBuilding(x,y,type,player,0)`; no UI state needed.
+- **Hotkeys** (key events through our USER32 input; table `0x534cbc`/`0x534c00`, dispatch `0x5254a7`):
+  Q/W/E/R = page 1 category 1..4 (VERIFIED: W -> page 1 cat 2), A/S/D/F = goods tabs (STATIC), Y(Z)/X/C/V = settlers
+  tabs (STATIC), Space = page 8 messages, P = pause toggle (page 9 "Game Paused", VERIFIED; other hotkeys are ignored
+  while paused), TAB = page 6 / selection cycling (`[0x7dfd68]`, HYPOTHESIS), G = page 0xb, arrows = scroll 40 px,
+  Home (0x24) = `0x51b6b0` (HYPOTHESIS: center on castle), F1..F3 = resolution, F5/F6/F12, `+`/`-` (0x6b/0x6d),
+  Enter (chat, `0x5254ae`), 1..9 (`0x542820`, HYPOTHESIS: unit groups or speed), T/B/O/I/U/J/K toggle globals
+  `0x7deb54`, `0x7deb49`, `0x7dfdac`, `0x7dfda8` (debug/display options, HYPOTHESIS). Hotkeys are skipped while
+  `[0x7dfda8] != 0` (`0x52548d`, chat input HYPOTHESIS).
+
+### Where the panel is drawn (for UI mode B)
+
+- Frame render (render thread) `0x4b2900..`: the text DIB / landscape / then `0x4b4d00` (call at `0x4b2dc5`) draws the
+  panel: background art from gfx resource `0x40000` variant by resolution (`0x5faaf0` lookup at `0x4b4df6`), then a
+  per-page block (`[snap+0x60]` checks at `0x4b53b5` (7), `0x4b5449` (2), ...), sprites via `0x5faca0`/`0x5fdab0`/
+  `0x5f64c0` (HYPOTHESIS: get sprite / blit / blit transparent).
+- Hiding the panel: skip `0x4b4d00` (hook + `return_from_function(0, 1)`) and crop the presented frame to
+  `x >= [0x730f24]` in our presenter. The map is not rendered under the panel (HYPOTHESIS), so skipping the panel alone
+  leaves stale pixels; cropping is the safe option. The minimap is part of the same top-left art (drawn in the frame
+  render, `0x4b2b58..` uses `0x730f28/2c/30`).
+- Input: with the panel hidden, HUD buttons must change state by pokes/commands/hotkeys (above); map clicks keep working
+  with the original coordinates (map x starts at `[0x730f24]`).
+
+## 3. Cursor / interaction mode
+
+There is no separate cursor-mode variable; the mode is derived from the panel page and selections:
+
+| Mode | Condition | Effect of left click on the map | Status |
+| --- | --- | --- | --- |
+| Normal | page 0/2/3/7/8 or page 1 with slot 0 | select (drag box / single) | VERIFIED |
+| Build placement of type T | page 1, `[gd+0x2d28c] != 0`, `[gd+0x2d2f0] = T` | place a site (command 1), slot -> 0; right-click cancels (`[gd+0x2d28c]=0`) | VERIFIED |
+| Building selected | page 4, `[0x7dfd6c]` = building id | building panel actions; right-click deselects | part 1 |
+| Building target / work area | page 4, `[gd+0x2d298] = 3` | the next click sets the target tile (command 5) | STATIC (part 1) |
+| Units selected | page 5, UI selection list non-empty | right-click (quick!) = move/attack (command 9, modifiers 0xd..0xf) | VERIFIED (part 1) |
+| Paused | page 9 | input ignored | VERIFIED |
+| Hover/tooltip pass | `[logic+0x78] != 0` | none; tooltip id set | STATIC |
+
+Attack is not a mode: a move command onto an enemy target attacks (part 1). The mouse cursor image is chosen by our
+cursor composer (see [user32-gdi32.md](../porting/user32-gdi32.md)); the game calls `SetCursor` with resources.
+
+## 4. Dialogs and menus
+
+- In game there are no Windows dialogs: Save/Quit is panel page 7 (`0x52e21a`), drawn by `0x4b4d00`.
+  Sub-pages (`[gd+0x2d298]`): 0 = "Save Game" / "Quit Game" (VERIFIED, `scratch/re-ui/m1.png`), 1 = quit
+  confirmation YES/NO, 2 = save slot list (8 slots, render loop at `0x51f1dd..`; STATIC). The save itself is a system
+  command (0xf1..0xff family, part 1); a save writes `Save/slotNN.sav` without a name prompt.
+- **Open the menu programmatically** (ESC is not in the hotkey table): page 7 + sub-page 0 + dirty (VERIFIED).
+  Then "Save Game"/"Quit Game" are grid clicks (table above) or the integration-log pixel recipe.
+- After "Quit Game -> YES" the game shows the statistics screen and then the 800x600 main menu (main menu, load list,
+  options are full-screen 800x600 screens of the app's menu system, not the panel; not analysed here).
+- Pause: P toggles page 9 (`0x52571b`).
+- Message pages: page 8 with category `0x4fee90(n)`, n = 1..4.
+
+## 5. Player resources and statistics (HUD)
+
+- **Goods in stock**: the pile table (`gd+0x123885c`, 0xe bytes, count `[gd+0x1238858]`, part 1). Layout seen:
+  `+0 u8 good`, `+1 u8 amount (<= 8)`, `+2/+3 u8` (HYPOTHESIS: reserved/incoming), `+4 u8 0xfe` (stored pile) or `0xfd`
+  (HYPOTHESIS: free/transport pile), `+6 u16 x`, `+8 u16 y`, `+0xa/+0xc u16 next/prev pile of the same good`.
+  The "Storage Area" inventory equals the sum of `amount` per good over the player's piles (VERIFIED on one map: planks
+  8+8+8+1 = 25, stone 25, good 0xc 8+2 = 10, 0xd 8+7 = 15, ...). Which piles belong to which player: by tile ownership
+  / economy sector (HYPOTHESIS; the panel probably sums piles of the local player's sectors). Good id -> name: text
+  table not mapped yet (HYPOTHESIS: another table of the same string file; use `strings.py all:<t>`).
+- **Settlers**: count settler table entries (part 1) by owner and type; the Population page shows the same split
+  (carriers 32 at start = type 0 count, VERIFIED in part 1).
+- **Economy sectors** `gd+0xe145e8` (0x2e0 bytes, count `[gd+0xe115dc]`): distribution/priority settings, not stock
+  counts (VERIFIED: no inventory numbers there).
+- Statistics pages (settlers tab 4 "Production statistics", end-of-game statistics): not analysed.
+
+## 6. Text and tooltip rendering
+
+- **Strings**: `0x5faaa0` thiscall `strtab = [gfx+0x5f6b8]`, `(id, lang)`; `lang = -1` -> `[strtab+0xc40]` (1 in our
+  runs = English). `table = id >> 16`, header `[strtab+0x37c + table*4]` with `u16 count` at +8 and offsets at
+  `+0xc + (count*lang + index)*4`, base `[strtab+0x264 + table*4]`. The tables live in memory-mapped text files.
+  Table 8 = UI texts (building names `0x80000+type`, tooltips `0x8004a..`, messages). A hook here translates or
+  replaces any UI text (localisation, larger HUD labels).
+- **Panel text drawing**: `0x4a87d0` (cdecl, printf-style; args `(textObj=[gfx+0x5f6e0], out, 1, RECT*, flags, fmt,
+  ...)`, uses `_vsnprintf` `0x621408`) renders into a 640x480 1-bpp DIB (`CreateDIBSection` at `0x4a7b42`) with
+  `DrawTextA` (`0x4a8725`); the DIB is then composed onto the frame. Font: `CreateFontIndirectA` `0x4a8028`.
+  Host-side alternative: our `DrawTextA` HLE (`s3-win32/src/gdi32.rs`) sees every string with its rectangle.
+- **Tooltip**: `[logic+0x54]` (text id, `-1` = none) and the mouse position `[logic+0x7c]/[logic+0x80]` are copied to
+  `snap+0x270/+0x27c/+0x280` by `0x51f110` and cleared; the renderer (`0x4b3de1..0x4b3f4b`) builds a box of
+  180x20 px around the pointer (`x-90..x+90`, `y-15..y+5`, clamped to the screen), saves the background (`0x4d65e0`),
+  draws the string with `0x4a87d0` (flags 9) and restores (`0x4d6740`). Hook `0x4b3de1` region or read `snap+0x270` to
+  draw our own tooltip.
+- Other text users: `0x41xxxx..0x42xxxx` (TextOutA/DrawTextA; main menu screens, HYPOTHESIS), `0x5a1970..` (TextOutA +
+  `CreateFontA`; HYPOTHESIS: debug/statistics overlay).
+
+## Tools (re-ui)
+
+- `s3run --inject` debug commands (`port/crates/s3-desktop/src/debug.rs`): `dump/peek/poke/regs/watch/dumpall DIR
+  [mapped]` (`mapped` also writes memory-mapped file views, needed for the string tables; output is game data, keep it
+  in `scratch/`). Plus re-units' `xpeek/xdump/scan`.
+- `tools/re-ui/run.sh MAXSEC "inject"` starts a random single-player map (in game after ~17-45 s).
+- `tools/re-ui/panelmap.py ASM START END` (panel button table), `tools/re-ui/strings.py DUMPDIR GFXOBJ ID...|all:T`
+  (text ids; find `GFXOBJ` with `scan 0x656aec`), `tools/re-ui/scan.py`, `diff.py`, `peek.py` (snapshot diffs),
+  `findstock*.py` (counter search), `dis.sh ADDR [N]` (objdump listing `scratch/re-ui/s3.asm`, local only).
+
+## Open questions
+
+- Good ids -> names; which piles count for a player; Tools/Weapons and priority pages (commands 0x07..0x11, part 1).
+- Pages 6 and 0xb, `gd+0x2d29c..0x2d2a8`, number keys `0x542820`.
+- Map -> screen formula (HUD markers), edge scrolling.
+- Whether skipping `0x4b4d00` leaves stale pixels (test with a mods hook).

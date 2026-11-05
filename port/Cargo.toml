@@ -8,8 +8,11 @@ members = [
     "crates/s3-win32",
     "crates/s3-dx",
     "crates/s3-engine",
+    "crates/s3-mods",
     "crates/s3-desktop",
     "crates/s3-android",
+    "crates/s3-net",
+    "crates/s3-relay",
 ]
 
 [workspace.package]
@@ -26,6 +29,8 @@ s3-pe = { path = "crates/s3-pe" }
 s3-win32 = { path = "crates/s3-win32" }
 s3-dx = { path = "crates/s3-dx" }
 s3-engine = { path = "crates/s3-engine" }
+s3-mods = { path = "crates/s3-mods" }
+s3-net = { path = "crates/s3-net" }
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "intel"] }
 libc = "0.2"
 log = "0.4"

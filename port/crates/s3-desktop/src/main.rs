@@ -9,6 +9,9 @@
 //! `key VK` (press+release, VK decimal or 0x..), `text abc` (one key press per character, 120 ms apart; letters,
 //! digits, space, `-`, `_` as VK codes so the guest's TranslateMessage makes WM_CHAR), `shot file.png` (write the
 //! current frame), `quit`.
+//! Touch commands (raw pointer events in screen = game pixels, recognized by s3-mods like on Android):
+//! `tap x y`, `tap2 x y` (two-finger tap), `drag x1 y1 x2 y2 [ms=300]`, `longpress x y [ms=800]`,
+//! `pinch cx cy scale [ms=300]` (two fingers 80 px apart -> 80*scale).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -16,9 +19,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 mod audio;
+mod debug;
+mod debug_units;
 
 use s3_engine::Engine;
-use s3_runtime::{FrameBuffer, Host, HostEvent, LogLevel, MouseButton, SliceResult};
+use s3_runtime::{FrameBuffer, Host, HostEvent, LogLevel, MouseButton, PointerPhase, SliceResult};
 
 /// Max PNG files written by --screenshot-every-present (disk is shared and small).
 const MAX_PRESENT_SHOTS: u64 = 300;
@@ -38,6 +43,10 @@ struct Args {
     audio_wav: Option<PathBuf>,
     audio_wav_seconds: f64,
     audio_play: bool,
+    /// Debug inject commands (dump/peek/poke/regs, see debug.rs).
+    debug_cmds: Vec<(u64, debug::DebugCmd)>,
+    /// re-units read-only commands (xdump/xpeek/scan, see debug_units.rs).
+    units_cmds: Vec<(u64, debug_units::UnitsCmd)>,
 }
 
 fn usage() -> ! {
@@ -127,12 +136,73 @@ fn parse_inject_all(spec: &str) -> Result<(Vec<(u64, HostEvent)>, Vec<(u64, Path
                 shots.push((t, PathBuf::from(f)));
             }
             Some("quit") => out.push((t, HostEvent::Quit)),
+            Some(c @ ("tap" | "tap2" | "drag" | "longpress" | "pinch")) => {
+                let num = |i: usize| -> Result<f64, String> {
+                    w.get(i).and_then(|s| s.parse::<f64>().ok()).ok_or(format!("missing/bad argument {i} in '{item}'"))
+                };
+                let opt = |i: usize, d: f64| w.get(i).and_then(|s| s.parse::<f64>().ok()).unwrap_or(d);
+                touch_events(&mut out, t, c, &num, &opt)?;
+            }
             _ => return Err(format!("unknown inject command '{cmd}'")),
         }
     }
     out.sort_by_key(|(t, _)| *t);
     shots.sort_by_key(|(t, _)| *t);
     Ok((out, shots))
+}
+
+/// Raw pointer events for the touch inject commands.
+fn touch_events(
+    out: &mut Vec<(u64, HostEvent)>,
+    t: u64,
+    cmd: &str,
+    num: &dyn Fn(usize) -> Result<f64, String>,
+    opt: &dyn Fn(usize, f64) -> f64,
+) -> Result<(), String> {
+    let p = |id: u32, phase: PointerPhase, x: f64, y: f64| HostEvent::Pointer { id, phase, x: x.round() as i32, y: y.round() as i32 };
+    match cmd {
+        "tap" | "tap2" => {
+            let (x, y) = (num(1)?, num(2)?);
+            out.push((t, p(1, PointerPhase::Down, x, y)));
+            if cmd == "tap2" {
+                out.push((t + 10, p(2, PointerPhase::Down, x + 40.0, y)));
+                out.push((t + 60, p(2, PointerPhase::Up, x + 40.0, y)));
+            }
+            out.push((t + 70, p(1, PointerPhase::Up, x, y)));
+        }
+        "longpress" => {
+            let (x, y, ms) = (num(1)?, num(2)?, opt(3, 800.0) as u64);
+            out.push((t, p(1, PointerPhase::Down, x, y)));
+            out.push((t + ms, p(1, PointerPhase::Up, x, y)));
+        }
+        "drag" => {
+            let (x1, y1, x2, y2, ms) = (num(1)?, num(2)?, num(3)?, num(4)?, opt(5, 300.0).max(16.0) as u64);
+            out.push((t, p(1, PointerPhase::Down, x1, y1)));
+            let steps = (ms / 16).max(1);
+            for i in 1..=steps {
+                let k = i as f64 / steps as f64;
+                out.push((t + i * ms / steps, p(1, PointerPhase::Move, x1 + (x2 - x1) * k, y1 + (y2 - y1) * k)));
+            }
+            out.push((t + ms + 1, p(1, PointerPhase::Up, x2, y2)));
+        }
+        "pinch" => {
+            let (cx, cy, scale, ms) = (num(1)?, num(2)?, num(3)?, opt(4, 300.0).max(16.0) as u64);
+            let d0 = 40.0;
+            out.push((t, p(1, PointerPhase::Down, cx - d0, cy)));
+            out.push((t, p(2, PointerPhase::Down, cx + d0, cy)));
+            let steps = (ms / 16).max(1);
+            for i in 1..=steps {
+                let d = d0 * (1.0 + (scale - 1.0) * i as f64 / steps as f64);
+                let at = t + i * ms / steps;
+                out.push((at, p(1, PointerPhase::Move, cx - d, cy)));
+                out.push((at, p(2, PointerPhase::Move, cx + d, cy)));
+            }
+            out.push((t + ms + 1, p(1, PointerPhase::Up, cx - d0 * scale, cy)));
+            out.push((t + ms + 2, p(2, PointerPhase::Up, cx + d0 * scale, cy)));
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
 }
 
 fn parse_args() -> Args {
@@ -150,6 +220,8 @@ fn parse_args() -> Args {
         audio_wav: None,
         audio_wav_seconds: 300.0,
         audio_play: false,
+        debug_cmds: Vec::new(),
+        units_cmds: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -163,7 +235,17 @@ fn parse_args() -> Args {
             "--screenshot-every-present" => a.shots_dir = Some(val().into()),
             "--screenshot" => a.screenshot = Some(val().into()),
             "--inject" => {
-                (a.inject, a.inject_shots) = parse_inject_all(&val()).unwrap_or_else(|e| {
+                let (spec, ucmds) = debug_units::split(&val()).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    usage()
+                });
+                a.units_cmds = ucmds;
+                let (spec, dbg) = debug::split(&spec).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    usage()
+                });
+                a.debug_cmds = dbg;
+                (a.inject, a.inject_shots) = parse_inject_all(&spec).unwrap_or_else(|e| {
                     eprintln!("{e}");
                     usage()
                 })
@@ -433,7 +515,11 @@ fn main() {
     let mut last_sample = Instant::now();
     let mut sample_prev: Vec<u64> = Vec::new();
     let mut inject_shots: VecDeque<(u64, PathBuf)> = args.inject_shots.iter().cloned().collect();
+    let mut debug_cmds: VecDeque<(u64, debug::DebugCmd)> = args.debug_cmds.iter().cloned().collect();
+    let mut units_cmds: VecDeque<(u64, debug_units::UnitsCmd)> = args.units_cmds.iter().cloned().collect();
     loop {
+        debug::run_due(&mut engine, &mut debug_cmds, start.elapsed().as_millis() as u64);
+        debug_units::run_due(&mut engine, &mut units_cmds, start.elapsed().as_millis() as u64);
         while inject_shots.front().map(|(t, _)| *t <= start.elapsed().as_millis() as u64).unwrap_or(false) {
             let (_, p) = inject_shots.pop_front().unwrap();
             let f = shared.lock().unwrap().frame.clone();
@@ -515,6 +601,16 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inject_touch_parsing() {
+        let v = parse_inject("100:tap 10 20; 200:drag 0 0 100 0 100; 1000:pinch 300 200 2; 2000:longpress 5 5 600").unwrap();
+        assert_eq!(v[0], (100, HostEvent::Pointer { id: 1, phase: PointerPhase::Down, x: 10, y: 20 }));
+        assert_eq!(v[1], (170, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 10, y: 20 }));
+        assert!(v.contains(&(301, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 100, y: 0 })));
+        assert!(v.contains(&(1302, HostEvent::Pointer { id: 2, phase: PointerPhase::Up, x: 380, y: 200 })));
+        assert_eq!(v.last().unwrap(), &(2600, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 5, y: 5 }));
+    }
 
     #[test]
     fn inject_parsing() {

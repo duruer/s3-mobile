@@ -146,7 +146,9 @@ lobby 1..3). Enumerations (`EnumConnections`, `EnumSessions`, `EnumPlayers`, ...
 `Close`/`Initialize` succeed, `GetMessageCount` = 0, `Receive` = DPERR_NOMESSAGES, lobby
 `GetConnectionSettings` = DPERR_NOTLOBBIED, everything else DPERR_UNAVAILABLE. `DirectPlayCreate` fails with
 DPERR_UNAVAILABLE, `DirectPlayLobbyCreateA` returns a lobby object. Error code values are from memory of
-dplay.h (HYPOTHESIS until multiplayer menus are exercised).
+dplay.h (HYPOTHESIS until multiplayer menus are exercised). Update 2026-11-05: S3.EXE's own HRESULT table (`0x7a03b4`)
+confirms the values (DPERR_NOTLOBBIED = 0x8877042E); the full RE of the game's DirectPlay use and the plan for the
+real implementation over our relay are in [multiplayer.md](multiplayer.md).
 
 ## Open points
 

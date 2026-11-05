@@ -50,6 +50,12 @@ impl Engine {
         }
         let stack = m.process.stack_reserve;
         m.create_thread(image.entry, 0, stack, false)?;
+        // Mod framework (hooks/patches keyed by the exe sha256, touch gestures, overlay); see docs/porting/mods.md.
+        let mods = s3_mods::install(&mut m, &bytes);
+        m.log(
+            LogLevel::Info,
+            &format!("mods: sha256 {} patch set {:?}, {} hook addresses", mods.exe_sha256, mods.patch_set, mods.hooks),
+        );
         m.log(
             LogLevel::Info,
             &format!("loaded {} entry={:#x} imports={}", exe_path.display(), image.entry, image.imports.len()),
@@ -86,6 +92,7 @@ impl Engine {
         s.push_str(&format!("thunk calls: {}\n", m.stats.thunk_calls));
         s.push_str(&format!("presents: {}\n", m.stats.presents));
         s.push_str(&format!("guest exceptions: {}\n", m.stats.exceptions));
+        s.push_str(&format!("mod hooks dispatched: {}\n", m.stats.hooks));
         s.push_str(&format!("threads: {}\n", m.threads.len()));
         let mut calls: Vec<_> = m.registry.entries().iter().filter(|e| e.calls > 0).collect();
         calls.sort_by(|a, b| b.calls.cmp(&a.calls));

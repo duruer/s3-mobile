@@ -1,0 +1,18 @@
+[package]
+name = "s3-relay"
+description = "Lobby/relay server for Settlers 3 port online play (rooms, DirectPlay-like sessions, message forwarding)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "s3-relay"
+path = "src/main.rs"
+
+[dependencies]
+s3-net.workspace = true
+log.workspace = true
+tokio = { version = "1.47", default-features = false, features = ["rt", "rt-multi-thread", "net", "sync", "time", "macros", "signal"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

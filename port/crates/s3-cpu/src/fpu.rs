@@ -16,9 +16,14 @@ use iced_x86::{Instruction, MemorySize, Mnemonic, OpKind, Register};
 
 #[path = "fpu_conv.rs"]
 pub mod conv;
+#[path = "fpu_math.rs"]
+pub mod math;
 #[cfg(test)]
 #[path = "fpu_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "fpu_golden.rs"]
+mod golden;
 
 use conv::INDEFINITE;
 
@@ -240,13 +245,18 @@ impl Fpu {
     }
 
     /// Finish an arithmetic result: NaN from non-NaN inputs => IE + indefinite; precision control.
+    /// NaN results never come from the host (its NaN sign/payload/propagation rules differ between x86 and
+    /// aarch64): NaN operands go through [`math::propagate_nan`] (IE for SNaN), new NaNs become the indefinite.
     fn finish(&mut self, r: f64, a: f64, b: f64) -> f64 {
-        if r.is_nan() {
-            if !a.is_nan() && !b.is_nan() {
+        if a.is_nan() || b.is_nan() {
+            if math::is_snan(a) || math::is_snan(b) {
                 self.raise(sw::IE);
-                return INDEFINITE;
             }
-            return r;
+            return math::propagate_nan(a, b);
+        }
+        if r.is_nan() {
+            self.raise(sw::IE);
+            return INDEFINITE;
         }
         if r.is_infinite() && a.is_finite() && b.is_finite() {
             self.raise(sw::OE | sw::PE);
@@ -361,7 +371,7 @@ fn st_f80(cpu: &Cpu, mem: &mut GuestMemory, a: u32, v: f64) -> R {
 /// Load a floating/integer memory operand as f64 according to its iced memory size.
 fn load_mem(cpu: &Cpu, mem: &GuestMemory, ins: &Instruction, a: u32) -> Result<Option<f64>, CpuExit> {
     Ok(Some(match ins.memory_size() {
-        MemorySize::Float32 => f32::from_bits(ld_u32(cpu, mem, a)?) as f64,
+        MemorySize::Float32 => conv::f32_to_f64(f32::from_bits(ld_u32(cpu, mem, a)?)),
         MemorySize::Float64 => f64::from_bits(ld_u64(cpu, mem, a)?),
         MemorySize::Float80 => ld_f80(cpu, mem, a)?,
         MemorySize::Int16 => ld_u16(cpu, mem, a)? as i16 as f64,
@@ -593,7 +603,7 @@ fn exec_x87(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction, m: Mnemonic
             if has_mem {
                 match ins.memory_size() {
                     MemorySize::Float32 => {
-                        let f = v as f32;
+                        let f = conv::f64_to_f32(v);
                         if f.is_infinite() && v.is_finite() {
                             cpu.fpu.raise(sw::OE | sw::PE);
                         }
@@ -720,7 +730,7 @@ fn exec_x87(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction, m: Mnemonic
         }
         M::Fsqrt => {
             let v = cpu.fpu.get(0);
-            let r = v.sqrt();
+            let r = math::sqrt(v);
             let r = cpu.fpu.finish(r, v, 0.0);
             cpu.fpu.set_st(0, r);
         }
@@ -736,7 +746,10 @@ fn exec_x87(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction, m: Mnemonic
             let a = cpu.fpu.get(0);
             let b = cpu.fpu.get(1);
             let r = if a.is_nan() || b.is_nan() {
-                f64::NAN
+                if math::is_snan(a) || math::is_snan(b) {
+                    cpu.fpu.raise(sw::IE);
+                }
+                math::propagate_nan(a, b)
             } else if b.is_infinite() {
                 if b > 0.0 {
                     if a == 0.0 {
@@ -778,29 +791,18 @@ fn exec_x87(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction, m: Mnemonic
             let a = cpu.fpu.get(0);
             let b = cpu.fpu.get(1);
             if a.is_nan() || b.is_nan() || a.is_infinite() || b == 0.0 {
-                if !(a.is_nan() || b.is_nan()) {
+                if !(a.is_nan() || b.is_nan()) || math::is_snan(a) || math::is_snan(b) {
                     cpu.fpu.raise(sw::IE);
                 }
-                cpu.fpu.set_st(0, if a.is_nan() { a } else if b.is_nan() { b } else { INDEFINITE });
+                cpu.fpu.set_st(0, if a.is_nan() || b.is_nan() { math::propagate_nan(a, b) } else { INDEFINITE });
                 cpu.fpu.set_cc(false, false, false, false);
             } else if b.is_infinite() {
                 cpu.fpu.set_cc(false, false, false, false);
             } else {
-                // fmod is exact. The quotient is only used for its low 3 bits.
-                let mut r = a % b;
-                let mut q = ((a - r) / b).abs().round();
-                if m == M::Fprem1 {
-                    let half = b.abs() / 2.0;
-                    let ra = r.abs();
-                    let odd = (q % 2.0) == 1.0;
-                    if ra > half || (ra == half && odd) {
-                        r -= b.abs().copysign(r);
-                        q += 1.0;
-                    }
-                }
-                let qi = if q.is_finite() && q < 1.8e19 { q as u64 } else { 0 };
-                cpu.fpu.set_st(0, if r == 0.0 { 0.0f64.copysign(a) } else { r });
-                cpu.fpu.set_cc((qi >> 1) & 1 == 1, false, qi & 1 == 1, (qi >> 2) & 1 == 1);
+                // Exact integer long division (no host fmod); q = low 3 bits of the quotient.
+                let math::Rem { r, q } = math::fprem(a, b, m == M::Fprem1);
+                cpu.fpu.set_st(0, r);
+                cpu.fpu.set_cc((q >> 1) & 1 == 1, false, q & 1 == 1, (q >> 2) & 1 == 1);
             }
         }
         M::Fsin | M::Fcos | M::Fptan | M::Fsincos => {
@@ -810,19 +812,20 @@ fn exec_x87(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction, m: Mnemonic
                 cpu.fpu.set_cc(false, true, false, false);
                 return Ok(());
             }
-            if v.is_infinite() {
+            if v.is_infinite() || math::is_snan(v) {
                 cpu.fpu.raise(sw::IE);
             }
             cpu.fpu.status &= !(sw::C2 | sw::C1);
             match m {
-                M::Fsin => cpu.fpu.set_st(0, if v.is_infinite() { INDEFINITE } else { v.sin() }),
-                M::Fcos => cpu.fpu.set_st(0, if v.is_infinite() { INDEFINITE } else { v.cos() }),
+                // Deterministic (pure-Rust fdlibm) — never the host libm. See fpu_math.rs.
+                M::Fsin => cpu.fpu.set_st(0, math::sin(v)),
+                M::Fcos => cpu.fpu.set_st(0, math::cos(v)),
                 M::Fptan => {
-                    cpu.fpu.set_st(0, if v.is_infinite() { INDEFINITE } else { v.tan() });
+                    cpu.fpu.set_st(0, math::tan(v));
                     cpu.fpu.push_checked(1.0);
                 }
                 _ => {
-                    let (s, c) = if v.is_infinite() { (INDEFINITE, INDEFINITE) } else { v.sin_cos() };
+                    let (s, c) = (math::sin(v), math::cos(v));
                     cpu.fpu.set_st(0, s);
                     cpu.fpu.push_checked(c);
                 }
@@ -832,13 +835,19 @@ fn exec_x87(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction, m: Mnemonic
             let x = cpu.fpu.get(0);
             let y = cpu.fpu.get(1);
             cpu.fpu.status &= !sw::C1;
-            cpu.fpu.set_st(1, y.atan2(x));
+            if math::is_snan(x) || math::is_snan(y) {
+                cpu.fpu.raise(sw::IE);
+            }
+            cpu.fpu.set_st(1, math::atan2(y, x));
             cpu.fpu.pop();
         }
         M::F2xm1 => {
             let x = cpu.fpu.get(0);
             cpu.fpu.status &= !sw::C1;
-            cpu.fpu.set_st(0, (x * std::f64::consts::LN_2).exp_m1());
+            if math::is_snan(x) {
+                cpu.fpu.raise(sw::IE);
+            }
+            cpu.fpu.set_st(0, math::exp2m1(x));
         }
         M::Fyl2x | M::Fyl2xp1 => {
             let x = cpu.fpu.get(0);
@@ -848,9 +857,9 @@ fn exec_x87(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction, m: Mnemonic
                 if x == 0.0 && y.is_finite() && y != 0.0 {
                     cpu.fpu.raise(sw::ZE);
                 }
-                y * x.log2()
+                y * math::log2(x)
             } else {
-                y * (x.ln_1p() / std::f64::consts::LN_2)
+                y * math::log2_1p(x)
             };
             let r = cpu.fpu.finish(r, x, y);
             cpu.fpu.set_st(1, r);

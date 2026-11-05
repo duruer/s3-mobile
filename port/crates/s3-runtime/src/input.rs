@@ -53,6 +53,8 @@ impl InputState {
             HostEvent::Pause => self.paused = true,
             HostEvent::Resume => self.paused = false,
             HostEvent::Char(_) => {}
+            // Raw touch is for the mod layer; game consumers never see it.
+            HostEvent::Pointer { .. } => return,
         }
         if self.log.len() == LOG_CAP {
             self.log.pop_front();

@@ -141,6 +141,8 @@ pub struct Stats {
     pub thunk_calls: u64,
     pub presents: u64,
     pub exceptions: u64,
+    /// Guest-address hooks dispatched (see `ext.rs`).
+    pub hooks: u64,
 }
 
 /// Process-wide guest data created by [`Machine::setup_process`].
@@ -206,6 +208,8 @@ pub struct Machine {
     pub stats: Stats,
     /// Instructions per scheduling quantum.
     pub quantum: u64,
+    /// Mod extension points (hooks, input filter, overlay), see `ext.rs`.
+    pub ext: crate::ext::MachineExt,
     services: Vec<(String, Service)>,
     state: HashMap<TypeId, Box<dyn Any + Send>>,
     stop: Option<StopReason>,
@@ -248,6 +252,7 @@ impl Machine {
             trace: TraceConfig::from_env(),
             stats: Stats::default(),
             quantum: DEFAULT_QUANTUM,
+            ext: Default::default(),
             services: Vec::new(),
             state: HashMap::new(),
             stop: None,
@@ -289,6 +294,22 @@ impl Machine {
     /// The current mouse cursor (`crate::cursor::CursorState`) is composed into a host-side copy of `fb`.
     pub fn present(&mut self, fb: &crate::FrameBuffer) {
         self.stats.presents += 1;
+        self.present_inner(fb);
+    }
+
+    /// Overlay (mods) + cursor composition, then `Host::present`.
+    pub(crate) fn present_inner(&mut self, fb: &crate::FrameBuffer) {
+        if self.ext.overlay_compose.is_some() {
+            if let Some(out) = self.apply_overlay(fb) {
+                self.present_cursor(&out);
+                self.recycle_overlay(out);
+                return;
+            }
+        }
+        self.present_cursor(fb);
+    }
+
+    fn present_cursor(&mut self, fb: &crate::FrameBuffer) {
         let (x, y) = (self.input.mouse_x, self.input.mouse_y);
         let cs = self.state::<crate::cursor::CursorState>();
         let mut c = cs.borrow_mut();
@@ -443,6 +464,7 @@ impl Machine {
 
         let mut cpu = Cpu::new();
         cpu.fs_base = teb_addr;
+        cpu.set_hooks(self.ext.hook_addrs.clone());
         cpu.regs[ESP] = top - 16;
         cpu.push32(&mut self.mem, param);
         cpu.push32(&mut self.mem, self.thread_exit_thunk);
@@ -628,7 +650,7 @@ impl Machine {
             return SliceResult::Stopped;
         }
         for e in self.host.poll_events() {
-            self.input.push(e);
+            self.filter_event(e);
         }
         let services: Vec<Service> = self.services.iter().map(|(_, f)| *f).collect();
         for s in services {
@@ -703,6 +725,10 @@ impl Machine {
                     Disp::ThreadExited => return true,
                     Disp::Stop => return progress,
                 },
+                CpuExit::Hook(a) => {
+                    progress = true;
+                    self.dispatch_hook(a);
+                }
                 CpuExit::ReturnMagic => {
                     self.stop(StopReason::Error(format!("thread {slot}: return to magic address outside call_guest")));
                     return progress;
@@ -875,6 +901,7 @@ impl Machine {
                 CpuExit::Budget => {
                     self.run_others(slot);
                 }
+                CpuExit::Hook(a) => self.dispatch_hook(a),
                 CpuExit::Thunk(a) => match self.dispatch_thunk(a) {
                     Disp::Continue => {}
                     Disp::Blocked => {
