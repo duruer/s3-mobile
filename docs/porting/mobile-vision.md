@@ -34,8 +34,13 @@ without shipping a modified exe:
 | W6 | Launcher (Tauri 2 + Svelte 5) | Folder/zip picker via SAF, validate by hash, import into app storage, settings, i18n, account/lobby UI | — |
 | W7 | Real-device tuning | arm64 phone performance, battery, thermal, interpreter speedups | a phone |
 
-## Open decisions (ask the user)
+## Decisions (user, 2026-11-06)
 
-- Crossplay target for online: our own network only (mobile + our desktop app), or also existing Windows players
-  (Settlers United / aLobby, i.e. real DirectPlay over a VPN)?
-- HUD direction: keep the original panel (scaled + gestures), or replace it with a native mobile HUD (JSettlers-like)?
+- **Online:** our own network first (mobile + our desktop app, own lobby/relay). Crossplay with Windows players
+  (Settlers United / aLobby, real DirectPlay) comes later. Design the protocol layer so PC crossplay can be added.
+- **UI:** play on the original panel is the preferred direction. Deliver **two selectable alternatives** so the user can compare:
+  - **A "Classic Touch"**: the original panel and game UI, patched for touch. Context-aware taps (no long-press right-click),
+    larger hit areas, gestures, the panel scaled for readability.
+  - **B "Mobile HUD"**: a native large-button HUD (JSettlers-like) on top of or instead of the original panel.
+  Both modes can be switched in settings and are shown side by side with screenshots.
+- Multi-agent workflows approved for W1-W5.
