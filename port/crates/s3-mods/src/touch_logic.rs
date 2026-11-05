@@ -92,6 +92,9 @@ pub struct View {
     pub hits: Vec<Hit>,
     /// UI selection (settler ids).
     pub selected: Vec<u16>,
+    /// Visible part of the frame and extra top margin (FPS counter) for the ✕ button (docs/porting/display.md:
+    /// Fill mode crops the frame). `None` = whole frame.
+    pub vis: Option<((i32, i32, i32, i32), i32)>,
 }
 
 /// What a touch does in game.
@@ -134,8 +137,16 @@ pub fn find_hit(hits: &[Hit], x: i32, y: i32) -> Option<Hit> {
 
 /// Cancel button (✕) shown in build placement mode: top-right corner of the map view.
 pub fn cancel_button(l: &Layout) -> (i32, i32, i32, i32) {
+    cancel_button_in(l, None)
+}
+
+/// [`cancel_button`] inside the visible part of the frame (`View::vis`).
+pub fn cancel_button_in(l: &Layout, vis: Option<((i32, i32, i32, i32), i32)>) -> (i32, i32, i32, i32) {
     let s = 40;
-    (l.screen_w - s - 8, 8, s, s)
+    match vis {
+        Some(((vx, vy, vw, _), top)) => ((vx + vw).min(l.screen_w) - s - 8, vy + 8 + top, s, s),
+        None => (l.screen_w - s - 8, 8, s, s),
+    }
 }
 
 fn inside(r: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
@@ -145,7 +156,7 @@ fn inside(r: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
 /// One-finger tap.
 pub fn decide_tap(v: &View, x: i32, y: i32) -> TapAction {
     let (Some(l), Some(mode)) = (v.layout, v.mode) else { return TapAction::Click { x, y } };
-    if mode == Mode::BuildPlacement && inside(cancel_button(&l), x, y) {
+    if mode == Mode::BuildPlacement && inside(cancel_button_in(&l, v.vis), x, y) {
         return TapAction::CancelBuild;
     }
     if l.region(x, y) != Region::Map {
@@ -363,7 +374,7 @@ mod tests {
     use super::*;
 
     fn view(mode: Mode, hits: Vec<Hit>) -> View {
-        View { layout: Some(Layout::GOG_640), mode: Some(mode), hits, selected: vec![] }
+        View { layout: Some(Layout::GOG_640), mode: Some(mode), hits, selected: vec![], vis: None }
     }
     const OWN_SOLDIER: Hit = Hit { kind: 1, x: 300, y: 300, id: 41, own: true };
     const ENEMY: Hit = Hit { kind: 2, x: 500, y: 200, id: 90, own: false };

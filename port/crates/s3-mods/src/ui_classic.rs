@@ -181,6 +181,13 @@ enum FloatBtn {
     Menu,
     /// Shown while the menu is open: switch to UI mode B (the HUD's menu has the way back).
     HudMode,
+    /// Shown while the menu is open: cycle the FPS counter (docs/porting/display.md).
+    Fps,
+    /// Shown while the menu is open: cycle the display mode (Fit / Fill / Stretch / Native wide).
+    Screen,
+    /// Shown while the menu is open: zoom in / out one level (render resolution, docs/porting/resolution-zoom.md).
+    ZoomIn,
+    ZoomOut,
 }
 
 /// The mode A mod.
@@ -196,6 +203,10 @@ pub struct ClassicTouch {
     texts: std::collections::HashMap<u32, Option<String>>,
     dirty: bool,
     logged_active: bool,
+    /// Visible part of the frame (`display::visible_game_rect`; cropped in Fill mode) and display settings, for the
+    /// floating buttons.
+    vis: Option<(i32, i32, i32, i32)>,
+    disp: crate::display::DisplaySettings,
 }
 
 /// Snap radius in panel grid cells (3 px per cell at 640x480 -> 12 px).
@@ -226,6 +237,8 @@ impl ClassicTouch {
             texts: Default::default(),
             dirty: false,
             logged_active: false,
+            vis: None,
+            disp: crate::display::DisplaySettings::default(),
         }
     }
 
@@ -236,6 +249,8 @@ impl ClassicTouch {
             (s.gd, s.logic, s.last_input_ms, s.hooked)
         };
         let frame = m.last_frame_size();
+        self.vis = Some(crate::display::visible_game_rect(m));
+        self.disp = crate::display::display_settings(m);
         let layout = Layout::read(&m.mem).filter(|l| (l.screen_w as u32, l.screen_h as u32) == frame);
         self.in_game = hooked
             && layout.is_some()
@@ -307,11 +322,21 @@ impl ClassicTouch {
         let Some(l) = self.view.layout else { return Vec::new() };
         // Bottom right of the map: the top right corner holds touch.rs' build-placement ✕ button.
         let (w, h) = (76, 38);
-        let menu = (l.screen_w - w - 8, l.screen_h - h - 14, w, h);
+        // Right / bottom edge of the visible area (Fill mode crops the frame).
+        let (vx, vy, vw, vh) = self.vis.filter(|r| r.2 > 0 && r.3 > 0).unwrap_or((0, 0, l.screen_w, l.screen_h));
+        let (right, bottom) = ((vx + vw).min(l.screen_w), (vy + vh).min(l.screen_h));
+        let menu = (right - w - 8, bottom - h - 14, w, h);
         let mut v = vec![(FloatBtn::Menu, menu)];
         if self.view.panel.page == 7 {
             let hw = 150;
-            v.push((FloatBtn::HudMode, (l.screen_w - hw - 8, menu.1 - h - 12, hw, h)));
+            let mut y = menu.1;
+            for k in [FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut] {
+                y -= h + 12;
+                if y < vy + 4 {
+                    break;
+                }
+                v.push((k, (right - hw - 8, y, hw, h)));
+            }
         }
         v
     }
@@ -432,6 +457,30 @@ impl ClassicTouch {
             let (bg, text) = match k {
                 FloatBtn::Menu => (BG, if menu_open { "Close" } else { "Menu" }),
                 FloatBtn::HudMode => (BG, "UI: Mobile HUD"),
+                FloatBtn::Fps => (BG, match self.disp.fps_counter {
+                    crate::display::FpsCounter::Off => "FPS: off",
+                    crate::display::FpsCounter::Fps => "FPS: on",
+                    crate::display::FpsCounter::Detailed => "FPS: details",
+                }),
+                FloatBtn::Screen => (BG, match self.disp.mode {
+                    crate::display::DisplayMode::Fit => "Screen: Fit",
+                    crate::display::DisplayMode::Fill => "Screen: Fill",
+                    crate::display::DisplayMode::Stretch => "Screen: Stretch",
+                    crate::display::DisplayMode::NativeWide => "Screen: Wide",
+                }),
+                FloatBtn::ZoomIn | FloatBtn::ZoomOut => (BG, ""),
+            };
+            let zoom_label;
+            let text = match k {
+                FloatBtn::ZoomIn | FloatBtn::ZoomOut => {
+                    let (lv, n) = (crate::zoom::level(m) + 1, crate::zoom::level_count());
+                    let sign = if k == FloatBtn::ZoomIn { "+" } else { "-" };
+                    let word = if k == FloatBtn::ZoomIn { "in" } else { "out" };
+                    let _ = sign;
+                    zoom_label = if crate::zoom::enabled(m) { format!("Zoom {word} ({lv}/{n})") } else { format!("Zoom {word} (off)") };
+                    zoom_label.as_str()
+                }
+                _ => text,
             };
             let bg = if pressed { GOLD.fade(0.85) } else { bg };
             c.fill_rounded_rect(x, y, w, h, 9.0, bg);
@@ -526,6 +575,26 @@ impl Mod for ClassicTouch {
                                     m.log(LogLevel::Info, "ui-classic: switching to UI mode B (Mobile HUD)");
                                     let _ = crate::set_settings(m, s);
                                     Action::CloseMenu
+                                }
+                                FloatBtn::ZoomIn | FloatBtn::ZoomOut => {
+                                    // Render resolution only (res.rs switches at the next frame).
+                                    if k == FloatBtn::ZoomIn {
+                                        crate::zoom::zoom_in(m);
+                                    } else {
+                                        crate::zoom::zoom_out(m);
+                                    }
+                                    self.dirty = true;
+                                    return ModEvent::Consumed;
+                                }
+                                FloatBtn::Fps | FloatBtn::Screen => {
+                                    // Presentation settings only: no game action.
+                                    if k == FloatBtn::Fps {
+                                        crate::display::cycle_fps(m);
+                                    } else {
+                                        crate::display::cycle_mode(m);
+                                    }
+                                    self.disp = crate::display::display_settings(m);
+                                    return ModEvent::Consumed;
                                 }
                             };
                             m.state::<ClassicShared>().borrow_mut().pending.push(action);

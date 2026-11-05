@@ -103,6 +103,46 @@ pub enum CpuExit {
 /// caches ([`Cpu::set_hooks`] does that).
 pub type HookAddrs = std::collections::HashSet<u32>;
 
+/// Native replacement of a guest code region ("fast path"), see [`NativeBlock`].
+///
+/// Called at the start of the block at the registered address with the remaining instruction budget. It either
+/// declines (`None`: nothing changed, the interpreter runs the original code) or runs the region natively and
+/// returns `Some(k)`: the number of guest instructions the original code would have retired (`k <= budget`),
+/// with registers, EFLAGS, memory and EIP exactly as the original code leaves them at that point. It must stop at
+/// a point the original code passes through (e.g. a loop head) and must decline instead of faulting.
+pub type NativeFn = fn(&mut Cpu, &mut GuestMemory, u64) -> Option<u64>;
+
+/// A native fast path for the guest code at a fixed address (registered per exe by the host, e.g. s3-mods).
+#[derive(Clone, Copy)]
+pub struct NativeBlock {
+    pub name: &'static str,
+    /// Length of the guest code region the fast path replaces (from the start address).
+    pub len: u32,
+    /// [`code_hash`] of those bytes; the fast path is used only if it matches when the block is decoded (so no
+    /// game code needs to be stored in our sources).
+    pub hash: u64,
+    pub f: NativeFn,
+}
+
+/// FNV-1a 64-bit hash of guest code bytes (for [`NativeBlock::hash`]).
+pub fn code_hash(b: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &x in b {
+        h ^= x as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    h
+}
+
+impl std::fmt::Debug for NativeBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NativeBlock({})", self.name)
+    }
+}
+
+/// Native fast paths by guest start address.
+pub type NativeBlocks = HashMap<u32, NativeBlock>;
+
 /// Register snapshot (for host->guest calls, thread switches and SEH `CONTEXT`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Context {
@@ -118,10 +158,19 @@ pub struct Block {
     /// Address after the last instruction.
     pub end: u32,
     pub insns: Vec<Instruction>,
-    /// Handler per instruction (threaded dispatch, see `fast.rs`).
-    handlers: Vec<fast::Handler>,
+    /// Handler + pre-decoded operands per instruction (threaded dispatch, see `fast.rs`).
+    ops: Vec<fast::Op>,
     /// `start` is a hook address (see [`HookAddrs`]).
     pub hooked: bool,
+    /// Times this block was entered (profiling; see [`DecodeCache::profile`]).
+    pub entries: u64,
+    /// Native fast path for this block's start address (see [`NativeFn`]).
+    native: Option<NativeFn>,
+    /// End of the guest code covered by `native` (for invalidation; 0 = none).
+    native_end: u32,
+    /// Block chaining: the last two successors `(eip, arena index)` seen after this block (eip 0 = empty).
+    /// Cleared whenever arena indices change (`invalidate_range`).
+    succ: [(u32, u32); 2],
 }
 
 #[derive(Default)]
@@ -159,6 +208,8 @@ pub struct DecodeCache {
     generic_only: bool,
     /// Hook addresses (blocks are split before them and flagged).
     hooks: Option<std::sync::Arc<HookAddrs>>,
+    /// Native fast paths (looked up when a block is decoded).
+    natives: Option<std::sync::Arc<NativeBlocks>>,
 }
 
 impl DecodeCache {
@@ -182,11 +233,12 @@ impl DecodeCache {
     pub fn invalidate_range(&mut self, start: u32, len: u32) {
         let end = start as u64 + len as u64;
         let before = self.blocks.len();
-        self.blocks.retain(|b| !((b.start as u64) < end && (b.end as u64) > start as u64));
+        self.blocks.retain(|b| !((b.start as u64) < end && (b.end.max(b.native_end) as u64) > start as u64));
         if self.blocks.len() != before {
             self.map.clear();
-            for (i, b) in self.blocks.iter().enumerate() {
+            for (i, b) in self.blocks.iter_mut().enumerate() {
                 self.map.insert(b.start, i as u32);
+                b.succ = [(0, 0); 2];
             }
             self.l1.clear();
         }
@@ -206,7 +258,13 @@ impl DecodeCache {
         let idx = match self.map.get(&eip) {
             Some(&i) => i as usize,
             None => {
-                let b = decode_block(eip, mem, self.generic_only, self.hooks.as_deref())?;
+                let mut b = decode_block(eip, mem, self.generic_only, self.hooks.as_deref())?;
+                if let Some(nb) = self.natives.as_ref().and_then(|n| n.get(&eip)) {
+                    if code_hash(mem.slice(eip, nb.len as usize)) == nb.hash {
+                        b.native = Some(nb.f);
+                        b.native_end = eip.wrapping_add(nb.len);
+                    }
+                }
                 self.blocks.push(b);
                 let i = self.blocks.len() - 1;
                 self.map.insert(eip, i as u32);
@@ -215,6 +273,63 @@ impl DecodeCache {
         };
         self.l1[slot] = (eip, idx as u32 + 1);
         Ok(idx)
+    }
+
+    /// Profile: `(start, instruction count, entries)` of every cached block (entries since decode).
+    pub fn profile(&self) -> Vec<(u32, u32, u64)> {
+        self.blocks.iter().map(|b| (b.start, b.insns.len() as u32, b.entries)).collect()
+    }
+
+    /// Disassembly of the `top` blocks with most executed instructions; instructions that use the generic
+    /// (slow) handler are marked `*` (profiling aid).
+    pub fn profile_disasm(&self, top: usize) -> String {
+        use iced_x86::Formatter;
+        let mut v: Vec<&Block> = self.blocks.iter().filter(|b| b.entries > 0).collect();
+        v.sort_by_key(|b| std::cmp::Reverse(b.entries * b.insns.len() as u64));
+        let mut f = iced_x86::IntelFormatter::new();
+        let mut out = String::new();
+        for b in v.into_iter().take(top) {
+            out.push_str(&format!("block {:#x} entries {} len {}\n", b.start, b.entries, b.insns.len()));
+            for (ins, op) in b.insns.iter().zip(&b.ops) {
+                let mut t = String::new();
+                f.format(ins, &mut t);
+                let g = if op.h as usize == fast::generic as fast::Handler as usize { '*' } else { ' ' };
+                out.push_str(&format!("  {g} {:#x} {t}\n", ins.ip32()));
+            }
+        }
+        out
+    }
+
+    /// Executed instruction forms (mnemonic + operand kinds, `*` = generic handler), weighted by block entries.
+    pub fn profile_forms(&self) -> Vec<(String, u64)> {
+        let mut m: HashMap<String, u64> = HashMap::new();
+        for b in self.blocks.iter().filter(|b| b.entries > 0) {
+            for (ins, op) in b.insns.iter().zip(&b.ops) {
+                let g = if op.h as usize == fast::generic as fast::Handler as usize { "*" } else { " " };
+                let mut k = format!("{g}{:?}", ins.mnemonic());
+                for i in 0..ins.op_count() {
+                    let kind = ins.op_kind(i);
+                    let d = match kind {
+                        iced_x86::OpKind::Register => format!("r{}", ins.op_register(i).size() * 8),
+                        iced_x86::OpKind::Memory => format!("m{}", ins.memory_size().size() * 8),
+                        _ => format!("{kind:?}"),
+                    };
+                    k.push(' ');
+                    k.push_str(&d);
+                }
+                *m.entry(k).or_default() += b.entries;
+            }
+        }
+        let mut v: Vec<_> = m.into_iter().collect();
+        v.sort_by_key(|e| std::cmp::Reverse(e.1));
+        v
+    }
+
+    /// Zero all block entry counters.
+    pub fn reset_profile(&mut self) {
+        for b in &mut self.blocks {
+            b.entries = 0;
+        }
     }
 
     /// The block starting at `eip`, if it is cached.
@@ -228,7 +343,7 @@ fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool, hooks: Option<&
     let bytes = mem.slice(eip, avail.max(1));
     let mut dec = Decoder::with_ip(32, bytes, eip as u64, DecoderOptions::NONE);
     let mut insns = Vec::with_capacity(8);
-    let mut handlers = Vec::with_capacity(8);
+    let mut ops = Vec::with_capacity(8);
     let mut end = eip;
     while dec.can_decode() && insns.len() < MAX_BLOCK_INSNS {
         let ins = dec.decode();
@@ -244,7 +359,7 @@ fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool, hooks: Option<&
         }
         end = ins.next_ip() as u32;
         let flow = ins.flow_control();
-        handlers.push(if generic_only { fast::generic_handler() } else { fast::select(&ins) });
+        ops.push(if generic_only { fast::select_generic(&ins) } else { fast::select(&ins) });
         insns.push(ins);
         if flow != FlowControl::Next {
             break;
@@ -264,9 +379,12 @@ fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool, hooks: Option<&
         return Err(CpuExit::Fault { eip, kind: FaultKind::InvalidOpcode, detail: "truncated".into() });
     }
     insns.shrink_to_fit();
-    handlers.shrink_to_fit();
+    ops.shrink_to_fit();
+    for (op, ins) in ops.iter_mut().zip(&insns) {
+        op.ins = ins;
+    }
     let hooked = hooks.is_some_and(|h| h.contains(&eip));
-    Ok(Block { start: eip, end, insns, handlers, hooked })
+    Ok(Block { start: eip, end, insns, ops, hooked, entries: 0, native: None, native_end: 0, succ: [(0, 0); 2] })
 }
 
 /// One guest CPU (one per guest thread).
@@ -274,7 +392,16 @@ pub struct Cpu {
     /// General registers, see [`EAX`]..[`EDI`].
     pub regs: [u32; 8],
     pub eip: u32,
-    pub eflags: u32,
+    /// EFLAGS storage: all bits when `lk == NONE`, else only the non-status bits are valid. Read with
+    /// [`Cpu::eflags`], write with [`Cpu::set_eflags`] (lazy flags, see `flags.rs`).
+    pub(crate) ef: u32,
+    /// Lazy-flag state: kind (`flags::lk`), operand size, operands, result, saved CF (inc/dec).
+    pub(crate) lk: u8,
+    pub(crate) lsz: u8,
+    pub(crate) la: u32,
+    pub(crate) lb: u32,
+    pub(crate) lr: u32,
+    pub(crate) lcf: u32,
     /// Linear base of FS (the thread's TEB).
     pub fs_base: u32,
     pub gs_base: u32,
@@ -288,6 +415,8 @@ pub struct Cpu {
     pub cur_ip: u32,
     /// Hook address whose next block entry must not exit with [`CpuExit::Hook`] (0 = none).
     hook_skip: u32,
+    /// Exit produced by a handler that returned `false` (see `fast.rs`).
+    pending_exit: Option<CpuExit>,
 }
 
 impl Default for Cpu {
@@ -301,7 +430,13 @@ impl Cpu {
         Cpu {
             regs: [0; 8],
             eip: 0,
-            eflags: 0x202,
+            ef: 0x202,
+            lk: 0,
+            lsz: 4,
+            la: 0,
+            lb: 0,
+            lr: 0,
+            lcf: 0,
             fs_base: 0,
             gs_base: 0,
             fpu: Fpu::new(),
@@ -309,6 +444,7 @@ impl Cpu {
             cache: DecodeCache::default(),
             cur_ip: 0,
             hook_skip: 0,
+            pending_exit: None,
         }
     }
 
@@ -319,14 +455,14 @@ impl Cpu {
 
     /// Snapshot of registers, EIP and EFLAGS.
     pub fn context(&self) -> Context {
-        Context { regs: self.regs, eip: self.eip, eflags: self.eflags }
+        Context { regs: self.regs, eip: self.eip, eflags: self.eflags() }
     }
 
     /// Restore a snapshot.
     pub fn set_context(&mut self, c: &Context) {
         self.regs = c.regs;
         self.eip = c.eip;
-        self.eflags = c.eflags;
+        self.set_eflags(c.eflags);
     }
 
     /// Push a dword on the guest stack.
@@ -356,6 +492,12 @@ impl Cpu {
         self.hook_skip = 0;
     }
 
+    /// Install native fast paths (`None` = none). Clears the decode cache.
+    pub fn set_native_blocks(&mut self, natives: Option<std::sync::Arc<NativeBlocks>>) {
+        self.cache.clear();
+        self.cache.natives = natives.filter(|n| !n.is_empty());
+    }
+
     /// The installed hook address set.
     pub fn hooks(&self) -> Option<&std::sync::Arc<HookAddrs>> {
         self.cache.hooks.as_ref()
@@ -382,6 +524,8 @@ impl Cpu {
 
     fn run_with(&mut self, cache: &mut DecodeCache, mem: &mut GuestMemory, max_instructions: u64) -> CpuExit {
         let mut left = max_instructions;
+        // Arena index of the previous block (for chaining), usize::MAX = none.
+        let mut prev = usize::MAX;
         loop {
             if self.eip >= layout::THUNK_BASE {
                 if self.eip == layout::MAGIC_RETURN {
@@ -392,11 +536,33 @@ impl Cpu {
             if left == 0 {
                 return CpuExit::Budget;
             }
-            let idx = match cache.lookup(self.eip, mem) {
-                Ok(i) => i,
-                Err(e) => return e,
+            let eip = self.eip;
+            let idx = if prev != usize::MAX {
+                let p = &cache.blocks[prev];
+                if p.succ[0].0 == eip {
+                    p.succ[0].1 as usize
+                } else if p.succ[1].0 == eip {
+                    p.succ[1].1 as usize
+                } else {
+                    let i = match cache.lookup(eip, mem) {
+                        Ok(i) => i,
+                        Err(e) => return e,
+                    };
+                    let p = &mut cache.blocks[prev];
+                    p.succ[1] = p.succ[0];
+                    p.succ[0] = (eip, i as u32);
+                    i
+                }
+            } else {
+                match cache.lookup(eip, mem) {
+                    Ok(i) => i,
+                    Err(e) => return e,
+                }
             };
-            let blk = &cache.blocks[idx];
+            prev = idx;
+            let blk = &mut cache.blocks[idx];
+            blk.entries += 1;
+            let blk = &*blk;
             if blk.hooked {
                 if self.hook_skip == self.eip {
                     self.hook_skip = 0;
@@ -404,26 +570,44 @@ impl Cpu {
                     return CpuExit::Hook(self.eip);
                 }
             }
-            let n = blk.insns.len().min(left.min(usize::MAX as u64) as usize);
-            for (ins, h) in blk.insns[..n].iter().zip(&blk.handlers[..n]) {
-                let next = ins.next_ip32();
-                self.cur_ip = ins.ip32();
-                self.eip = next;
-                if let Err(exit) = h(self, mem, ins) {
-                    if let CpuExit::Fault { .. } = exit {
-                        self.eip = self.cur_ip;
+            if let Some(f) = blk.native {
+                if let Some(k) = f(self, mem, left) {
+                    debug_assert!(k <= left);
+                    self.instructions += k;
+                    left -= k.min(left);
+                    continue;
+                }
+            }
+            let n = blk.ops.len().min(left.min(usize::MAX as u64) as usize);
+            // Inside a block only the last instruction can change EIP (blocks end at the first control-flow
+            // instruction), so the loop needs no per-instruction EIP check.
+            let ops = &blk.ops[..n];
+            let base = ops.as_ptr();
+            let mut p = base;
+            // SAFETY: `p` walks `ops[..n]` (one past the end is only compared, never read).
+            let end = unsafe { base.add(n) };
+            while p != end {
+                let op = unsafe { &*p };
+                self.eip = op.next;
+                if !(op.h)(self, mem, op) {
+                    let i = unsafe { p.offset_from(base) } as usize;
+                    let mut exit = self.pending_exit.take().unwrap_or(CpuExit::Halt);
+                    if let CpuExit::Fault { eip, .. } = &mut exit {
+                        let ip = blk.insns[i].ip32();
+                        *eip = ip;
+                        self.eip = ip;
+                        self.cur_ip = ip;
+                        self.instructions += i as u64;
                     } else {
                         // Interrupt/Halt complete the instruction.
-                        self.instructions += 1;
+                        self.instructions += i as u64 + 1;
                     }
                     return exit;
                 }
-                self.instructions += 1;
-                left -= 1;
-                if self.eip != next {
-                    break;
-                }
+                p = unsafe { p.add(1) };
             }
+            self.instructions += n as u64;
+            left -= n as u64;
         }
     }
 

@@ -86,6 +86,14 @@ impl Cpu {
         CpuExit::Fault { eip: self.cur_ip, kind, detail: detail.into() }
     }
 
+    /// Access-violation exit (out of line: keeps the callers' fast paths small).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn av_exit(&self, addr: u32, write: bool) -> CpuExit {
+        let what = if write { "write" } else { "read" };
+        self.fault(FaultKind::AccessViolation { addr, write }, format!("{what} {addr:#x}"))
+    }
+
     fn unimplemented(&self, ins: &Instruction) -> CpuExit {
         self.fault(FaultKind::Unimplemented, format!("{:?}: {}", ins.mnemonic(), ins))
     }
@@ -129,7 +137,7 @@ impl Cpu {
     #[inline(always)]
     pub fn rd(&self, mem: &GuestMemory, addr: u32, size: u32) -> Result<u32, CpuExit> {
         if addr < layout::NULL_GUARD_END {
-            return Err(self.fault(FaultKind::AccessViolation { addr, write: false }, format!("read {addr:#x}")));
+            return Err(self.av_exit(addr, false));
         }
         Ok(match size {
             1 => mem.read_u8(addr) as u32,
@@ -142,7 +150,7 @@ impl Cpu {
     #[inline(always)]
     pub fn wr(&self, mem: &mut GuestMemory, addr: u32, size: u32, v: u32) -> R {
         if addr < layout::NULL_GUARD_END {
-            return Err(self.fault(FaultKind::AccessViolation { addr, write: true }, format!("write {addr:#x}")));
+            return Err(self.av_exit(addr, true));
         }
         match size {
             1 => mem.write_u8(addr, v as u8),
@@ -488,16 +496,16 @@ pub(crate) fn step(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction) -> R
             }
             Ok(())
         }
-        M::Pushfd => cpu.push(mem, 4, (cpu.eflags & 0x00FC_FFFF) | 2),
-        M::Pushf => cpu.push(mem, 2, cpu.eflags & 0xFFFF),
+        M::Pushfd => cpu.push(mem, 4, (cpu.eflags() & 0x00FC_FFFF) | 2),
+        M::Pushf => cpu.push(mem, 2, cpu.eflags() & 0xFFFF),
         M::Popfd => {
             let v = cpu.pop(mem, 4)?;
-            cpu.eflags = (v & POPF_MASK) | fl::IF | 2;
+            cpu.set_eflags((v & POPF_MASK) | fl::IF | 2);
             Ok(())
         }
         M::Popf => {
             let v = cpu.pop(mem, 2)?;
-            cpu.eflags = (cpu.eflags & 0xFFFF_0000) | (v & POPF_MASK & 0xFFFF) | fl::IF | 2;
+            cpu.set_eflags((cpu.eflags() & 0xFFFF_0000) | (v & POPF_MASK & 0xFFFF) | fl::IF | 2);
             Ok(())
         }
         M::Call => {
@@ -596,9 +604,7 @@ pub(crate) fn step(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction) -> R
         M::Inc | M::Dec => {
             let s = Cpu::op_size(ins);
             let a = cpu.read_op(mem, ins, 0, s)?;
-            let cf = cpu.flag(fl::CF);
-            let r = if m == M::Inc { cpu.alu_add(a, 1, 0, s) } else { cpu.alu_sub(a, 1, 0, s) };
-            cpu.set_flag(fl::CF, cf);
+            let r = if m == M::Inc { cpu.alu_inc(a, s) } else { cpu.alu_dec(a, s) };
             cpu.write_op(mem, ins, 0, s, r)
         }
         M::Neg => {
@@ -919,11 +925,11 @@ pub(crate) fn step(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction) -> R
         M::Sahf => {
             let ah = (cpu.regs[EAX] >> 8) & 0xFF;
             let keep = fl::SF | fl::ZF | fl::AF | fl::PF | fl::CF;
-            cpu.eflags = (cpu.eflags & !keep) | (ah & keep);
+            cpu.set_eflags((cpu.eflags() & !keep) | (ah & keep));
             Ok(())
         }
         M::Lahf => {
-            let v = (cpu.eflags & (fl::SF | fl::ZF | fl::AF | fl::PF | fl::CF)) | 2;
+            let v = (cpu.eflags() & (fl::SF | fl::ZF | fl::AF | fl::PF | fl::CF)) | 2;
             cpu.set_reg(Register::AH, v);
             Ok(())
         }
@@ -936,7 +942,7 @@ pub(crate) fn step(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction) -> R
             Ok(())
         }
         M::Cmc => {
-            cpu.eflags ^= fl::CF;
+            cpu.set_eflags(cpu.eflags() ^ fl::CF);
             Ok(())
         }
         M::Cld => {

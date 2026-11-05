@@ -143,6 +143,8 @@ pub struct Stats {
     pub exceptions: u64,
     /// Guest-address hooks dispatched (see `ext.rs`).
     pub hooks: u64,
+    /// Host nanoseconds spent inside the interpreter (`Cpu::run`), for profiling (S3_SAMPLE).
+    pub cpu_ns: u64,
 }
 
 /// Process-wide guest data created by [`Machine::setup_process`].
@@ -465,6 +467,7 @@ impl Machine {
         let mut cpu = Cpu::new();
         cpu.fs_base = teb_addr;
         cpu.set_hooks(self.ext.hook_addrs.clone());
+        cpu.set_native_blocks(self.ext.native_blocks.clone());
         cpu.regs[ESP] = top - 16;
         cpu.push32(&mut self.mem, param);
         cpu.push32(&mut self.mem, self.thread_exit_thunk);
@@ -704,7 +707,9 @@ impl Machine {
         loop {
             let t = &mut self.threads[slot];
             let before = t.cpu.instructions;
+            let t0 = std::time::Instant::now();
             let exit = t.cpu.run(&mut self.mem, left);
+            self.stats.cpu_ns += t0.elapsed().as_nanos() as u64;
             let ran = t.cpu.instructions - before;
             self.stats.instructions += ran;
             left = left.saturating_sub(ran);

@@ -6,10 +6,25 @@ Android emulator (also in a multiplayer game) in ux-verify1 ([integration-log.md
 The other mode (A "Classic Touch") is [ui-classic.md](ui-classic.md).
 
 Code (`port/crates/s3-mods/src`): `ui_hud.rs` (the `MobileHud` mod: layout, drawing, touch), `ui_hud_game.rs`
-(hooks and game-memory access for the GOG exe), `ui_hud_data.rs` (build-menu table, goods ids). Installed by
+(hooks and game-memory access for the GOG exe), `ui_hud_data.rs` (build-menu table, goods ids), `ui_hud_minimap.rs`
+(own minimap widget + full-screen map, 2026-11-05 hud-polish). Installed by
 `s3_mods::install` (`ui_hud::install(m, gog_patches)`); hooks only with the GOG patch set.
 
 ## What the player sees
+
+**2026-11-05 (hud-polish)**, screenshots `scratch/hud-polish/` (local): the game's own minimap, its frame art and its
+white camera rectangle are gone in full-screen layout (nothing of the left panel is drawn any more); the resource
+strip moved to the **top left** (the FPS counter, `fps.rs`, uses the top right); our **minimap widget** sits bottom
+left above the bar (dark card, the game's minimap image in the same sheared shape, white camera rectangle, an orange
+corner mark hinting "expand"). Drag on it = pan (camera follows the finger), tap = **full-screen map** (whole map
+scaled to the visible screen, camera rectangle, "Close" button, Android Back / Esc closes; tap a point = camera
+jumps there and the overlay closes). Game menu: Resume, Save game, Pause, Settings..., Quit. **Settings** page:
+Screen (display mode: Fit / Fill / Stretch / Native wide) + Filter (Pixel / Smooth / Sharp), FPS counter (Off / FPS /
+FPS + details) — all `crate::display` settings of the display agent, persisted in `mods-settings.json` —, Zoom - /
+level / Zoom +, HUD size, Full-screen map on/off, UI mode switch, Back. Every HUD element is laid out inside
+`display::visible_game_rect` (in `Fill` mode the frame is cropped; the HUD stays on screen).
+
+Older shots (before hud-polish; B-01 still shows the game's minimap, B-08 the old one-page menu):
 
 Screenshots (local only, game pixels 640x480 unless noted): `scratch/ui-modes/B-*.png`.
 
@@ -54,10 +69,19 @@ Findings (VERIFIED in s3run, 2026-11-05):
   mode", below).
 - The renderer places the map at `x = [0x730f24] - (camX & 15) - 32`; units, buildings and the on-screen hit list
   (`0x7ade08`) follow, so `gd::0x4ff0a0` (hover / placement) and the hit list need no change; only `ScreenToMap` does.
-- The minimap is drawn by the frame renderer, not the panel, so it stays visible. Its hit test in HandleInput needs
-  `x < [0x730f24] + d`, so with panel width 0 the HUD handles minimap taps itself (formula from game-state-ui.md §1)
-  and queues `gd::CenterOn` `0x51b560` (thiscall gd, `(tx, ty)`) on the logic thread. Writing the camera from the host
-  instead left stale ring-buffer columns after a big jump.
+- The minimap is drawn by the frame renderer `0x4b26c0`, not the panel. Since hud-polish the HUD **skips its two
+  minimap blocks** while the full-screen layout is active (hooks `ui-hud:minimap-skip`: `0x4b2b34` -> jump
+  `0x4b2ce5` = incremental minimap copy; `0x4b366a` -> jump `0x4b3cf3` = minimap part right of the panel + frame art
+  resources `0x40001`/`0x40003` + white camera rectangle; the selection-box drawing after `0x4b3cf3` stays). Render
+  thread only, no guest-visible game state changes (lockstep safe). VERIFIED 2026-11-05 (screenshot: top left shows
+  map). In cover mode / panel peek / Classic mode the blocks run as before (VERIFIED: cover mode shows the full game
+  minimap again). Its hit test in HandleInput needs `x < [0x730f24] + d`, so with panel width 0 the game ignores
+  taps there; the HUD widget queues `gd::CenterOn` `0x51b560` (thiscall gd, `(tx, ty)`) on the logic thread.
+  Writing the camera from the host instead left stale ring-buffer columns after a big jump.
+- **Custom resolutions** (res-zoom): the layout hook records `(res index, panel width, map width)` as the game's
+  layout setter wrote them (`HudShared::orig_layout`) before applying the full-screen layout, and restores/compensates
+  with those values (`current_original_layout`), so a patched `0x4c6d70` case for a new resolution works without a
+  table entry. The landscape-buffer widening accepts screens up to 4096 px wide (was 1024).
 - The panel is only redrawn when `[gd+0x2d27c]` (panel dirty) is set: after restoring the layout the HUD sets it,
   otherwise the panel area kept map pixels.
 - The panel renderer does not use `[0x730f24]` (all panel art is at fixed positions), so it can draw on top of the
@@ -69,6 +93,29 @@ Findings (VERIFIED in s3run, 2026-11-05):
   map view width. Open.
 - Camera clamp: the clamp `0x51b4d0` is unchanged, so near the west map edge the void outside the (sheared) world is
   visible where the panel used to hide it. Cosmetic.
+
+### Minimap widget and full-screen map (`ui_hud_minimap.rs`)
+
+Source: the game's own minimap image, a square RGB565 `mw x mw` image (`mw = [0x730f28]`, 128 at 640x480) at
+`[snap+0x4c]`, where `snap` is the render snapshot (the panel renderer's argument, recorded in the panel hook).
+Image column `c`, row `r` = tile `(c*W/mw, r*W/mw)`; the game draws it sheared (`x = mx + (mw-r-1)/2 + c`,
+`y = my + r`), we draw it the same way at any scale (`MapGeom`). Camera rectangle in image coordinates with the
+game's own formula (`0x4b3a3c`): `k = (mw<<8)/[snap+0x2c]`, `x = ([snap+0x24]+11)*k/256`, `y = ([snap+0x28]+16)*k/256`,
+`w = [snap+0x30]*k/256`, `h = ([snap+0x34]-40)*k/256` (VERIFIED: the rectangle follows drags and jumps; 128 px image,
+384 world: `cam (58, 85, 16, 17)` at the start). Refreshed every 250 ms into a host copy (one 32 KiB read). Player
+territory colours come with the image; unexplored land is black. Touch: Down on the widget captures the finger;
+moving more than ~7 HUD px turns it into a drag (each new tile under the finger replaces a still queued `CenterOn`);
+Up without a drag opens the overlay. Overlay tap inside the map's bounding box -> tile (clamped into the shape) ->
+`CenterOn`, close. Back / Esc: new `Mod::on_key` (lib.rs, additive): the HUD consumes VK_ESCAPE while a sheet is open
+(Settings -> Menu, others -> close); otherwise Esc reaches the game as before. All VERIFIED on desktop 2026-11-05.
+
+### Settings and zoom
+
+Display entries call `crate::display::{cycle_mode, cycle_filter, cycle_fps}` (display agent, docs/porting/display.md).
+VERIFIED: "FPS counter: FPS" turned the counter on (top right) and was saved in `mods-settings.json`.
+Zoom - / + is a placeholder until res-zoom's API exists (`ui_hud::zoom_step` / `zoom_label`): it sends F1..F3 like
+the pinch in touch.rs (`touch_logic::pinch_zoom_key`) and shows the game resolution as the level. Known issue: the
+runtime F1-F3 switch in HUD mode shows a black band (below) — res-zoom's zoom replaces this.
 
 ### Running game actions
 
@@ -82,7 +129,7 @@ UI state changes are queued (`ui_hud_game::queue`) and run in a hook at `CLogicT
 | Move units | `s3_mods::set_right_next` -> the next map tap is a quick right click (passes the 15-step check at `0x53437d`) | VERIFIED (unit walked) |
 | Deselect | UI selection count 0 + dirty, `[0x7dfd6c]` = 0, page 0 | STATIC |
 | Destroy building | command `0x06` `{0x21, 0x06, 0x08, 0, id_hi, id_lo, player, 0}` posted with `Queue::Post 0x4309c0` on `[logic+0x3c4]` (`ndwords` 2, flag 1) | VERIFIED (Guard Tower destroyed, game reported "You've Lost") |
-| Minimap tap | `gd::CenterOn 0x51b560` | VERIFIED (view jumped) |
+| Minimap widget drag / full map tap | `gd::CenterOn 0x51b560` | VERIFIED (view jumped / followed the drag, 2026-11-05) |
 | Save / Quit | page 7, sub-page 0 / 1 in the panel peek (then the original buttons) | VERIFIED (page shown) |
 | Pause | key `P` (0x50) down/up into `m.input` | STATIC |
 | Settlers / goods pages | page 3 + `[gd+0x2d2a0]` tab, page 2 + `[gd+0x2d290]` tab, in the peek | VERIFIED (Inventory) |
@@ -136,15 +183,22 @@ I="1200:tap 165 235;3200:tap 630 467;5200:tap 730 567;7200:tap 730 567;32000:sho
 ./target/release/s3run --headless --game-dir ../game-files/gog-s3-ultimate --data-dir ../scratch/ui-hud/data --max-seconds 38 --inject "$I"
 ```
 
-Bar button centres at 640x480: x = 47, 137, 227, 317, 407, 497, 587 (y 455). "Back to HUD" = (575, 27). Random
+Bar button centres at 640x480: x = 47, 137, 227, 317, 407, 497, 587 (y 455). "Back to HUD" = (575, 27).
+Minimap widget (640x480, scale 100%): (60, 380) (card x 6..160, y 314..420). Menu: Settings... = (320, 245);
+Settings rows (centre y): 80 screen/filter, 127 FPS, 174 zoom, 221 HUD size, 268 full-screen map, 315 UI mode,
+362 Back. hud-polish recipe (after the start taps above): `33000:drag 60 380 130 340 400;35000:tap 60 380;36000:key
+0x1b;37500:tap 587 455;38500:tap 320 245;40000:tap 320 127` (pan, open map, Back, menu, settings, FPS on). Random
 maps differ per run, so unit/building positions must be read from a screenshot first. Note: switching the UI mode in
 the HUD menu saves `mods-settings.json` in the data dir. `S3_HUD_DEBUG=1` logs the landscape buffer widths.
 
-Unit tests (`cargo test -p s3-mods`): build table, slot rectangles, minimap tile math, hit rectangles.
+Unit tests (`cargo test -p s3-mods`): build table, slot rectangles, hit rectangles, minimap geometry (shear round
+trip, tiles, camera formula).
 
 ## Open / next
 
-- Runtime F1-F3 switch in HUD mode (black band), see above.
+- ~~Runtime F1-F3 switch in HUD mode (black band)~~: fixed 2026-11-05 by res-zoom (cached landscape view rectangle
+  re-synced every frame + redraw on a matching snapshot, [resolution-zoom.md](resolution-zoom.md)). With the custom
+  resolution on (default) the HUD runs at the window aspect (e.g. 1480x600) and pinch zooms.
 - Touch-context (W3) mod and the HUD both take taps; the HUD must stay on top (it is added after the framework's
   own mods; if another mod is added later it gets events first). Taps on HUD elements are consumed by the HUD.
 - Settler type and remaining good names; tooltips for building cards (cost) — needs the panel's goods counters / cost

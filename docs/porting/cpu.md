@@ -24,20 +24,33 @@ are in [architecture.md](architecture.md#cpu-s3-cpu). Which instructions S3.EXE 
   `invalidate_range` drops overlapping blocks and rebuilds the map (rare: S3.EXE has no self-modifying code).
   There is one cache per `Cpu`, i.e. per guest thread. Memory cost is about 48 bytes per decoded instruction
   (iced `Instruction` plus a handler pointer).
-- **Threaded dispatch** (`fast.rs`): at decode time each instruction gets `fn(&mut Cpu, &mut GuestMemory,
-  &Instruction) -> Result<(), CpuExit>`. Specialised handlers exist for 32-bit forms of `mov` (r,r / r,m / m,r / r,imm
-  / m,imm), `movzx/movsx` (r32 from m8/m16/r8/r16), `lea`, `push` (r/imm8/imm32/m), `pop r`, `call`
-  (rel/r/m), `ret`, `ret imm16`, `jmp` (rel/r/m), all `jcc`, ALU ops `add/or/adc/sbb/and/sub/xor/cmp/test` in
-  r,r / r,imm8 / r,imm32 / r,m / m,r / m,imm8 / m,imm32 forms, `inc/dec r32`, `shl/shr/sar r32,imm8` and `nop`.
-  Everything else (8/16-bit forms, `0x67` addressing, string ops, etc.) uses the generic `exec::step`.
+- **Threaded dispatch** (`fast.rs`, reworked 2026-11-05 by perf-cpu, see [performance.md](performance.md)): at
+  decode time each instruction gets an `Op` record: handler `fn(&mut Cpu, &mut GuestMemory, &Op) -> bool`, next EIP,
+  register numbers (8-bit: 0..3 = AL..BL, 4..7 = AH..BH), displacement, immediate (pre-extended) or branch target,
+  EA form as a const generic (`[disp]`, `[base+disp]`, `[base+index*s+disp]`, `[index*s+disp]`; FS/GS and 16-bit
+  addressing go generic), and `Op::ins` = pointer to the iced `Instruction` (same block) for the generic path.
+  Specialised handlers: `mov` r,r / r,m / m,r / r,imm / m,imm for 8/16/32 bits, ALU `add/or/adc/sbb/and/sub/xor/cmp/
+  test` in r,r / r,imm / r,m / m,r / m,imm for 8/16/32 bits, `movzx/movsx` (r32 from m8/m16/r8/r16), `lea`, `push`
+  (r/imm/m), `pop r`, `call` (rel/r/m), `ret`, `ret imm16`, `jmp` (rel/r/m), all `jcc` (one handler per condition),
+  `inc/dec r32`, `shl/shr/sar r32,imm8`, `nop`. Everything else uses the generic `exec::step`.
   Rule: a fast handler must behave exactly like `step`. `Cpu::set_generic_only(true)` disables the fast handlers
   (debugging aid). The tests run every snippet through both paths.
-- **Contract of a handler**: `cpu.eip` already holds the next instruction's address. Branches overwrite it. A fault
-  returns `Err(CpuExit::Fault{..})` and `run` rewinds EIP to the faulting instruction, as Windows would report it.
-  `Interrupt`/`Halt` leave EIP after the instruction.
-- **Flags**: eager. `alu_add/alu_sub` build the full status word in one step; PF comes from a 256-entry table.
-  Undefined flags follow what the host CPU (an x86_64 Intel/AMD part) produces where cheap, and are otherwise left
-  at a deterministic value. The diff tests ignore them.
+- **Contract of a handler**: `cpu.eip` already holds the next instruction's address (the run loop stores it).
+  Branches overwrite it. A failing handler stores its exit in `Cpu::pending_exit` and returns `false`; for a fault
+  `run` rewinds EIP (and the fault's `eip`) to the faulting instruction, as Windows would report it.
+  `Interrupt`/`Halt` leave EIP after the instruction. Fast handlers do not update `cur_ip`; the generic wrapper does
+  (x87 uses it as the last instruction pointer). Fault paths are `#[cold]` out-of-line functions.
+- **Run loop**: only the last instruction of a block can change EIP, so there is no per-instruction EIP check; the
+  retired-instruction count is added per block (exact on faults). **Block chaining**: each block caches its last two
+  successors `(eip, arena index)` (cleared by `invalidate_range`), skipping the L1 lookup.
+- **Native blocks** (`NativeBlock`, `Cpu::set_native_blocks`): host-registered native replacements of guest code
+  regions, matched by `code_hash` of the code bytes, called at block entry with the remaining budget; see
+  [performance.md](performance.md#native-fast-paths-s3-cpu-nativeblock-s3-mods-fastrs).
+- **Flags**: **lazy** (2026-11-05). `add`/`sub`/`cmp` without carry-in, logic ops (`and/or/xor/test`) and `inc/dec` store
+  `lk` (kind), `lsz`, `la`, `lb`, `lr` (and `lcf` = CF before inc/dec); `Cpu::eflags()` materialises, `set_eflags`
+  replaces. Partial updates (`set_flag`, `set_szp`) materialise first. `adc/sbb` with carry-in and everything else
+  stay eager. `jcc` reads conditions straight from the lazy state (`cond_fast`). The field `eflags` is gone: use
+  `eflags()` / `set_eflags()` (or `Context`).
 
 ## Semantics notes (what is exact)
 
@@ -86,11 +99,11 @@ compare-and-branch, call/ret and push/pop.
 | Foundation (`HashMap<u32, Arc<Block>>`, mnemonic `match` only, flags via several `set_flag`) | 88 |
 | + arena/L1 cache, one-step flags, parity table, explicit jcc arm | 105 |
 | + threaded dispatch with fast handlers | 170-185 |
+| + `Op` records, 8/16-bit forms, cold fault paths, lazy flags, block chaining (perf-cpu, 2026-11-05) | 280-290 |
 
-A real Pentium 133 does roughly 100-200 MIPS, so this should be enough on desktop. On Android arm64 expect
-roughly 0.5-0.7x (HYPOTHESIS, not measured yet). Next steps if it is too slow: lazy flags (compute only when a
-`jcc/setcc/adc` reads them), block chaining (cache the successor index in the block), and fast handlers for the
-8-bit `mov`/`cmp` forms. Profile first. `perf` is not installed on this PC; valgrind/callgrind is.
+In game the interpreter does ~225 M instr/s on the desktop (more cache misses and generic instructions than the
+benchmark). Measurements, profiling tools and next steps: [performance.md](performance.md). `perf` is not
+installed on this PC; valgrind/callgrind is.
 
 ## Tests
 
@@ -101,6 +114,8 @@ roughly 0.5-0.7x (HYPOTHESIS, not measured yet). Next steps if it is too slow: l
   64 edge-case and pseudo-random values, with incoming flag states 0, CF and all flags set. Each case runs
   natively (inline asm, `popfq` -> op -> `pushfq`) and in the interpreter, through both the fast and the generic
   path. A deliberately broken parity table is caught, so the harness is sensitive.
+- `fast.rs` `lazy_conditions_match_materialised_flags`: every lazy kind x size x condition x edge values, plus
+  `cf()/af()/of()/flag()` against the materialised EFLAGS.
 - `tests.rs`: control flow, imm8 sign extension, memory ALU forms, string ops (backward memmove, repe cmpsb,
   rep with ECX=0, a fault in the middle of a rep), `67 E3` jcxz, loops, BCD, pushfd/popfd probes, cpuid, int3/int n/
   ud2/invalid bytes/in, xlat, enter with nesting, xchg/cmpxchg/lock inc on memory, the FS-relative SEH prologue,

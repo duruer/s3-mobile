@@ -39,6 +39,8 @@ pub struct MachineExt {
     pub overlay_compose: Option<OverlayCompose>,
     /// Hook address set given to every guest CPU (also to threads created later).
     pub(crate) hook_addrs: Option<Arc<HookAddrs>>,
+    /// Native fast paths given to every guest CPU (also to threads created later); see `Cpu::set_native_blocks`.
+    pub(crate) native_blocks: Option<Arc<s3_cpu::NativeBlocks>>,
     /// Reused frame for overlay composition.
     pub(crate) overlay_buf: Option<FrameBuffer>,
     /// Last guest frame (kept only while an overlay is installed) for overlay-only refreshes.
@@ -54,6 +56,21 @@ impl Machine {
             t.cpu.set_hooks(a.clone());
         }
         self.ext.hook_addrs = a;
+    }
+
+    /// Install native fast paths (perf-cpu, docs/porting/performance.md) in every thread's CPU (clears their
+    /// decode caches). `None` or an empty map disables them.
+    pub fn set_native_blocks(&mut self, natives: Option<s3_cpu::NativeBlocks>) {
+        let n = natives.filter(|s| !s.is_empty()).map(Arc::new);
+        for t in &mut self.threads {
+            t.cpu.set_native_blocks(n.clone());
+        }
+        self.ext.native_blocks = n;
+    }
+
+    /// Current native fast paths.
+    pub fn native_blocks(&self) -> Option<&s3_cpu::NativeBlocks> {
+        self.ext.native_blocks.as_deref()
     }
 
     /// Size of the last guest frame seen by the overlay step ((0, 0) before the first present).

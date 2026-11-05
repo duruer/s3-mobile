@@ -38,8 +38,13 @@ Status 2026-11-05: DirectDraw, DirectSound, DirectInput 3 and DirectPlay stubs i
 
 ## DirectDraw behaviour
 
-- Display mode: starts as 800x600x16 (`DEFAULT_MODE`); `SetDisplayMode` accepts 8/16/32 bpp and 320..2048 x
-  200..2048. `EnumDisplayModes` offers 640x480, 800x600, 1024x768 at 8 and 16 bpp (filtered by the DDSD).
+- Display mode: starts as 800x600x16 (`DEFAULT_MODE`); `SetDisplayMode` accepts 8/16/32 bpp and 320..4096 x
+  200..4096 (custom game resolutions, [resolution-zoom.md](resolution-zoom.md)). `EnumDisplayModes` offers 640x480,
+  800x600, 1024x768 at 8 and 16 bpp (filtered by the DDSD).
+- Port extension `DDSDM_PORT_LOGICAL` (`0x8000_0000` in the `IDirectDraw2::SetDisplayMode` flags): sets a
+  "logical" size <= the mode; the primary surface is then presented cropped to it (top-left), surfaces are untouched.
+  A real mode change clears it. Used by the zoom (s3-mods `res.rs`) to change the game size without the game's
+  display re-setup. Test: `ddraw_logical_size_crops_present`.
   16 bpp = RGB565 (masks F800/07E0/001F), which makes the game choose `GFX/*.f8007e01f.dat`.
 - `CreateSurface`: primary takes the current mode size; `DDSCAPS_FLIP` + `DDSD_BACKBUFFERCOUNT` builds a chain
   (back buffer reachable with `GetAttachedSurface(DDSCAPS_BACKBUFFER)`); offscreen needs WIDTH+HEIGHT and may give
@@ -56,9 +61,11 @@ Status 2026-11-05: DirectDraw, DirectSound, DirectInput 3 and DirectPlay stubs i
   stretching nearest-neighbour, destination clipped to the surface (also without a clipper; real DirectDraw would
   return DDERR_INVALIDRECT without one — lenient on purpose). `BltFast` honours `SRCCOLORKEY`/`DESTCOLORKEY`.
   `DDBLT_WAIT/ASYNC` are irrelevant (synchronous). `GetBltStatus`/`GetFlipStatus`/`IsLost`/`Restore` = DD_OK.
-- `WaitForVerticalBlank(BLOCKBEGIN|BLOCKEND)` blocks the calling guest thread (ThunkResult::Block) until the next
-  simulated 60 Hz boundary after the call started — S3's frame pacer (`WaitVBlank`=1). `GetScanLine` /
-  `GetVerticalBlankStatus` are derived from the same clock. `BLOCKBEGINEVENT` -> DDERR_UNSUPPORTED.
+- `WaitForVerticalBlank(BLOCKBEGIN|BLOCKEND)` is S3's frame pacer (`WaitVBlank`=1). Since 2026-11-05 it is a
+  **frame limiter** (perf-cpu): it blocks the calling guest thread (ThunkResult::Block) until `1000/cap` ms after its
+  previous release, or returns at once if the frame was late (the old 60 Hz grid turned a 17 ms frame into 30 fps).
+  Cap: default 60, env `S3_FPS_CAP` (0 = none), `ddraw::set_fps_cap`; see [performance.md](performance.md).
+  `GetScanLine` / `GetVerticalBlankStatus` still use a simulated 60 Hz clock. `BLOCKBEGINEVENT` -> DDERR_UNSUPPORTED.
 - `GetDC` uses the gdi32 bridge `s3_runtime::gdi::create_dc(DcTarget{addr,pitch,width,height,bpp,rgb565})`
   (installed by s3-win32 gdi32); returns DDERR_CANTCREATEDC if no hook is installed. `ReleaseDC` ->
   `gdi::release_dc`.

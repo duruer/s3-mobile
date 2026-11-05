@@ -83,6 +83,8 @@ pub struct ContextTouch {
     press: Option<(f32, f32, u64)>,
     long_press_ms: u64,
     pinch_done: bool,
+    /// Zoom = render resolution levels (res-zoom); used instead of F1-F3 when the custom resolution is on.
+    zoom: crate::zoom::Pinch,
     draw_wanted: bool,
 }
 
@@ -337,7 +339,7 @@ impl Mod for ContextTouch {
                     return ModEvent::Pass;
                 }
                 let frame = m.state::<ModsState>().borrow_mut().frame_size;
-                let v = game::view(m, frame, true);
+                let v = with_vis(m, game::view(m, frame, true));
                 let (ix, iy) = pt(x, y);
                 let a = logic::decide_tap(&v, ix, iy);
                 if trace {
@@ -351,7 +353,7 @@ impl Mod for ContextTouch {
                     return ModEvent::Pass;
                 }
                 let frame = m.state::<ModsState>().borrow_mut().frame_size;
-                let v = game::view(m, frame, true);
+                let v = with_vis(m, game::view(m, frame, true));
                 let (ix, iy) = pt(x, y);
                 let a = logic::decide_double_tap(&v, ix, iy);
                 self.exec(m, a, (x, y));
@@ -375,7 +377,14 @@ impl Mod for ContextTouch {
             }
             TouchEvent::ThreeFingerTap { .. } => ModEvent::Pass,
             TouchEvent::Pan { .. } => self.pan(m, ev),
-            TouchEvent::Pinch { phase, scale, .. } => {
+            TouchEvent::Pinch { phase, scale, cx, cy } => {
+                // Continuous zoom through the render resolution levels (docs/porting/resolution-zoom.md). Checked
+                // before `in_game`: while a zoom step settles the frame size differs from the layout for a moment.
+                if crate::res::in_game(m) && crate::zoom::pinch(m, &mut self.zoom, phase, cx, cy, scale) {
+                    self.cam.stop();
+                    self.drag = None;
+                    return ModEvent::Consumed;
+                }
                 if !self.in_game {
                     return ModEvent::Pass;
                 }
@@ -433,7 +442,7 @@ impl Mod for ContextTouch {
 
     fn draw(&mut self, m: &mut Machine, c: &mut Canvas) {
         let frame = (c.width(), c.height());
-        let v = game::view(m, frame, true);
+        let v = with_vis(m, game::view(m, frame, true));
         let Some(l) = v.layout else { return };
         let now = self.now;
         // Map-only effects are clipped to the map view.
@@ -468,7 +477,19 @@ impl Mod for ContextTouch {
         // Mode B (Mobile HUD) shows its own placement banner with Cancel; our ✕ would sit on its resource strip.
         let hud = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode == crate::settings::UiMode::MobileHud;
         if v.mode == Some(Mode::BuildPlacement) && !hud {
-            fx::cancel_button(c, logic::cancel_button(&l));
+            fx::cancel_button(c, logic::cancel_button_in(&l, v.vis));
         }
     }
+}
+
+/// Add the visible frame rect (display mode) and the FPS counter height to a view (✕ button placement).
+fn with_vis(m: &mut Machine, mut v: View) -> View {
+    let r = crate::display::visible_game_rect(m);
+    let top = match crate::display::display_settings(m).fps_counter {
+        crate::display::FpsCounter::Off => 0,
+        crate::display::FpsCounter::Fps => 22,
+        crate::display::FpsCounter::Detailed => 62,
+    };
+    v.vis = Some((r, top));
+    v
 }

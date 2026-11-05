@@ -7,7 +7,7 @@
 //! - engine thread: [`run_engine`] — waits for S3.EXE, builds the [`Engine`], runs it in slices while not paused.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,8 @@ use s3_engine::Engine;
 #[cfg(feature = "engine")]
 use s3_runtime::SliceResult;
 use s3_runtime::{FrameBuffer, Host, HostEvent, LogLevel, Vfs};
+
+use s3_mods::display::{DisplaySettings, Viewport};
 
 use crate::audio::{AudioRing, Resampler, OUT_RATE};
 
@@ -69,6 +71,21 @@ pub struct Shared {
     pub rmb_armed: AtomicBool,
     /// Engine -> UI: a three-finger tap asked for the soft keyboard.
     pub keyboard_req: AtomicBool,
+    /// Signalled (with `frame` locked) on every new frame / status / display change: the render thread waits here.
+    pub frame_cv: Condvar,
+    /// Engine -> presenter: display settings (`s3_mods::display`), bumped `display_seq` on change.
+    pub display: Mutex<DisplaySettings>,
+    pub display_seq: AtomicU64,
+    /// Presenter -> UI (touch mapping) and engine (mods): viewport of the shown frame, `viewport_seq` on change.
+    pub viewport: Mutex<Option<Viewport>>,
+    pub viewport_seq: AtomicU64,
+    /// Presenter -> UI: CPU fallback letterbox (only when EGL failed; buttons use its layout).
+    pub letterbox: Mutex<Option<crate::layout::Letterbox>>,
+    /// UI -> presenter: state of the letterbox buttons.
+    pub buttons: Mutex<crate::overlay::OverlayState>,
+    /// Presenter -> engine: display presents per second and the panel refresh rate (f32 bits; 0 = unknown).
+    pub host_fps: AtomicU32,
+    pub refresh_hz: AtomicU32,
 }
 
 impl Shared {
@@ -90,7 +107,48 @@ impl Shared {
             rmb_toggle: AtomicBool::new(false),
             rmb_armed: AtomicBool::new(false),
             keyboard_req: AtomicBool::new(false),
+            frame_cv: Condvar::new(),
+            display: Mutex::new(DisplaySettings::default()),
+            display_seq: AtomicU64::new(0),
+            viewport: Mutex::new(None),
+            viewport_seq: AtomicU64::new(0),
+            letterbox: Mutex::new(None),
+            buttons: Mutex::new(crate::overlay::OverlayState::default()),
+            host_fps: AtomicU32::new(0),
+            refresh_hz: AtomicU32::new(0),
         })
+    }
+
+    /// Wake the render thread (new frame, status, display settings or button state).
+    pub fn notify_render(&self) {
+        let _g = self.frame.lock().unwrap();
+        self.frame_cv.notify_all();
+    }
+
+    /// Engine side: publish display settings if they changed.
+    pub fn set_display(&self, d: DisplaySettings) {
+        let changed = {
+            let mut cur = self.display.lock().unwrap();
+            if *cur != d {
+                *cur = d;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.display_seq.fetch_add(1, Ordering::AcqRel);
+            self.notify_render();
+        }
+    }
+
+    /// Presenter side: publish the viewport of the shown frame.
+    pub fn set_viewport(&self, vp: Option<Viewport>) {
+        let mut cur = self.viewport.lock().unwrap();
+        if *cur != vp {
+            *cur = vp;
+            self.viewport_seq.fetch_add(1, Ordering::AcqRel);
+        }
     }
 
     fn raw_ms(&self) -> u64 {
@@ -112,6 +170,7 @@ impl Shared {
             s.body = body.to_string();
             s.seq += 1;
         }
+        self.notify_render();
         (self.wake)();
     }
 
@@ -181,8 +240,8 @@ impl Host for AndroidHost {
                 }
             }
             slot.seq += 1;
+            self.shared.frame_cv.notify_all();
         }
-        (self.shared.wake)();
     }
 
     fn poll_events(&mut self) -> Vec<HostEvent> {
@@ -379,6 +438,7 @@ fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
     let mut engine = Engine::new(Box::new(host), None)?;
     shared.set_status(Phase::Running, "Running", "S3.EXE loaded; waiting for the first frame.");
     let mut last_report = Instant::now();
+    let mut seen_viewport = u64::MAX;
     loop {
         if shared.quit.load(Ordering::Acquire) {
             log::info!("engine: quit requested\n{}", engine.summary());
@@ -392,6 +452,7 @@ fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
             return Ok(engine.summary());
         }
         sync_touch_flags(&shared, &mut engine.machine);
+        sync_display(&shared, &mut engine.machine, &mut seen_viewport);
         if last_report.elapsed() > Duration::from_secs(10) {
             last_report = Instant::now();
             let s = &engine.machine.stats;
@@ -404,6 +465,23 @@ fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
             );
         }
     }
+}
+
+/// Exchange display state with the mod layer: settings -> presenter, viewport + display rates -> mods.
+#[cfg(feature = "engine")]
+fn sync_display(shared: &Shared, m: &mut s3_runtime::Machine, seen_viewport: &mut u64) {
+    shared.set_display(s3_mods::display::display_settings(m));
+    let seq = shared.viewport_seq.load(Ordering::Acquire);
+    if seq != *seen_viewport {
+        *seen_viewport = seq;
+        let vp = *shared.viewport.lock().unwrap();
+        s3_mods::display::set_viewport(m, vp);
+    }
+    let f = |a: &AtomicU32| {
+        let v = f32::from_bits(a.load(Ordering::Relaxed));
+        (v > 0.0).then_some(v)
+    };
+    s3_mods::display::set_host_rates(m, f(&shared.host_fps), f(&shared.refresh_hz));
 }
 
 /// Exchange the touch flags between the UI thread and the mod layer (RMB button, three-finger keyboard request).

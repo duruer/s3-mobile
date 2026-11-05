@@ -421,7 +421,7 @@ fn run_both(build: impl Fn(&mut CodeAssembler)) -> (Cpu, GuestMemory) {
     let (g, gm) = out.pop().unwrap();
     let (f, fm) = out.pop().unwrap();
     assert_eq!(f.regs, g.regs, "fast vs generic registers");
-    assert_eq!(f.eflags, g.eflags, "fast vs generic eflags");
+    assert_eq!(f.eflags(), g.eflags(), "fast vs generic eflags");
     assert_eq!(fm.slice(DATA, 0x1000), gm.slice(DATA, 0x1000), "fast vs generic memory");
     (f, fm)
 }

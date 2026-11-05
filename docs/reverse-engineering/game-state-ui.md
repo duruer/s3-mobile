@@ -26,7 +26,7 @@ Names used below:
 | Center camera on a tile | `0x51b560` thiscall gd, `(x, y)` stdcall (`ret 8`); clamps itself | STATIC (used by minimap click, hotkeys) |
 | Scroll step | arrow keys: +-40 px (`0x525977..`) | VERIFIED (Up: y `0x5e7 -> 0x5bf`) |
 | Screen layout per resolution | globals `0x730f08..0x730f40`, set by `0x4c6d70(resIndex)` (table below) | VERIFIED (all three) |
-| Bigger map view ("zoom out") | switch to 800x600 / 1024x768 at runtime: F2 / F3 (F1 = 640x480), or registry `Resolution` 1 / 2 | VERIFIED |
+| Bigger map view ("zoom out") | switch to 800x600 / 1024x768 at runtime: F2 / F3 (F1 = 640x480), or registry `Resolution` 1 / 2; the port runs any size up to 2560x780 ([resolution-zoom.md](../porting/resolution-zoom.md), section "Resolution internals" below) | VERIFIED |
 | Panel page | `[gd+0x2d284]`: 1 build, 2 goods, 3 settlers, 4 building selected, 5 units selected, 7 Save/Quit menu, 8 messages, 9 paused | VERIFIED (1, 2, 3, 7, 9; 4/5 from part 1) |
 | Build category / slot / type | `[gd+0x2d288]` cat 1..4, `[gd+0x2d28c]` list slot (0 = none), `[gd+0x2d2f0]` building type | VERIFIED |
 | Start build placement for type T | write page 1, cat, slot, type T, then `[gd+0x2d27c] = 1`; the next map left-click places a site | VERIFIED (site count 6 -> 7) |
@@ -92,6 +92,19 @@ by the same function.
   `[0x730f2c] + d < x < [0x730f24] + d` with `d = ([0x730f34] - y)/2` (sheared). Tile:
   `ty = W*(y - [0x730f30]) / [0x730f28]`, `tx = W*((y - [0x730f30])/2 - [0x730f28]/2 - [0x730f2c] + x) / [0x730f28]`,
   then `0x51b560(tx, ty)` (STATIC).
+- **Minimap image and drawing** (REA static + VERIFIED in s3run 2026-11-05, hud-polish): the minimap is a square
+  RGB565 image of `mw x mw` pixels (`mw = [0x730f28]`) at `[snap+0x4c]` (`snap` = render snapshot, arg of the frame
+  renderer `0x4b26c0` and of the panel renderer `0x4b4d00`); column `c` / row `r` = tile `(c*W/mw, r*W/mw)`. The
+  frame renderer copies it into the back buffer `[gfx+0xec]` (pitch `[gfx+0x90]` bytes) sheared:
+  `x = mx + (mw - r - 1)/2 + c`, `y = my + r`. Block `0x4b2b34..0x4b2ce5`: incremental copy in 64 interleaved chunks
+  (per-chunk counters `0x7ad4f8[64]`, "dissolve"; full copy when `[snap+0x3c] == 1`). Block `0x4b366a..0x4b3cf3`:
+  copies the minimap part at `x >= [0x730f24]` (over the map) every frame, draws the frame art (gfx resources
+  `0x40001` at `(panelW, 0)`, `0x40003` at `(panelW, [0x730f34])`), then erases the previous camera rectangle
+  (`gfx+0x5f6a4..b0`, from the image) and draws the new one in white (`0xffff`) and stores it (`gfx+0x5f694..a0`).
+  Camera rectangle in image coordinates (`0x4b3a3c`): `k = (mw << 8) / [snap+0x2c]`,
+  `x = ([snap+0x24] + 11)*k >> 8`, `y = ([snap+0x28] + 16)*k >> 8`, `w = [snap+0x30]*k >> 8`,
+  `h = ([snap+0x34] - 40)*k >> 8` (signed, truncating). After `0x4b3cf3`: the drag-selection box (`0x7dfd34`,
+  `0x7dfb98..`). Skipping both blocks (jump) hides the minimap without side effects (Mobile HUD, ui-hud.md).
 - **Map rect**: `x >= [0x730f24]` (the minimap's sheared right edge overlaps the map at the top). The map is rendered
   under the panel frame; the view origin is the camera.
 - **Other resolutions**: `0x4c6d70` only knows indexes 0..2 (other values leave the table unchanged) and the panel art
@@ -322,3 +335,37 @@ Details and evidence: [ui-hud.md](../porting/ui-hud.md).
 - Goods: the panel's Inventory numbers are separate counters, not a live sum of piles (VERIFIED by poking piles).
   Piles of the local player = piles on tiles owned by the player (tile +8). Good ids, see ui-hud.md.
 - Command `0x06` (destroy building) VERIFIED through `Queue::Post 0x4309c0` from a HandleInput-entry hook.
+
+## Resolution internals (res-zoom, 2026-11-05)
+
+Details and how the port uses them: [resolution-zoom.md](../porting/resolution-zoom.md). All VERIFIED in s3run
+unless marked STATIC.
+
+- `[0x7dfd44]` = resolution request: F1-F3 handlers (`0x525a77`, `0x525b36`, `0x525bfb`) write 1..3, call the setter
+  `0x49ded0` and `ReleaseSemaphore([[0x7a800c]+8], 1, 0)` (`0x525b5b`). Copied to `snap+0xa0` by the snapshot fill
+  (`0x51f4f5`). `0x4c7490(snap)` (render thread, from `0x4b26c0`) switches for 1..3 (inline layout table, the 640 case
+  uses minimap x 4 instead of 5), calls `gfx::0x42ce90(w, h, 16, 0, 0)`, sets `0xfa`; returns al=1 (frame skipped)
+  for 1..3 / `0xfa`. The logic thread (`0x53db30`) on `0xfa`: waits on the semaphore `[0x7a800c]` (`0x53db80`,
+  timeout `0x40d0e0(7)`), rebuilds the minimap image (`gd::0x4fb650` -> `gd+0x1223656`, `[0x730f28]^2` pixels),
+  `gd+0x2d264 = 0`, `gd+0x2d254/58 = 10 000 000` (full landscape redraw), `gd+0x2d278 = gd+0x2d27c = 1`, clamp
+  `0x51b4d0`, `[0x7dfd44] = 0`. While `[0x7dfd44] != 0` the simulation step is skipped (`0x53dd5c`). Without the
+  semaphore token the logic thread blocks forever (VERIFIED by calling the switch without it).
+- `0x42ce90` (thiscall gfx): index = 2 for w 1024, 1 for 800, else 0; if the current mode differs,
+  `SendMessage(hwnd, 0x804, index)`; window proc `0x45cc9c` -> `0x405c80(index)` -> `IDirectDraw2::SetDisplayMode`
+  with constants (calls at `0x405cc3` index 1, `0x405cf2` index 0/2). The display setup `0x42e430` (vtable, no direct
+  callers) then runs again: map rect `gfx+0x5f6e8..+0x5f6f4` from the layout, new landscape surface via `0x54bec0(mapW
+  + [0x730f44], mapH + [0x730f48], surf, rect)` (`[0x730f44]` = 32, `[0x730f48]` = 102; the object stores the rect
+  at `+0x58/+0x5c` size and `+0x74..+0x80`), text DIB `0x4a78f0(screenW, screenH)` (1 bpp, `CreateDIBSection`).
+- Initial layout: `0x4c6d40` (from the gfx ctor `0x42c990`) -> `0x4c6d70(registry index)`; game start sets the mode
+  through `0x42ca70` -> `0x42ce90([0x730f0c], [0x730f10])`.
+- **Render snapshot** `[logic+0x3d0]`: `new(0xc7720)` + ctor `0x523480` (lazy, in `0x51f110`); grid of 130 x 130
+  tiles at `+0x500` (0x30 bytes each, index `row + col*130`, filled at `0x522410..`, out-of-map tiles `0x522f60`),
+  view size `+0x30` cols = `(mapW+23)/16 + 10`, `+0x34` rows = `(mapH+255)/9 + 11`, camera `+4/+8`, previous camera
+  `+0xc/+0x10`; behind the grid: 16 x 16-byte array `+0xc65c0`, strings `+0xc66c0..`, 20 x 0x1c `+0xc66d8`, 100 x
+  0x24 `+0xc690c`, count `+0xc771c`. Rows are sheared: column index up to `cols + rows/2`; 1024x768 uses 126 of 130
+  columns (with neighbour reads). In placement mode the fill also writes marker bytes into visible `gd` tiles
+  (`0x5223b2`, tile `+8`).
+- Fixed caps that do not limit bigger views: hit list 10000 entries (`0x4d8240`), sprite lists 4000 / 8000 entries
+  in 250 row buckets (`0x4d7c90`, `0x4d7e10`).
+- `0x5158f0` (thiscall gd): tile at the view centre from camera and `0x730f18/1c` (STATIC, callers not checked).
+- `0x4d82b0`: bottom-left message lines, positioned from `[0x730f38]` and `[0x730f10]` (generic).

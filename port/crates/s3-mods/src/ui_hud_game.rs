@@ -36,6 +36,12 @@ pub const FN_CENTER_ON: u32 = 0x0051_b560;
 pub const FN_LAYOUT: u32 = 0x004c_6d70;
 /// Landscape ring-buffer init `0x54bec0` (thiscall on `[gfx+0x5f6cc]`, arg0 = width), called by the display setup.
 pub const FN_LANDSCAPE_INIT: u32 = 0x0054_bec0;
+/// Frame renderer `0x4b26c0`: minimap blocks skipped in HUD mode (the HUD draws its own minimap,
+/// `ui_hud_minimap`). Block 1 = incremental minimap copy into the back buffer (`0x4b2b34` -> `0x4b2ce5`); block 2 =
+/// the per-frame minimap part right of the panel, the minimap frame art (resources `0x40001` / `0x40003`) and the
+/// white camera rectangle (`0x4b366a` -> `0x4b3cf3`, the selection-box drawing that follows stays).
+pub const MINIMAP_BLOCK1: (u32, u32) = (0x004b_2b34, 0x004b_2ce5);
+pub const MINIMAP_BLOCK2: (u32, u32) = (0x004b_366a, 0x004b_3cf3);
 /// `gfx+0x5f6cc` = landscape buffer object; its `+0x50` = buffer width (ring, the blitter wraps at it).
 pub const GFX_LANDSCAPE: u32 = 0x5f6cc;
 
@@ -92,6 +98,17 @@ pub fn original_layout(res: u32) -> Option<(u32, u32)> {
         2 => Some((176, 624)),
         3 => Some((216, 808)),
         _ => None,
+    }
+}
+
+/// Original layout of the running game: the values the layout setter wrote last (recorded before the HUD
+/// changes them, so custom resolutions patched into `0x4c6d70` work too), else the table above.
+pub fn current_original_layout(m: &mut Machine) -> Option<(u32, u32)> {
+    let res = m.mem.read_u32(L_RES);
+    let rec = m.state::<HudShared>().borrow_mut().orig_layout;
+    match rec {
+        Some((r, pw, mw)) if r == res && pw != 0 => Some((pw, mw)),
+        _ => original_layout(res),
     }
 }
 
@@ -176,6 +193,18 @@ pub struct HudShared {
     pub gfx: u32,
     /// Width of the landscape ring buffer is at least the screen width (full-screen map possible).
     pub buffer_ok: bool,
+    /// Render snapshot (argument of the panel renderer): `+0x4c` = minimap image (ui_hud_minimap).
+    pub snap: u32,
+    /// (resolution index, panel width, map view width) as the layout setter wrote them last.
+    pub orig_layout: Option<(u32, u32, u32)>,
+    /// Frames on which the game's own minimap blocks were skipped (tests / debugging).
+    pub minimap_skips: u64,
+}
+
+/// Is the full-screen layout active right now (panel width 0, applied by the HUD)?
+pub fn full_layout_active(m: &mut Machine) -> bool {
+    let applied = m.state::<HudShared>().borrow_mut().applied_panel_w.is_some();
+    applied && m.mem.read_u32(L_PANEL_W) == 0
 }
 
 /// Is the HUD mode selected in the settings (and the full-screen map not turned off)?
@@ -199,6 +228,10 @@ pub fn install_hooks(m: &mut Machine) {
         // Apply the full-screen layout right after the game set its layout, i.e. before the display setup
         // (0x42ef..) sizes the landscape buffer from the map view width.
         c.on_return(|p| {
+            let (res, pw, mw) = (p.m.mem.read_u32(L_RES), p.m.mem.read_u32(L_PANEL_W), p.m.mem.read_u32(L_MAP_W));
+            if pw != 0 {
+                p.m.state::<HudShared>().borrow_mut().orig_layout = Some((res, pw, mw));
+            }
             if hud_full_wanted(p.m) {
                 apply_layout(p.m, true);
             }
@@ -214,7 +247,7 @@ pub fn install_hooks(m: &mut Machine) {
             let a = c.esp() + 4;
             let w = c.m.mem.read_u32(a);
             let mw = c.m.mem.read_u32(L_MAP_W);
-            if w == mw.wrapping_add(margin) && w < sw + margin && sw <= 1024 {
+            if w == mw.wrapping_add(margin) && w < sw + margin && sw <= 4096 {
                 c.m.mem.write_u32(a, sw + margin);
             }
             if std::env::var("S3_HUD_DEBUG").is_ok() {
@@ -224,6 +257,18 @@ pub fn install_hooks(m: &mut Machine) {
         }
         HookFlow::Continue
     });
+    // Hide the game's own minimap (and its frame / camera rectangle) while the full-screen layout is active.
+    for (at, to) in [MINIMAP_BLOCK1, MINIMAP_BLOCK2] {
+        hooks::add_hook(m, at, "ui-hud:minimap-skip", move |c: &mut HookCtx| {
+            if full_layout_active(c.m) {
+                if at == MINIMAP_BLOCK2.0 {
+                    c.m.state::<HudShared>().borrow_mut().minimap_skips += 1;
+                }
+                return c.jump(to);
+            }
+            HookFlow::Continue
+        });
+    }
     hooks::add_hook(m, FN_TEXT, "ui-hud:text", |c: &mut HookCtx| {
         let ecx = c.reg(s3_cpu::ECX);
         let st = c.m.state::<HudShared>();
@@ -245,6 +290,8 @@ fn panel_hook(c: &mut HookCtx) -> HookFlow {
     let gfx = c.reg(s3_cpu::ECX);
     s.gfx = gfx;
     drop(s);
+    let snap = c.arg(0);
+    c.m.state::<HudShared>().borrow_mut().snap = snap;
     // The full-screen map needs a landscape buffer at least as wide as the screen (else it wraps).
     let sw = c.m.mem.read_u32(L_SCREEN_W);
     let lb = if readable(c.m, gfx + GFX_LANDSCAPE, 4) { c.m.mem.read_u32(gfx + GFX_LANDSCAPE) } else { 0 };
@@ -263,8 +310,7 @@ fn panel_hook(c: &mut HookCtx) -> HookFlow {
 
 /// Write (or undo) the full-screen map layout. Returns true if the layout is now full screen.
 pub fn apply_layout(m: &mut Machine, full: bool) -> bool {
-    let res = m.mem.read_u32(L_RES);
-    let Some((pw, mw)) = original_layout(res) else { return false };
+    let Some((pw, mw)) = current_original_layout(m) else { return false };
     let sw = m.mem.read_u32(L_SCREEN_W);
     let st = m.state::<HudShared>();
     let mut s = st.borrow_mut();

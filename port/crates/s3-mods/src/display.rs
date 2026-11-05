@@ -1,0 +1,557 @@
+//! Display modes and the one shared screen <-> game transform (docs/porting/display.md).
+//!
+//! Every frontend (Android GPU / CPU presenter, desktop `s3run` window) scales the game frame into its window with a
+//! [`Viewport`] and maps touches / mouse positions back with [`Viewport::window_to_game`]. Mods read the active
+//! viewport (window size, visible part of the game frame in `Fill` mode) with [`viewport`]; the frontend publishes
+//! it with [`set_viewport`]. Settings ([`DisplaySettings`]) live in `mods-settings.json` under `display` and are read
+//! by the frontends once per engine slice ([`display_settings`]); menus change them with [`set_display`] /
+//! [`cycle_mode`] / [`cycle_filter`] / [`cycle_fps`].
+//!
+//! Pure presentation: nothing here changes guest-visible state, so lockstep multiplayer is unaffected.
+
+use serde::{Deserialize, Serialize};
+
+use s3_runtime::Machine;
+
+/// How the game frame is placed in the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DisplayMode {
+    /// Keep the aspect ratio, whole frame visible, black bars (letterbox / pillarbox).
+    Fit,
+    /// Keep the aspect ratio, fill the whole window, crop the overflow (centred).
+    Fill,
+    /// Fill the whole window, distort the aspect ratio.
+    Stretch,
+    /// The game renders at a custom resolution with the window's aspect ratio (res-zoom, docs/porting/
+    /// resolution-zoom.md), shown like `Fit` (so no bars once the resolution matches). Frames of another aspect
+    /// (menus at 800x600) are shown like `Fit`.
+    #[default]
+    NativeWide,
+}
+
+impl DisplayMode {
+    pub const ALL: [DisplayMode; 4] = [DisplayMode::Fit, DisplayMode::Fill, DisplayMode::Stretch, DisplayMode::NativeWide];
+    pub fn label(self) -> &'static str {
+        match self {
+            DisplayMode::Fit => "Fit",
+            DisplayMode::Fill => "Fill",
+            DisplayMode::Stretch => "Stretch",
+            DisplayMode::NativeWide => "Native wide",
+        }
+    }
+    pub fn next(self) -> DisplayMode {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+    /// Parse a CLI / settings name (`fit`, `fill`, `stretch`, `native`/`native-wide`).
+    pub fn parse(s: &str) -> Option<DisplayMode> {
+        match s.to_ascii_lowercase().as_str() {
+            "fit" | "letterbox" => Some(DisplayMode::Fit),
+            "fill" | "crop" => Some(DisplayMode::Fill),
+            "stretch" => Some(DisplayMode::Stretch),
+            "native" | "native-wide" | "nativewide" | "wide" => Some(DisplayMode::NativeWide),
+            _ => None,
+        }
+    }
+}
+
+/// Texture filter used when scaling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ScaleFilter {
+    /// Blocky pixels (uneven pixel sizes at non-integer scales).
+    Nearest,
+    /// Bilinear (soft).
+    Linear,
+    /// Sharp bilinear: nearest inside each source pixel, linear only across the edge band (crisp and even).
+    #[default]
+    SharpBilinear,
+}
+
+impl ScaleFilter {
+    pub const ALL: [ScaleFilter; 3] = [ScaleFilter::Nearest, ScaleFilter::Linear, ScaleFilter::SharpBilinear];
+    pub fn label(self) -> &'static str {
+        match self {
+            ScaleFilter::Nearest => "Pixel",
+            ScaleFilter::Linear => "Smooth",
+            ScaleFilter::SharpBilinear => "Sharp",
+        }
+    }
+    pub fn next(self) -> ScaleFilter {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+    pub fn parse(s: &str) -> Option<ScaleFilter> {
+        match s.to_ascii_lowercase().as_str() {
+            "nearest" | "pixel" => Some(ScaleFilter::Nearest),
+            "linear" | "bilinear" | "smooth" => Some(ScaleFilter::Linear),
+            "sharp" | "sharp-bilinear" => Some(ScaleFilter::SharpBilinear),
+            _ => None,
+        }
+    }
+}
+
+/// FPS counter (drawn by [`crate::fps`] in the top-right corner of the visible game area).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FpsCounter {
+    #[default]
+    Off,
+    /// Game frames per second.
+    Fps,
+    /// FPS + frame time (avg / worst) + guest MIPS (+ display refresh rate when the frontend reports it).
+    Detailed,
+}
+
+impl FpsCounter {
+    pub const ALL: [FpsCounter; 3] = [FpsCounter::Off, FpsCounter::Fps, FpsCounter::Detailed];
+    pub fn label(self) -> &'static str {
+        match self {
+            FpsCounter::Off => "Off",
+            FpsCounter::Fps => "FPS",
+            FpsCounter::Detailed => "FPS + details",
+        }
+    }
+    pub fn next(self) -> FpsCounter {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+    pub fn parse(s: &str) -> Option<FpsCounter> {
+        match s.to_ascii_lowercase().as_str() {
+            "off" | "0" | "none" => Some(FpsCounter::Off),
+            "fps" | "on" | "1" => Some(FpsCounter::Fps),
+            "full" | "detailed" | "details" | "2" => Some(FpsCounter::Detailed),
+            _ => None,
+        }
+    }
+}
+
+/// `display` section of `mods-settings.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplaySettings {
+    pub mode: DisplayMode,
+    pub filter: ScaleFilter,
+    pub fps_counter: FpsCounter,
+    /// Requested display refresh rate in Hz (Android `ANativeWindow_setFrameRate`); 0 = the highest the panel
+    /// offers.
+    pub refresh_hz: u32,
+}
+
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        DisplaySettings { mode: DisplayMode::default(), filter: ScaleFilter::default(), fps_counter: FpsCounter::Off, refresh_hz: 0 }
+    }
+}
+
+/// Placement of a `game_w` x `game_h` frame in a `win_w` x `win_h` window (physical pixels). The destination
+/// rectangle may extend past the window (`Fill`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Viewport {
+    pub mode: DisplayMode,
+    pub game_w: u32,
+    pub game_h: u32,
+    pub win_w: u32,
+    pub win_h: u32,
+    /// Destination rectangle of the whole game frame in window pixels.
+    pub dst_x: f32,
+    pub dst_y: f32,
+    pub dst_w: f32,
+    pub dst_h: f32,
+}
+
+impl Viewport {
+    pub fn new(mode: DisplayMode, game_w: u32, game_h: u32, win_w: u32, win_h: u32) -> Viewport {
+        let (gw, gh) = (game_w.max(1), game_h.max(1));
+        let (ww, wh) = (win_w.max(1), win_h.max(1));
+        let (sx, sy) = (ww as f64 / gw as f64, wh as f64 / gh as f64);
+        let (dw, dh) = match mode {
+            DisplayMode::Fit | DisplayMode::NativeWide => {
+                let s = sx.min(sy);
+                // Snap to the window edge when within half a pixel (avoid 1 px bars from rounding).
+                let dw = if (gw as f64 * s - ww as f64).abs() < 1.0 { ww as f64 } else { (gw as f64 * s).round() };
+                let dh = if (gh as f64 * s - wh as f64).abs() < 1.0 { wh as f64 } else { (gh as f64 * s).round() };
+                (dw, dh)
+            }
+            DisplayMode::Fill => {
+                let s = sx.max(sy);
+                ((gw as f64 * s).round().max(ww as f64), (gh as f64 * s).round().max(wh as f64))
+            }
+            DisplayMode::Stretch => (ww as f64, wh as f64),
+        };
+        let dx = ((ww as f64 - dw) / 2.0).round();
+        let dy = ((wh as f64 - dh) / 2.0).round();
+        Viewport { mode, game_w: gw, game_h: gh, win_w: ww, win_h: wh, dst_x: dx as f32, dst_y: dy as f32, dst_w: dw as f32, dst_h: dh as f32 }
+    }
+
+    /// Window pixel -> game pixel, clamped to the frame.
+    pub fn window_to_game(&self, x: f32, y: f32) -> (i32, i32) {
+        let (gx, gy) = self.window_to_game_f(x, y);
+        (
+            (gx.floor() as i64).clamp(0, self.game_w as i64 - 1) as i32,
+            (gy.floor() as i64).clamp(0, self.game_h as i64 - 1) as i32,
+        )
+    }
+
+    /// Window pixel -> game coordinates (unclamped, fractional).
+    pub fn window_to_game_f(&self, x: f32, y: f32) -> (f32, f32) {
+        (
+            ((x as f64 - self.dst_x as f64) * self.game_w as f64 / self.dst_w as f64) as f32,
+            ((y as f64 - self.dst_y as f64) * self.game_h as f64 / self.dst_h as f64) as f32,
+        )
+    }
+
+    /// Game pixel -> window pixel (top-left corner of that game pixel).
+    pub fn game_to_window(&self, gx: f32, gy: f32) -> (f32, f32) {
+        (self.dst_x + gx * self.dst_w / self.game_w as f32, self.dst_y + gy * self.dst_h / self.game_h as f32)
+    }
+
+    /// Window pixels per game pixel (x, y).
+    pub fn scale(&self) -> (f32, f32) {
+        (self.dst_w / self.game_w as f32, self.dst_h / self.game_h as f32)
+    }
+
+    /// Part of the game frame that is on screen, in game pixels (x, y, w, h). The whole frame except in `Fill`.
+    pub fn visible_game_rect(&self) -> (i32, i32, i32, i32) {
+        let (x0, y0) = self.window_to_game_f(0.0, 0.0);
+        let (x1, y1) = self.window_to_game_f(self.win_w as f32, self.win_h as f32);
+        let x0 = (x0.max(0.0).ceil() as i32).min(self.game_w as i32);
+        let y0 = (y0.max(0.0).ceil() as i32).min(self.game_h as i32);
+        let x1 = (x1.min(self.game_w as f32).floor() as i32).max(x0);
+        let y1 = (y1.min(self.game_h as f32).floor() as i32).max(y0);
+        (x0, y0, x1 - x0, y1 - y0)
+    }
+
+    /// Destination rectangle clipped to the window: (x, y, w, h) in whole window pixels.
+    pub fn dst_rect_clipped(&self) -> (i32, i32, i32, i32) {
+        let x0 = self.dst_x.max(0.0).round() as i32;
+        let y0 = self.dst_y.max(0.0).round() as i32;
+        let x1 = (self.dst_x + self.dst_w).min(self.win_w as f32).round() as i32;
+        let y1 = (self.dst_y + self.dst_h).min(self.win_h as f32).round() as i32;
+        (x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
+    }
+
+    /// Black bar sizes in window pixels: (left, right, top, bottom).
+    pub fn bars(&self) -> (u32, u32, u32, u32) {
+        let (x, y, w, h) = self.dst_rect_clipped();
+        (x as u32, (self.win_w as i32 - x - w).max(0) as u32, y as u32, (self.win_h as i32 - y - h).max(0) as u32)
+    }
+
+    /// Aspect-matched game resolution for `NativeWide`: the window's aspect ratio with height `game_h`
+    /// (width rounded to a multiple of 8, as DirectDraw surfaces of the game like).
+    pub fn native_wide_size(win_w: u32, win_h: u32, game_h: u32) -> (u32, u32) {
+        let w = (game_h as u64 * win_w.max(1) as u64 + win_h.max(1) as u64 / 2) / win_h.max(1) as u64;
+        ((((w + 4) / 8) * 8).max(8) as u32, game_h)
+    }
+}
+
+// ---------------------------------------------------------------- CPU scaler (desktop window, CPU fallback)
+
+/// One axis of a scaling: for each destination pixel the two source taps and the weight of the second (0..=256).
+#[derive(Debug, Clone, Default)]
+pub struct AxisTaps {
+    pub i0: Vec<u32>,
+    pub i1: Vec<u32>,
+    pub w1: Vec<u16>,
+}
+
+/// Taps for `dst_n` destination pixels starting at window coordinate `dst_from`, for a source of `src_n` pixels
+/// drawn at `dst_off` with size `dst_size` (window pixels).
+pub fn axis_taps(filter: ScaleFilter, src_n: u32, dst_from: i32, dst_n: u32, dst_off: f32, dst_size: f32) -> AxisTaps {
+    let mut t = AxisTaps { i0: Vec::with_capacity(dst_n as usize), i1: Vec::with_capacity(dst_n as usize), w1: Vec::with_capacity(dst_n as usize) };
+    let n = src_n.max(1) as f64;
+    let scale = dst_size as f64 / n; // window px per source px
+    let last = src_n.saturating_sub(1);
+    for d in 0..dst_n {
+        // Source coordinate of the destination pixel centre.
+        let s = ((dst_from + d as i32) as f64 + 0.5 - dst_off as f64) / scale;
+        let (i0, i1, w) = match filter {
+            ScaleFilter::Nearest => {
+                let i = (s.floor().max(0.0) as u32).min(last);
+                (i, i, 0.0)
+            }
+            ScaleFilter::Linear => {
+                let c = s - 0.5;
+                let f = c.floor();
+                (f.max(0.0) as u32, ((f + 1.0).max(0.0) as u32), c - f)
+            }
+            ScaleFilter::SharpBilinear => {
+                // Same as the GLES shader: linear only across a 1-window-pixel band around texel edges.
+                let fl = s.floor();
+                let fr = s - fl - 0.5;
+                let range = 0.5 - 0.5 / scale.max(1.0);
+                let f = (fr - fr.clamp(-range, range)) * scale.max(1.0) + 0.5;
+                let c = fl + f - 0.5;
+                let cf = c.floor();
+                (cf.max(0.0) as u32, ((cf + 1.0).max(0.0) as u32), c - cf)
+            }
+        };
+        t.i0.push(i0.min(last));
+        t.i1.push(i1.min(last));
+        t.w1.push((w.clamp(0.0, 1.0) * 256.0).round() as u16);
+    }
+    t
+}
+
+#[inline]
+fn rgb565_to_888(p: u16) -> (u32, u32, u32) {
+    let r = ((p >> 11) & 31) as u32;
+    let g = ((p >> 5) & 63) as u32;
+    let b = (p & 31) as u32;
+    ((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2))
+}
+
+/// Scale an RGB565 frame into an XRGB8888 window buffer (`dst` = `win_w * win_h`) with black bars.
+pub fn scale_to_xrgb(vp: &Viewport, filter: ScaleFilter, src: &[u16], dst: &mut [u32]) {
+    let (ww, wh) = (vp.win_w as usize, vp.win_h as usize);
+    let (gw, gh) = (vp.game_w as usize, vp.game_h as usize);
+    if dst.len() < ww * wh || src.len() < gw * gh {
+        return;
+    }
+    let (rx, ry, rw, rh) = vp.dst_rect_clipped();
+    dst[..ww * wh].fill(0);
+    if rw == 0 || rh == 0 {
+        return;
+    }
+    let tx = axis_taps(filter, vp.game_w, rx, rw as u32, vp.dst_x, vp.dst_w);
+    let ty = axis_taps(filter, vp.game_h, ry, rh as u32, vp.dst_y, vp.dst_h);
+    let plain = filter == ScaleFilter::Nearest;
+    for (yi, y) in (ry as usize..ry as usize + rh as usize).enumerate() {
+        let row0 = &src[ty.i0[yi] as usize * gw..ty.i0[yi] as usize * gw + gw];
+        let row1 = &src[ty.i1[yi] as usize * gw..ty.i1[yi] as usize * gw + gw];
+        let wy = ty.w1[yi] as u32;
+        let out = &mut dst[y * ww + rx as usize..y * ww + rx as usize + rw as usize];
+        if plain || (wy == 0 && tx.w1.iter().all(|&w| w == 0)) {
+            for (xi, o) in out.iter_mut().enumerate() {
+                let (r, g, b) = rgb565_to_888(row0[tx.i0[xi] as usize]);
+                *o = (r << 16) | (g << 8) | b;
+            }
+            continue;
+        }
+        for (xi, o) in out.iter_mut().enumerate() {
+            let wx = tx.w1[xi] as u32;
+            let (a, b_) = (tx.i0[xi] as usize, tx.i1[xi] as usize);
+            let p00 = rgb565_to_888(row0[a]);
+            let p01 = rgb565_to_888(row0[b_]);
+            let p10 = rgb565_to_888(row1[a]);
+            let p11 = rgb565_to_888(row1[b_]);
+            let lerp = |c00: u32, c01: u32, c10: u32, c11: u32| {
+                let top = c00 * (256 - wx) + c01 * wx;
+                let bot = c10 * (256 - wx) + c11 * wx;
+                (top * (256 - wy) + bot * wy + 32768) >> 16
+            };
+            let r = lerp(p00.0, p01.0, p10.0, p11.0);
+            let g = lerp(p00.1, p01.1, p10.1, p11.1);
+            let b = lerp(p00.2, p01.2, p10.2, p11.2);
+            *o = (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+// ---------------------------------------------------------------- machine state (frontend <-> mods)
+
+/// Display info published by the frontend.
+#[derive(Debug, Clone, Default)]
+pub struct DisplayState {
+    /// Viewport used for the last shown frame (`None` headless / before the first frame).
+    pub viewport: Option<Viewport>,
+    /// Display (host) presents per second, if the frontend measures them (Android render thread).
+    pub host_fps: Option<f32>,
+    /// Display refresh rate the frontend runs at, if known.
+    pub refresh_hz: Option<f32>,
+    /// Bumped whenever [`DisplaySettings`] change through this module (frontends may poll it).
+    pub settings_seq: u64,
+}
+
+/// Frontend: publish the viewport of the shown frame.
+pub fn set_viewport(m: &mut Machine, vp: Option<Viewport>) {
+    m.state::<DisplayState>().borrow_mut().viewport = vp;
+}
+
+/// Viewport of the shown frame (`None` headless).
+pub fn viewport(m: &mut Machine) -> Option<Viewport> {
+    m.state::<DisplayState>().borrow_mut().viewport
+}
+
+/// Window size of the frontend (`None` headless).
+pub fn window_size(m: &mut Machine) -> Option<(u32, u32)> {
+    viewport(m).map(|v| (v.win_w, v.win_h))
+}
+
+/// Visible part of the game frame (game pixels); the whole last frame when no viewport is known.
+pub fn visible_game_rect(m: &mut Machine) -> (i32, i32, i32, i32) {
+    let size = m.last_frame_size();
+    match viewport(m) {
+        Some(v) if (v.game_w, v.game_h) == size || size == (0, 0) => v.visible_game_rect(),
+        Some(v) => Viewport::new(v.mode, size.0, size.1, v.win_w, v.win_h).visible_game_rect(),
+        None => (0, 0, size.0 as i32, size.1 as i32),
+    }
+}
+
+/// Frontend: report display-side rates (shown by the detailed FPS counter).
+pub fn set_host_rates(m: &mut Machine, host_fps: Option<f32>, refresh_hz: Option<f32>) {
+    let st = m.state::<DisplayState>();
+    let mut s = st.borrow_mut();
+    s.host_fps = host_fps;
+    s.refresh_hz = refresh_hz;
+}
+
+/// Current display settings (cheap copy; frontends call it once per slice).
+pub fn display_settings(m: &mut Machine) -> DisplaySettings {
+    m.state::<crate::ModsState>().borrow_mut().settings.display
+}
+
+/// Change and persist the display settings.
+pub fn set_display(m: &mut Machine, d: DisplaySettings) {
+    let mut s = crate::settings(m);
+    if s.display == d {
+        return;
+    }
+    s.display = d;
+    if let Err(e) = crate::set_settings(m, s) {
+        m.log(s3_runtime::LogLevel::Warn, &format!("display: saving settings failed: {e}"));
+    }
+    m.state::<DisplayState>().borrow_mut().settings_seq += 1;
+    m.log(s3_runtime::LogLevel::Info, &format!("display: {:?} / {:?} / fps {:?}", d.mode, d.filter, d.fps_counter));
+}
+
+/// Set the display settings for this run only (not saved; e.g. `s3run --display/--fps`).
+pub fn override_display(m: &mut Machine, d: DisplaySettings) {
+    m.state::<crate::ModsState>().borrow_mut().settings.display = d;
+    m.state::<DisplayState>().borrow_mut().settings_seq += 1;
+}
+
+/// Menu helpers: next value, persisted. They return the new value (for the button label).
+pub fn cycle_mode(m: &mut Machine) -> DisplayMode {
+    let mut d = display_settings(m);
+    d.mode = d.mode.next();
+    set_display(m, d);
+    d.mode
+}
+
+pub fn cycle_filter(m: &mut Machine) -> ScaleFilter {
+    let mut d = display_settings(m);
+    d.filter = d.filter.next();
+    set_display(m, d);
+    d.filter
+}
+
+pub fn cycle_fps(m: &mut Machine) -> FpsCounter {
+    let mut d = display_settings(m);
+    d.fps_counter = d.fps_counter.next();
+    set_display(m, d);
+    d.fps_counter
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_pillarbox_on_fold_cover() {
+        // 800x600 on the Fold4 cover screen in landscape (2229x904).
+        let v = Viewport::new(DisplayMode::Fit, 800, 600, 2229, 904);
+        assert_eq!(v.dst_h, 904.0);
+        assert_eq!(v.dst_w, 1205.0);
+        assert_eq!(v.dst_x, 512.0);
+        assert_eq!(v.window_to_game(2229.0 / 2.0, 452.0), (400, 300));
+        assert_eq!(v.window_to_game(10.0, 10.0), (0, 6));
+        assert_eq!(v.visible_game_rect(), (0, 0, 800, 600));
+        let (l, r, t, b) = v.bars();
+        assert_eq!((l, t, b), (512, 0, 0));
+        assert_eq!(r, 2229 - 512 - 1205);
+    }
+
+    #[test]
+    fn fill_crops_and_maps() {
+        let v = Viewport::new(DisplayMode::Fill, 800, 600, 2229, 904);
+        assert_eq!(v.dst_w, 2229.0);
+        assert!(v.dst_h > 904.0);
+        assert_eq!(v.bars(), (0, 0, 0, 0));
+        let (x, y, w, h) = v.visible_game_rect();
+        assert_eq!((x, w), (0, 800));
+        assert!(y > 100 && h < 340, "{y} {h}");
+        // Window centre -> game centre; corners map inside the visible rect.
+        assert_eq!(v.window_to_game(1114.5, 452.0), (400, 300));
+        // The top window row shows game row y-1 partly; the visible rect counts fully visible rows only.
+        let (_, gy) = v.window_to_game(0.0, 0.0);
+        assert!(gy == y || gy == y - 1, "{gy} {y}");
+    }
+
+    #[test]
+    fn stretch_and_round_trip() {
+        let v = Viewport::new(DisplayMode::Stretch, 640, 480, 1280, 720);
+        assert_eq!((v.dst_x, v.dst_y, v.dst_w, v.dst_h), (0.0, 0.0, 1280.0, 720.0));
+        assert_eq!(v.window_to_game(1279.0, 719.0), (639, 479));
+        let (wx, wy) = v.game_to_window(320.0, 240.0);
+        assert_eq!(v.window_to_game(wx + 0.1, wy + 0.1), (320, 240));
+        assert_eq!(v.scale(), (2.0, 1.5));
+    }
+
+    #[test]
+    fn native_wide_matching_aspect_has_no_bars() {
+        let (w, h) = Viewport::native_wide_size(2229, 904, 600);
+        assert_eq!(h, 600);
+        assert_eq!(w % 8, 0);
+        assert!((1472..=1488).contains(&w), "{w}");
+        let v = Viewport::new(DisplayMode::NativeWide, w, h, 2229, 904);
+        let (l, r, t, b) = v.bars();
+        assert!(l + r <= 4 && t + b == 0, "{:?}", v.bars());
+    }
+
+    #[test]
+    fn cpu_scaler_nearest_and_sharp() {
+        // 2x1 source: red, blue; scaled 2x into 4x2 window with Fit.
+        let src = [0xF800u16, 0x001F];
+        let v = Viewport::new(DisplayMode::Stretch, 2, 1, 4, 2);
+        let mut dst = vec![0u32; 8];
+        scale_to_xrgb(&v, ScaleFilter::Nearest, &src, &mut dst);
+        assert_eq!(&dst[..4], &[0xFF0000, 0xFF0000, 0x0000FF, 0x0000FF]);
+        assert_eq!(&dst[4..], &dst[..4].to_vec()[..]);
+        // Sharp bilinear at an integer scale equals nearest.
+        scale_to_xrgb(&v, ScaleFilter::SharpBilinear, &src, &mut dst);
+        assert_eq!(&dst[..4], &[0xFF0000, 0xFF0000, 0x0000FF, 0x0000FF]);
+        // Linear mixes in the middle.
+        scale_to_xrgb(&v, ScaleFilter::Linear, &src, &mut dst);
+        assert_eq!(dst[0], 0xFF0000);
+        assert!(dst[1] >> 16 > 0 && dst[1] & 0xFF > 0, "{:x}", dst[1]);
+        // Fit with bars: 2x1 in 4x4 -> rows 1..3 drawn, others black.
+        let v = Viewport::new(DisplayMode::Fit, 2, 1, 4, 4);
+        let mut dst = vec![7u32; 16];
+        scale_to_xrgb(&v, ScaleFilter::Nearest, &src, &mut dst);
+        assert_eq!(&dst[..4], &[0, 0, 0, 0]);
+        assert_eq!(dst[4], 0xFF0000);
+        assert_eq!(&dst[12..], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn sharp_taps_are_monotonic_and_mostly_nearest() {
+        let t = axis_taps(ScaleFilter::SharpBilinear, 800, 0, 2229, 0.0, 2229.0);
+        let mut prev = 0.0f64;
+        let mut blended = 0;
+        for i in 0..t.i0.len() {
+            let pos = t.i0[i] as f64 + t.w1[i] as f64 / 256.0;
+            assert!(pos + 1e-9 >= prev, "not monotonic at {i}");
+            prev = pos;
+            if t.w1[i] != 0 && t.w1[i] != 256 {
+                blended += 1;
+            }
+        }
+        // ~2.8x scale: at most about one blended pixel per source pixel.
+        assert!(blended <= 800, "{blended}");
+    }
+
+    #[test]
+    fn enum_parsing_and_cycles() {
+        assert_eq!(DisplayMode::parse("fill"), Some(DisplayMode::Fill));
+        assert_eq!(DisplayMode::parse("native"), Some(DisplayMode::NativeWide));
+        assert_eq!(DisplayMode::NativeWide.next(), DisplayMode::Fit);
+        assert_eq!(FpsCounter::parse("full"), Some(FpsCounter::Detailed));
+        assert_eq!(FpsCounter::Detailed.next(), FpsCounter::Off);
+        assert_eq!(ScaleFilter::parse("sharp"), Some(ScaleFilter::SharpBilinear));
+        let s: DisplaySettings = serde_json_roundtrip(&DisplaySettings { mode: DisplayMode::Fill, ..Default::default() });
+        assert_eq!(s.mode, DisplayMode::Fill);
+    }
+
+    fn serde_json_roundtrip(d: &DisplaySettings) -> DisplaySettings {
+        serde_json::from_str(&serde_json::to_string(d).unwrap()).unwrap()
+    }
+}

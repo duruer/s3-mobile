@@ -891,7 +891,7 @@ fn exec_x87(cpu: &mut Cpu, mem: &mut GuestMemory, ins: &Instruction, m: Mnemonic
             cpu.fpu.compare(a, b, quiet);
             let c = cpu.fpu.status;
             cpu.fpu.status = (cpu.fpu.status & !sw::CC) | (saved & !sw::C1);
-            cpu.eflags &= !(fl::OF | fl::SF | fl::AF | fl::ZF | fl::PF | fl::CF);
+            cpu.set_eflags(cpu.eflags() & !(fl::OF | fl::SF | fl::AF | fl::ZF | fl::PF | fl::CF));
             cpu.set_flag(fl::ZF, c & sw::C3 != 0);
             cpu.set_flag(fl::PF, c & sw::C2 != 0);
             cpu.set_flag(fl::CF, c & sw::C0 != 0);

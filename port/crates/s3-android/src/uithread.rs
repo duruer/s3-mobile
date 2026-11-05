@@ -159,6 +159,69 @@ impl UiThread {
     }
 }
 
+impl UiThread {
+    /// Use the whole screen and the fastest display mode (docs/porting/display.md):
+    /// `layoutInDisplayCutoutMode = ALWAYS` (API 30, SHORT_EDGES on 28-29) so the game also covers the camera
+    /// cutout strip, and `preferredDisplayModeId` / `preferredRefreshRate` = the mode with the current resolution
+    /// and the refresh rate closest to `hz` (0 = highest). Stores the chosen rate in `shared.refresh_hz`.
+    pub fn display_prefs(&self, hz: u32, shared: std::sync::Arc<crate::frontend::Shared>) {
+        self.run("display prefs", Box::new(move |env, act| {
+            let sdk = env.get_static_field(jni_str!("android/os/Build$VERSION"), jni_str!("SDK_INT"), jni_sig!("I"))?.i()?;
+            let win = env.call_method(act, jni_str!("getWindow"), jni_sig!("()Landroid/view/Window;"), &[])?.l()?;
+            let lp = env.call_method(&win, jni_str!("getAttributes"), jni_sig!("()Landroid/view/WindowManager$LayoutParams;"), &[])?.l()?;
+            if sdk >= 28 {
+                let mode = if sdk >= 30 { 3 } else { 1 };
+                env.set_field(&lp, jni_str!("layoutInDisplayCutoutMode"), jni_sig!("I"), JValue::Int(mode))?;
+            }
+            let wm = env.call_method(act, jni_str!("getWindowManager"), jni_sig!("()Landroid/view/WindowManager;"), &[])?.l()?;
+            let disp = env.call_method(&wm, jni_str!("getDefaultDisplay"), jni_sig!("()Landroid/view/Display;"), &[])?.l()?;
+            let cur = env.call_method(&disp, jni_str!("getMode"), jni_sig!("()Landroid/view/Display$Mode;"), &[])?.l()?;
+            let cw = env.call_method(&cur, jni_str!("getPhysicalWidth"), jni_sig!("()I"), &[])?.i()?;
+            let ch = env.call_method(&cur, jni_str!("getPhysicalHeight"), jni_sig!("()I"), &[])?.i()?;
+            let modes = env.call_method(&disp, jni_str!("getSupportedModes"), jni_sig!("()[Landroid/view/Display$Mode;"), &[])?.l()?;
+            let n = env
+                .call_static_method(jni_str!("java/lang/reflect/Array"), jni_str!("getLength"), jni_sig!("(Ljava/lang/Object;)I"), &[JValue::Object(&modes)])?
+                .i()?;
+            let mut best: Option<(i32, f32)> = None;
+            let mut all = Vec::new();
+            for i in 0..n {
+                let md = env
+                    .call_static_method(
+                        jni_str!("java/lang/reflect/Array"),
+                        jni_str!("get"),
+                        jni_sig!("(Ljava/lang/Object;I)Ljava/lang/Object;"),
+                        &[JValue::Object(&modes), JValue::Int(i)],
+                    )?
+                    .l()?;
+                let w = env.call_method(&md, jni_str!("getPhysicalWidth"), jni_sig!("()I"), &[])?.i()?;
+                let h = env.call_method(&md, jni_str!("getPhysicalHeight"), jni_sig!("()I"), &[])?.i()?;
+                let id = env.call_method(&md, jni_str!("getModeId"), jni_sig!("()I"), &[])?.i()?;
+                let r = env.call_method(&md, jni_str!("getRefreshRate"), jni_sig!("()F"), &[])?.f()?;
+                all.push(format!("{id}:{w}x{h}@{r:.0}"));
+                if (w, h) != (cw, ch) {
+                    continue;
+                }
+                let better = match best {
+                    None => true,
+                    Some((_, br)) if hz == 0 => r > br,
+                    Some((_, br)) => (r - hz as f32).abs() < (br - hz as f32).abs(),
+                };
+                if better {
+                    best = Some((id, r));
+                }
+            }
+            log::info!("display: modes [{}], current {cw}x{ch}, want {hz} Hz -> {best:?}", all.join(" "));
+            if let Some((id, r)) = best {
+                env.set_field(&lp, jni_str!("preferredDisplayModeId"), jni_sig!("I"), JValue::Int(id))?;
+                env.set_field(&lp, jni_str!("preferredRefreshRate"), jni_sig!("F"), JValue::Float(r))?;
+                shared.refresh_hz.store(r.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            }
+            env.call_method(&win, jni_str!("setAttributes"), jni_sig!("(Landroid/view/WindowManager$LayoutParams;)V"), &[JValue::Object(&lp)])?;
+            Ok(())
+        }));
+    }
+}
+
 /// `view.getRootWindowInsets().isVisible(WindowInsets.Type.ime())` (API 30+); `None` if unavailable.
 fn ime_visible<'a>(env: &mut Env<'a>, view: &JObject<'a>) -> Option<bool> {
     let q = (|| -> jni::errors::Result<bool> {

@@ -66,7 +66,8 @@ differential test of the integer ALU against the host CPU.
 
 | Where | Numbers |
 | --- | --- |
-| Interpreter micro-benchmark | ~170-185 M guest instructions/s (desktop, one core) |
+| Interpreter micro-benchmark | ~280-290 M guest instructions/s (desktop, one core; was ~170-185 before perf-cpu 2026-11-05) |
+| Desktop, in game after perf-cpu (2026-11-05) | 80-82 fps uncapped at 640x480 (was ~33), 53-55 fps at 800x600 with the 60 cap; details [performance.md](performance.md) |
 | Desktop, loading | 130-165 M instr/s on one guest thread |
 | Desktop, in game | ~48 presents/s (WaitForVerticalBlank paced), render thread 70-85 M + AI ~20 M instr/s, ~60 % of one core |
 | Emulator x86_64, in game | ~30 presents/s at ~95 M instr/s, engine thread ~77-92 % of one core, RSS ~200 MB |

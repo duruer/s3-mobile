@@ -51,6 +51,11 @@ struct Args {
     /// `--mp-hash FILE`: per-game-step simulation hash (mp_hash.rs), every `mp_hash_every` steps.
     mp_hash: Option<PathBuf>,
     mp_hash_every: u32,
+    /// Display overrides (docs/porting/display.md): `--display`, `--filter`, `--fps`, `--window WxH`.
+    display_mode: Option<s3_mods::display::DisplayMode>,
+    display_filter: Option<s3_mods::display::ScaleFilter>,
+    fps_counter: Option<s3_mods::display::FpsCounter>,
+    window_size: Option<(u32, u32)>,
 }
 
 fn usage() -> ! {
@@ -58,7 +63,9 @@ fn usage() -> ! {
         "usage: s3run --game-dir <dir> --data-dir <dir> [--exe <path>] [--headless] [--max-seconds N]\n\
          \x20            [--screenshot-every-present <dir>] [--screenshot <file.png>] [--inject \"t:cmd x y;...\"] [-v]\n\
          \x20            [--audio-wav <file.wav> [--audio-wav-seconds N (300)]] [--audio-play (feature audio-cpal)]\n\
-         \x20            [--mp-hash <file> [--mp-hash-every N]]   (multiplayer: env S3_RELAY_URL, S3_NET_NAME)"
+         \x20            [--mp-hash <file> [--mp-hash-every N]]   (multiplayer: env S3_RELAY_URL, S3_NET_NAME)\n\
+         \x20            [--display fit|fill|stretch|native] [--filter nearest|linear|sharp] [--fps off|fps|full]\n\
+         \x20            [--window WxH]   (window size; headless: the simulated screen for display modes)"
     );
     std::process::exit(2)
 }
@@ -175,6 +182,10 @@ fn parse_args() -> Args {
         units_cmds: Vec::new(),
         mp_hash: None,
         mp_hash_every: 1,
+        display_mode: None,
+        display_filter: None,
+        fps_counter: None,
+        window_size: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -209,6 +220,14 @@ fn parse_args() -> Args {
             "--audio-play" => a.audio_play = true,
             "--mp-hash" => a.mp_hash = Some(val().into()),
             "--mp-hash-every" => a.mp_hash_every = val().parse().unwrap_or_else(|_| usage()),
+            "--display" => a.display_mode = Some(s3_mods::display::DisplayMode::parse(&val()).unwrap_or_else(|| usage())),
+            "--filter" => a.display_filter = Some(s3_mods::display::ScaleFilter::parse(&val()).unwrap_or_else(|| usage())),
+            "--fps" => a.fps_counter = Some(s3_mods::display::FpsCounter::parse(&val()).unwrap_or_else(|| usage())),
+            "--window" => {
+                let v = val();
+                let (w, h) = v.split_once('x').unwrap_or_else(|| usage());
+                a.window_size = Some((w.parse().unwrap_or_else(|_| usage()), h.parse().unwrap_or_else(|_| usage())));
+            }
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -308,13 +327,20 @@ fn write_png(path: &Path, fb: &FrameBuffer) -> Result<(), String> {
 
 mod window {
     //! minifb window frontend (X11).
-    use minifb::{Key, MouseButton as MfButton, MouseMode, Window, WindowOptions};
+    use minifb::{Key, MouseButton as MfButton, MouseMode, ScaleMode, Window, WindowOptions};
+    use s3_mods::display::{DisplaySettings, Viewport};
     use s3_runtime::{FrameBuffer, HostEvent, MouseButton};
 
     pub struct Win {
         win: Option<Window>,
+        /// Window (= buffer) size; the game frame is scaled into it by `s3_mods::display` (CPU).
         size: (usize, usize),
         buf: Vec<u32>,
+        /// Requested window size (`--window`), else the first frame's size.
+        want: Option<(u32, u32)>,
+        pub display: DisplaySettings,
+        pub viewport: Option<Viewport>,
+        last_frame: Option<FrameBuffer>,
         last_mouse: (i32, i32),
         buttons: [bool; 3],
         keys_down: Vec<Key>,
@@ -342,7 +368,22 @@ mod window {
 
     impl Win {
         pub fn new() -> Self {
-            Win { win: None, size: (0, 0), buf: Vec::new(), last_mouse: (-1, -1), buttons: [false; 3], keys_down: Vec::new() }
+            Win {
+                win: None,
+                size: (0, 0),
+                buf: Vec::new(),
+                want: None,
+                display: DisplaySettings::default(),
+                viewport: None,
+                last_frame: None,
+                last_mouse: (-1, -1),
+                buttons: [false; 3],
+                keys_down: Vec::new(),
+            }
+        }
+
+        pub fn with_size(want: Option<(u32, u32)>) -> Self {
+            Win { want, ..Win::new() }
         }
 
         pub fn is_open(&self) -> bool {
@@ -350,9 +391,9 @@ mod window {
         }
 
         pub fn show(&mut self, fb: &FrameBuffer) {
-            let size = (fb.width as usize, fb.height as usize);
-            if self.win.is_none() || self.size != size {
-                let opts = WindowOptions { resize: false, ..WindowOptions::default() };
+            if self.win.is_none() {
+                let size = self.want.map(|(w, h)| (w as usize, h as usize)).unwrap_or((fb.width as usize, fb.height as usize));
+                let opts = WindowOptions { resize: true, scale_mode: ScaleMode::UpperLeft, ..WindowOptions::default() };
                 match Window::new("Settlers 3 Port (s3run)", size.0, size.1, opts) {
                     Ok(mut w) => {
                         w.set_target_fps(0);
@@ -367,19 +408,43 @@ mod window {
                     }
                 }
             }
-            self.buf.clear();
-            self.buf.extend(fb.pixels.iter().map(|&p| {
-                let (r, g, b) = s3_runtime::host::rgb565_to_rgb888(p);
-                ((r as u32) << 16) | ((g as u32) << 8) | b as u32
-            }));
-            if let Some(w) = &mut self.win {
-                let _ = w.update_with_buffer(&self.buf, size.0, size.1);
+            match &mut self.last_frame {
+                Some(l) if l.width == fb.width && l.height == fb.height => l.pixels.copy_from_slice(&fb.pixels),
+                l => *l = Some(fb.clone()),
+            }
+            self.redraw();
+        }
+
+        /// Scale the last frame into the window buffer with the current display settings.
+        fn redraw(&mut self) {
+            let Some(fb) = &self.last_frame else { return };
+            let Some(w) = &mut self.win else { return };
+            let (ww, wh) = w.get_size();
+            let (ww, wh) = (ww.max(1), wh.max(1));
+            self.size = (ww, wh);
+            let vp = Viewport::new(self.display.mode, fb.width, fb.height, ww as u32, wh as u32);
+            self.buf.resize(ww * wh, 0);
+            s3_mods::display::scale_to_xrgb(&vp, self.display.filter, &fb.pixels, &mut self.buf);
+            self.viewport = Some(vp);
+            let _ = w.update_with_buffer(&self.buf, ww, wh);
+        }
+
+        /// New display settings: redraw at once.
+        pub fn set_display(&mut self, d: DisplaySettings) {
+            if d != self.display {
+                self.display = d;
+                self.redraw();
             }
         }
 
         /// Pump window events (call regularly even without new frames).
         pub fn events(&mut self) -> Vec<HostEvent> {
             let mut out = Vec::new();
+            let Some(w) = &mut self.win else { return out };
+            let (cw, ch) = w.get_size();
+            if (cw, ch) != self.size && cw > 0 && ch > 0 {
+                self.redraw(); // window resized
+            }
             let Some(w) = &mut self.win else { return out };
             if self.buf.is_empty() {
                 w.update();
@@ -391,7 +456,11 @@ mod window {
                 return out;
             }
             if let Some((x, y)) = w.get_mouse_pos(MouseMode::Clamp) {
-                let p = (x as i32, y as i32);
+                // Window -> game pixels (shared transform, follows the display mode).
+                let p = match &self.viewport {
+                    Some(vp) => vp.window_to_game(x, y),
+                    None => (x as i32, y as i32),
+                };
                 if p != self.last_mouse {
                     self.last_mouse = p;
                     out.push(HostEvent::MouseMove { x: p.0, y: p.1 });
@@ -473,11 +542,30 @@ fn main() {
         mp_hash::install(&mut engine.machine, p, args.mp_hash_every);
     }
     let start = Instant::now();
-    let mut win = if args.headless { None } else { Some(window::Win::new()) };
+    let mut win = if args.headless { None } else { Some(window::Win::with_size(args.window_size)) };
+    // Display overrides from the command line (in memory only, not saved to mods-settings.json).
+    {
+        let mut d = s3_mods::display::display_settings(&mut engine.machine);
+        if let Some(v) = args.display_mode {
+            d.mode = v;
+        }
+        if let Some(v) = args.display_filter {
+            d.filter = v;
+        }
+        if let Some(v) = args.fps_counter {
+            d.fps_counter = v;
+        }
+        s3_mods::display::override_display(&mut engine.machine, d);
+    }
+    let mut published_vp: Option<s3_mods::display::Viewport> = None;
     let mut shown_serial = 0;
     let sample = std::env::var_os("S3_SAMPLE").is_some();
     let mut last_sample = Instant::now();
     let mut sample_prev: Vec<u64> = Vec::new();
+    let mut sample_presents = 0u64;
+    let mut sample_cpu_ns = 0u64;
+    // S3_PROFILE_FROM_MS: zero the profile counters at this time (profile only the in-game part).
+    let mut profile_reset: Option<u64> = std::env::var("S3_PROFILE_FROM_MS").ok().and_then(|v| v.parse().ok());
     let mut inject_shots: VecDeque<(u64, PathBuf)> = args.inject_shots.iter().cloned().collect();
     let mut debug_cmds: VecDeque<(u64, debug::DebugCmd)> = args.debug_cmds.iter().cloned().collect();
     let mut units_cmds: VecDeque<(u64, debug_units::UnitsCmd)> = args.units_cmds.iter().cloned().collect();
@@ -500,10 +588,38 @@ fn main() {
             }
         }
         let r = engine.run_for_ms(16);
+        // Headless + --window: publish the simulated screen so display modes (Native wide, Fill) work headless.
+        if let (None, Some((ww, wh))) = (&win, args.window_size) {
+            let (fw, fh) = engine.machine.last_frame_size();
+            if fw > 0 {
+                let mode = s3_mods::display::display_settings(&mut engine.machine).mode;
+                let vp = Some(s3_mods::display::Viewport::new(mode, fw, fh, ww, wh));
+                if vp != published_vp {
+                    published_vp = vp;
+                    s3_mods::display::set_viewport(&mut engine.machine, vp);
+                }
+            }
+        }
+        if profile_reset.is_some_and(|t| start.elapsed().as_millis() as u64 >= t) {
+            profile_reset = None;
+            for t in engine.machine.threads.iter_mut() {
+                t.cpu.cache.reset_profile();
+            }
+            eprintln!("s3run: profile counters reset");
+        }
         // Diagnostics: S3_SAMPLE=1 prints per-thread instruction deltas and EIP once per second.
         if sample && last_sample.elapsed().as_secs_f64() >= 1.0 {
             last_sample = Instant::now();
-            let mut line = format!("[sample {:>5.1}s]", start.elapsed().as_secs_f64());
+            let pr = engine.machine.stats.presents;
+            let ns = engine.machine.stats.cpu_ns;
+            let mut line = format!(
+                "[sample {:>5.1}s] fps:{} cpu:{}ms",
+                start.elapsed().as_secs_f64(),
+                pr - sample_presents,
+                (ns - sample_cpu_ns) / 1_000_000
+            );
+            sample_presents = pr;
+            sample_cpu_ns = ns;
             for (i, t) in engine.machine.threads.iter().enumerate() {
                 let prev = sample_prev.get(i).copied().unwrap_or(0);
                 line.push_str(&format!(" t{i}:{}M@{:#x}/{:?}", (t.cpu.instructions - prev) / 1_000_000, t.cpu.eip, t.state));
@@ -521,8 +637,13 @@ fn main() {
                     None
                 }
             };
+            w.set_display(s3_mods::display::display_settings(&mut engine.machine));
             if let Some(f) = frame {
                 w.show(&f);
+            }
+            if w.viewport != published_vp {
+                published_vp = w.viewport;
+                s3_mods::display::set_viewport(&mut engine.machine, published_vp);
             }
             let evs = w.events();
             shared.lock().unwrap().events.extend(evs);
@@ -537,6 +658,41 @@ fn main() {
         if r == SliceResult::Stopped {
             break;
         }
+    }
+    // S3_PROFILE=<file>: per-thread decoded-block entry counts (thread start eip len entries), for
+    // tools/perf_profile.py (function-level guest profile, see docs/porting/performance.md).
+    if let Some(p) = std::env::var_os("S3_PROFILE") {
+        let mut out = String::new();
+        for (i, t) in engine.machine.threads.iter().enumerate() {
+            for (start, len, n) in t.cpu.cache.profile() {
+                if n > 0 {
+                    out.push_str(&format!("{i} {start:#x} {len} {n}\n"));
+                }
+            }
+        }
+        if let Err(e) = std::fs::write(&p, out) {
+            eprintln!("s3run: S3_PROFILE write failed: {e}");
+        }
+        let mut dis = String::new();
+        for (i, t) in engine.machine.threads.iter().enumerate() {
+            dis.push_str(&format!("=== thread {i}\n{}", t.cpu.cache.profile_disasm(60)));
+        }
+        let mut dp = p.clone();
+        dp.push(".disasm");
+        let _ = std::fs::write(dp, dis);
+        let mut forms: std::collections::HashMap<String, u64> = Default::default();
+        for t in engine.machine.threads.iter() {
+            for (k, n) in t.cpu.cache.profile_forms() {
+                *forms.entry(k).or_default() += n;
+            }
+        }
+        let mut fv: Vec<_> = forms.into_iter().collect();
+        fv.sort_by_key(|e| std::cmp::Reverse(e.1));
+        let total: u64 = fv.iter().map(|e| e.1).sum::<u64>().max(1);
+        let txt: String = fv.iter().take(150).map(|(k, n)| format!("{:6.2}% {k}\n", 100.0 * *n as f64 / total as f64)).collect();
+        let mut fp = p.clone();
+        fp.push(".forms");
+        let _ = std::fs::write(fp, txt);
     }
     if let Some(p) = &args.screenshot {
         let f = shared.lock().unwrap().frame.clone();

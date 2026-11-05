@@ -152,6 +152,81 @@ fn draw_text(dst: &mut [u16], stride: usize, rows: usize, x: u32, y: u32, text: 
     }
 }
 
+// ---------------------------------------------------------------- GPU presenter: window-pixel layout
+
+/// Button layout for a [`s3_mods::display::Viewport`], in window pixels: a column centred in the right bar
+/// (or a row in the bottom bar). Empty when the bars are too narrow (Fill / Stretch / Native wide).
+pub fn layout_vp(vp: &s3_mods::display::Viewport) -> Vec<(Button, Rect)> {
+    let short = vp.win_w.min(vp.win_h) as f32;
+    let s = (short * SIZE_FRAC).round().max(24.0) as u32;
+    let (_l, r, _t, b) = vp.bars();
+    let (dx, dy, dw, dh) = vp.dst_rect_clipped();
+    let n = BUTTONS.len() as u32;
+    let mut out = Vec::new();
+    if r >= s + 8 {
+        let bar_x = (dx + dw) as u32;
+        let x = bar_x + (r - s) / 2;
+        for (i, bt) in BUTTONS.iter().enumerate() {
+            let cy = vp.win_h * (2 * i as u32 + 1) / (2 * n);
+            out.push((*bt, Rect { x, y: cy.saturating_sub(s / 2), w: s, h: s }));
+        }
+    } else if b >= s + 8 {
+        let bar_y = (dy + dh) as u32;
+        let y = bar_y + (b - s) / 2;
+        for (i, bt) in BUTTONS.iter().enumerate() {
+            let cx = vp.win_w * (2 * i as u32 + 1) / (2 * n);
+            out.push((*bt, Rect { x: cx.saturating_sub(s / 2), y, w: s, h: s }));
+        }
+    }
+    out
+}
+
+/// Button under a window pixel (viewport layout).
+pub fn hit_vp(vp: &s3_mods::display::Viewport, wx: f32, wy: f32) -> Option<Button> {
+    let rects = layout_vp(vp);
+    let grow = rects.first().map(|r| r.1.w as f64 * 0.25).unwrap_or(0.0);
+    rects.into_iter().find(|(_, r)| r.contains_grown(wx as f64, wy as f64, grow)).map(|(b, _)| b)
+}
+
+/// One button rendered as an opaque RGB565 `size` x `size` image (uploaded as a texture by the GPU presenter).
+pub fn button_image(b: Button, size: u32, st: &OverlayState) -> Vec<u16> {
+    let s = size.max(8);
+    let mut buf = vec![0u16; (s * s) as usize];
+    draw_one(b, Rect { x: 0, y: 0, w: s, h: s }, st, &mut buf, s as usize, s as usize);
+    buf
+}
+
+fn draw_one(b: Button, r: Rect, st: &OverlayState, dst: &mut [u16], stride: usize, rows: usize) {
+    let active = match b {
+        Button::RightClick => st.right_armed,
+        Button::Keyboard => st.keyboard,
+        Button::Esc => false,
+    };
+    let pressed = st.pressed == Some(b);
+    let fill = if pressed {
+        rgb(110, 110, 130)
+    } else if active {
+        rgb(120, 90, 20)
+    } else {
+        rgb(36, 36, 44)
+    };
+    let border = if active { rgb(255, 210, 60) } else { rgb(150, 150, 165) };
+    let bw = (r.w / 24).max(1);
+    for y in r.y..(r.y + r.h).min(rows as u32) {
+        let row = &mut dst[y as usize * stride..(y as usize + 1) * stride];
+        for x in r.x..(r.x + r.w).min(stride as u32) {
+            let edge = x < r.x + bw || x >= r.x + r.w - bw || y < r.y + bw || y >= r.y + r.h - bw;
+            row[x as usize] = if edge { border } else { fill };
+        }
+    }
+    let label = b.label();
+    let scale = ((r.w * 3 / 4) / (8 * label.len() as u32)).max(1);
+    let tw = 8 * scale * label.len() as u32;
+    let tx = r.x + r.w.saturating_sub(tw) / 2;
+    let ty = r.y + r.h.saturating_sub(8 * scale) / 2;
+    draw_text(dst, stride, rows, tx, ty, label, scale, rgb(240, 240, 240));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +262,25 @@ mod tests {
         let l = layout(&lb);
         assert_eq!(l.len(), 3);
         assert!(l.iter().all(|(_, r)| r.y >= lb.off_y + lb.game_h));
+    }
+
+    #[test]
+    fn viewport_layout_in_right_bar() {
+        use s3_mods::display::{DisplayMode, Viewport};
+        let vp = Viewport::new(DisplayMode::Fit, 800, 600, 2229, 904);
+        let l = layout_vp(&vp);
+        assert_eq!(l.len(), 3);
+        let (dx, _, dw, _) = vp.dst_rect_clipped();
+        for (_, r) in &l {
+            assert!(r.x as i32 >= dx + dw && r.x + r.w <= vp.win_w && r.y + r.h <= vp.win_h, "{r:?}");
+        }
+        let r = l[1].1;
+        assert_eq!(hit_vp(&vp, (r.x + r.w / 2) as f32, (r.y + r.h / 2) as f32), Some(Button::Keyboard));
+        assert_eq!(hit_vp(&vp, 1100.0, 450.0), None);
+        assert!(layout_vp(&Viewport::new(DisplayMode::Fill, 800, 600, 2229, 904)).is_empty());
+        let img = button_image(Button::Esc, 64, &OverlayState::default());
+        assert_eq!(img.len(), 64 * 64);
+        assert!(img.iter().any(|&p| p == rgb(240, 240, 240)));
     }
 
     #[test]

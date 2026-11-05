@@ -118,11 +118,15 @@ pub trait Mod: Send {
     fn on_touch(&mut self, m, ev: &TouchEvent) -> ModEvent { Pass }   // Consumed | Pass
     fn wants_draw(&self) -> bool { false }  fn draw(&mut self, m, c: &mut Canvas) {}
     fn needs_redraw(&self) -> bool { false } fn tick(&mut self, m, now_ms: u64) {}
+    fn on_key(&mut self, m, vk: u32, down: bool) -> ModEvent { Pass } // host keys, top first (2026-11-05)
 }
 s3_mods::add_mod(m, Box::new(MyHud::default()));   // later mods are on top (get events first)
 ```
 
 Mods are stored in `ModsState` and taken out while called, so a mod may call the mods API and guest code.
+Key events (`HostEvent::Key`, Windows VK; Android Back = `VK_ESCAPE`) go through the input filter to `Mod::on_key`
+(top first); a `Consumed` key never reaches the game (Mobile HUD: Back closes the full-screen map / sheets). Keys a
+mod pushes itself with `m.input.push` do not pass the filter.
 Consuming a raw `Down` **captures** the pointer: its Move/Up go only to that mod and the recognizer forgets it (HUD buttons).
 
 ### Gesture recognizer (`gesture.rs`, pure Rust, unit tested)
@@ -152,6 +156,11 @@ use defaults, a broken file falls back to defaults with a warning.
 `{ version, ui_mode: "ClassicTouch"|"MobileHud", patches_enabled, debug_overlay, hud_scale,
 touch: { long_press_ms, tap_max_ms, tap_slop, double_tap_ms, double_tap_slop, long_press_right_click, context } }`
 (`context` = W3 context-aware touch, default on, see [touch.md](touch.md)).
+`display: { mode, filter, fps_counter, refresh_hz }` = display mode / scaling filter / FPS counter, see
+[display.md](display.md) (`s3_mods::display`: the shared screen<->game `Viewport`, `visible_game_rect(m)` for
+anchoring overlay UI in Fill mode; `s3_mods::fps`: the FPS counter mod).
+`res: { enabled, zoom_level }` = custom game resolution / zoom level, see [resolution-zoom.md](resolution-zoom.md)
+(`s3_mods::res`: GOG patch + switch, `s3_mods::zoom`: levels, pinch, `zoom_in/zoom_out/set_level/label` for menus).
 `S3_MODS_DEBUG=1` turns on the built-in debug overlay (finger circles + last gesture label).
 
 ## Desktop testing (`s3run --inject` touch commands)

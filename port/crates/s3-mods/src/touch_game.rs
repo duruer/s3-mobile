@@ -163,6 +163,7 @@ pub fn view(m: &Machine, frame: (u32, u32), with_hits: bool) -> View {
         mode: Some(mode(m, gd)),
         hits: if with_hits { hits(m, gd) } else { Vec::new() },
         selected: selection(m),
+        vis: None,
     }
 }
 

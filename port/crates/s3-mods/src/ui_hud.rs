@@ -1,7 +1,10 @@
 //! UI mode B "Mobile HUD" (workstream W4, docs/porting/ui-hud.md): a native large-button overlay UI.
 //!
 //! - The original left panel is hidden and the map uses the full screen (layout patch, see
-//!   [`ui_hud_game`](crate::ui_hud_game)); the game's minimap stays in the top-left corner and is tappable.
+//!   [`ui_hud_game`](crate::ui_hud_game)); the game's own minimap, its frame and camera rectangle are not drawn.
+//! - Own minimap widget (bottom left, [`ui_hud_minimap`](crate::ui_hud_minimap)) from the game's minimap image:
+//!   drag on it pans the camera, a tap opens the full-screen map (tap a point = jump there and close).
+//! - Settings sheet: display mode / filter / FPS counter (`crate::display`), zoom, HUD size, UI mode.
 //! - Bottom bar: Basic / Food / Military / Special (build categories), Settlers, Stats, Menu.
 //! - Bottom sheet: the buildings of a category as large cards (icon + the game's own name). Icons are sampled
 //!   at runtime from the game's own panel (the HUD lets the game draw each build page once and copies the slot
@@ -22,6 +25,7 @@ use crate::ui_hud_data::{build_type, building_text_id, good_name, inventory_icon
 /// Harvest step that reads the goods icons (after the four build categories).
 const GOODS_PAGE: u32 = 5;
 use crate::ui_hud_game::{self as game, GameSnapshot, HudShared, LogicAction};
+use crate::ui_hud_minimap::{self as minimap, MapGeom, MiniData};
 use crate::{Mod, ModEvent, ModsState};
 
 // ---------------------------------------------------------------- palette
@@ -87,7 +91,16 @@ pub(crate) enum Action {
     MenuToggleFullMap,
     MenuScale(i32),
     PeekDone,
+    /// The minimap widget (drag = pan, tap = full-screen map).
     Minimap,
+    /// The full-screen map image (tap = jump there).
+    MapPoint,
+    MenuSettings,
+    SettingsBack,
+    CycleDisplayMode,
+    CycleFilter,
+    CycleFps,
+    Zoom(i32),
     /// Swallow the tap (sheet background).
     Nothing,
 }
@@ -100,6 +113,9 @@ pub(crate) enum Sheet {
     Settlers,
     Stats,
     Menu,
+    Settings,
+    /// Full-screen map overlay.
+    Map,
 }
 
 /// Icon harvesting state (see module docs).
@@ -145,7 +161,22 @@ pub struct MobileHud {
     dirty: bool,
     last_snap_ms: u64,
     text_dumped: bool,
+    /// Visible part of the game frame (display `Fill` mode crops; HUD elements stay inside it).
+    view: Rect,
+    /// Minimap image + camera rectangle (refreshed every `MINI_REFRESH_MS`).
+    mini: Option<MiniData>,
+    last_mini_ms: u64,
+    /// Geometry of the minimap widget / of the full-screen map from the last draw (hit tests).
+    mini_geom: Option<MapGeom>,
+    map_geom: Option<MapGeom>,
+    /// Finger on the minimap widget: start point and whether it became a drag.
+    mini_drag: Option<(f32, f32, bool)>,
+    /// Last tile the camera was centred on by a minimap drag (avoid queueing the same jump again).
+    mini_last_tile: Option<(u32, u32)>,
 }
+
+/// Minimap image refresh period (the game updates its minimap incrementally, a few times a second).
+const MINI_REFRESH_MS: u64 = 250;
 
 impl Default for MobileHud {
     fn default() -> Self {
@@ -174,6 +205,13 @@ impl Default for MobileHud {
             dirty: true,
             last_snap_ms: 0,
             text_dumped: false,
+            view: Rect::new(0, 0, 640, 480),
+            mini: None,
+            last_mini_ms: 0,
+            mini_geom: None,
+            map_geom: None,
+            mini_drag: None,
+            mini_last_tile: None,
         }
     }
 }
@@ -190,7 +228,8 @@ pub fn install(m: &mut Machine, gog_patches: bool) {
 impl MobileHud {
     /// HUD scale factor: frame height relative to 480, times the user's `hud_scale`.
     fn k(&self) -> f32 {
-        (self.frame.1 as f32 / 480.0).min(self.frame.0 as f32 / 640.0).max(0.5) * self.scale_pref.clamp(0.6, 1.6)
+        let (w, h) = (self.view.w.max(1) as f32, self.view.h.max(1) as f32);
+        (h / 480.0).min(w / 640.0).max(0.5) * self.scale_pref.clamp(0.6, 1.6)
     }
     fn u(&self, v: f32) -> i32 {
         (v * self.k()).round() as i32
@@ -442,7 +481,25 @@ impl MobileHud {
                     game::queue(m, LogicAction::Page { page: 0, sub: Some(0) });
                 }
             }
-            Action::Minimap | Action::Nothing => {}
+            Action::MenuSettings => self.sheet = Sheet::Settings,
+            Action::SettingsBack => self.sheet = Sheet::Menu,
+            Action::CycleDisplayMode => {
+                let v = crate::display::cycle_mode(m);
+                self.set_toast(&format!("Screen: {}", v.label()));
+            }
+            Action::CycleFilter => {
+                crate::display::cycle_filter(m);
+            }
+            Action::CycleFps => {
+                crate::display::cycle_fps(m);
+            }
+            Action::Zoom(d) => {
+                if let Some(t) = zoom_step(m, d) {
+                    self.set_toast(&t);
+                }
+            }
+            Action::Minimap => self.sheet = Sheet::Map,
+            Action::MapPoint | Action::Nothing => {}
         }
         self.sync_layout(m);
     }
@@ -453,14 +510,24 @@ impl MobileHud {
         self.peek_seen = false;
     }
 
-    fn minimap_tap(&mut self, m: &mut Machine, x: f32, y: f32) -> bool {
-        let Some((tx, ty)) = minimap_tile(m, x, y) else { return false };
+    /// Centre the camera on the tile under a point of a map geometry (replaces a still queued jump).
+    fn center_at(&mut self, m: &mut Machine, g: &MapGeom, x: f32, y: f32) {
+        let Some(world) = self.mini.as_ref().map(|d| d.world) else { return };
+        let (tx, ty) = g.to_tile_clamped(x, y, world);
+        if self.mini_last_tile == Some((tx, ty)) {
+            return;
+        }
+        self.mini_last_tile = Some((tx, ty));
+        let st = m.state::<HudShared>();
+        st.borrow_mut().actions.retain(|a| !matches!(a, LogicAction::CenterOn { .. }));
         game::queue(m, LogicAction::CenterOn { tx, ty });
-        true
+        // Show the new camera rectangle soon.
+        self.last_mini_ms = 0;
     }
 
-    fn minimap_active(&self, m: &Machine) -> bool {
-        self.active && self.in_game && !self.peek && m.mem.read_u32(game::L_PANEL_W) == 0
+    /// Our minimap widget is shown (full-screen layout active: the game's own minimap is hidden).
+    fn widget_active(&self, m: &mut Machine) -> bool {
+        self.active && self.in_game && !self.peek && game::full_layout_active(m)
     }
 
     // ------------------------------------------------------------ drawing
@@ -479,11 +546,12 @@ impl MobileHud {
     }
 
     fn draw_bar(&mut self, c: &mut Canvas) {
-        let (w, h) = (c.width() as i32, c.height() as i32);
+        let v = self.view;
+        let w = v.w;
         let bh = self.u(BAR_H);
-        let y0 = h - bh;
-        c.fill_rect(0, y0, w, bh, BAR_BG);
-        c.fill_rect(0, y0, w, 1.max(self.u(1.0)), Rgba::rgba(255, 255, 255, 40));
+        let y0 = v.y + v.h - bh;
+        c.fill_rect(v.x, y0, w, bh, BAR_BG);
+        c.fill_rect(v.x, y0, w, 1.max(self.u(1.0)), Rgba::rgba(255, 255, 255, 40));
         let items: [(String, Action); 7] = [
             (CATEGORIES[0].0.into(), Action::Category(1)),
             (CATEGORIES[1].0.into(), Action::Category(2)),
@@ -496,7 +564,7 @@ impl MobileHud {
         let gap = self.u(4.0);
         let bw = (w - gap) / items.len() as i32;
         for (i, (label, a)) in items.into_iter().enumerate() {
-            let r = Rect::new(gap + i as i32 * bw, y0 + gap, bw - gap, bh - 2 * gap);
+            let r = Rect::new(v.x + gap + i as i32 * bw, y0 + gap, bw - gap, bh - 2 * gap);
             let active = match (&a, self.sheet) {
                 (Action::Category(cat), Sheet::Build(s)) => *cat == s,
                 (Action::Settlers, Sheet::Settlers) | (Action::Stats, Sheet::Stats) | (Action::Menu, Sheet::Menu) => true,
@@ -526,12 +594,12 @@ impl MobileHud {
         }
     }
 
-    fn sheet_rect(&self, c: &Canvas, rows_h: i32) -> Rect {
-        let (w, h) = (c.width() as i32, c.height() as i32);
+    fn sheet_rect(&self, _c: &Canvas, rows_h: i32) -> Rect {
+        let v = self.view;
         let bh = self.u(BAR_H);
-        let sh = rows_h.min(h - bh - self.u(8.0));
+        let sh = rows_h.min(v.h - bh - self.u(8.0));
         let mx = self.u(6.0);
-        Rect::new(mx, h - bh - sh - self.u(4.0), w - 2 * mx, sh)
+        Rect::new(v.x + mx, v.y + v.h - bh - sh - self.u(4.0), v.w - 2 * mx, sh)
     }
 
     fn draw_sheet_frame(&mut self, c: &mut Canvas, r: Rect, title: &str) -> Rect {
@@ -654,36 +722,63 @@ impl MobileHud {
         }
     }
 
-    fn draw_menu(&mut self, m: &mut Machine, c: &mut Canvas) {
-        let (w, h) = (c.width() as i32, c.height() as i32);
-        c.fill_rect(0, 0, w, h - self.u(BAR_H), Rgba::rgba(0, 0, 0, 110));
-        self.add(Rect::new(0, 0, w, h - self.u(BAR_H)), Action::CloseSheet);
-        let mw = self.u(300.0).min(w - self.u(20.0));
+    /// Centred dialog over a dimmed map; returns the inner rect.
+    fn dialog(&mut self, c: &mut Canvas, rows: i32, title: &str) -> Rect {
+        let v = self.view;
+        let above_bar = v.h - self.u(BAR_H);
+        c.fill_rect(v.x, v.y, v.w, above_bar, Rgba::rgba(0, 0, 0, 110));
+        self.add(Rect::new(v.x, v.y, v.w, above_bar), Action::CloseSheet);
+        let mw = self.u(320.0).min(v.w - self.u(20.0));
         let bh = self.u(40.0);
         let gap = self.u(7.0);
-        let n_rows = 6;
-        let mh = self.u(40.0) + n_rows * (bh + gap);
-        let r = Rect::new((w - mw) / 2, ((h - self.u(BAR_H)) - mh) / 2, mw, mh);
-        let inner = self.draw_sheet_frame(c, r, "Game menu");
+        let mh = (self.u(40.0) + rows * (bh + gap)).min(above_bar - self.u(8.0));
+        let r = Rect::new(v.x + (v.w - mw) / 2, v.y + (above_bar - mh) / 2, mw, mh);
+        self.draw_sheet_frame(c, r, title)
+    }
+
+    fn draw_menu(&mut self, c: &mut Canvas) {
+        let bh = self.u(40.0);
+        let gap = self.u(7.0);
+        let inner = self.dialog(c, 4, "Game menu");
         let full = Rect::new(inner.x, inner.y, inner.w, bh);
         let half = (inner.w - gap) / 2;
         let row = |i: i32| inner.y + i * (bh + gap);
         self.button(c, Rect { y: row(0), ..full }, "Resume", BTN_ACTIVE, Action::MenuResume);
         self.button(c, Rect::new(inner.x, row(1), half, bh), "Save game", BTN_BG, Action::MenuSave);
         self.button(c, Rect::new(inner.x + half + gap, row(1), half, bh), "Pause", BTN_BG, Action::MenuPause);
-        self.button(c, Rect { y: row(2), ..full }, "Quit game (load: main menu)", BTN_DANGER, Action::MenuQuit);
-        let mode = crate::settings(m).ui_mode;
-        let mode_label = if mode == UiMode::MobileHud { "UI: Mobile HUD  >  Classic Touch" } else { "UI: Classic  >  Mobile HUD" };
-        self.button(c, Rect { y: row(3), ..full }, mode_label, BTN_BG, Action::MenuToggleMode);
-        let fm = if self.fullscreen_map { "Full-screen map: on" } else { "Full-screen map: off" };
-        self.button(c, Rect { y: row(4), ..full }, fm, BTN_BG, Action::MenuToggleFullMap);
-        let third = (inner.w - 2 * gap) / 3;
-        self.button(c, Rect::new(inner.x, row(5), third, bh), "HUD -", BTN_BG, Action::MenuScale(-1));
-        c.text_centered(inner.x + third + gap, row(5), third, bh, self.k() * 14.0, Weight::Bold, TEXT, &format!("{:.0}%", self.scale_pref * 100.0));
-        self.button(c, Rect::new(inner.x + 2 * (third + gap), row(5), third, bh), "HUD +", BTN_BG, Action::MenuScale(1));
+        self.button(c, Rect { y: row(2), ..full }, "Settings...", BTN_BG, Action::MenuSettings);
+        self.button(c, Rect { y: row(3), ..full }, "Quit game (load: main menu)", BTN_DANGER, Action::MenuQuit);
     }
 
-    /// Resource strip (top right): building materials, food and population, with the game's own goods icons.
+    /// Settings: display (crate::display: mode / filter / FPS counter), zoom, HUD size, full-screen map, UI mode.
+    fn draw_settings(&mut self, m: &mut Machine, c: &mut Canvas) {
+        let bh = self.u(40.0);
+        let gap = self.u(7.0);
+        let inner = self.dialog(c, 7, "Settings");
+        let full = Rect::new(inner.x, inner.y, inner.w, bh);
+        let half = (inner.w - gap) / 2;
+        let third = (inner.w - 2 * gap) / 3;
+        let row = |i: i32| inner.y + i * (bh + gap);
+        let d = crate::display::display_settings(m);
+        self.button(c, Rect::new(inner.x, row(0), half, bh), &format!("Screen: {}", d.mode.label()), BTN_BG, Action::CycleDisplayMode);
+        self.button(c, Rect::new(inner.x + half + gap, row(0), half, bh), &format!("Filter: {}", d.filter.label()), BTN_BG, Action::CycleFilter);
+        self.button(c, Rect { y: row(1), ..full }, &format!("FPS counter: {}", d.fps_counter.label()), BTN_BG, Action::CycleFps);
+        self.button(c, Rect::new(inner.x, row(2), third, bh), "Zoom -", BTN_BG, Action::Zoom(-1));
+        let zl = zoom_label(m);
+        c.text_centered(inner.x + third + gap, row(2), third, bh, self.k() * 13.0, Weight::Bold, TEXT, &zl);
+        self.button(c, Rect::new(inner.x + 2 * (third + gap), row(2), third, bh), "Zoom +", BTN_BG, Action::Zoom(1));
+        self.button(c, Rect::new(inner.x, row(3), third, bh), "HUD -", BTN_BG, Action::MenuScale(-1));
+        c.text_centered(inner.x + third + gap, row(3), third, bh, self.k() * 14.0, Weight::Bold, TEXT, &format!("HUD {:.0}%", self.scale_pref * 100.0));
+        self.button(c, Rect::new(inner.x + 2 * (third + gap), row(3), third, bh), "HUD +", BTN_BG, Action::MenuScale(1));
+        let fm = if self.fullscreen_map { "Full-screen map: on" } else { "Full-screen map: off" };
+        self.button(c, Rect { y: row(4), ..full }, fm, BTN_BG, Action::MenuToggleFullMap);
+        let mode = crate::settings(m).ui_mode;
+        let mode_label = if mode == UiMode::MobileHud { "UI: Mobile HUD  >  Classic Touch" } else { "UI: Classic  >  Mobile HUD" };
+        self.button(c, Rect { y: row(5), ..full }, mode_label, BTN_BG, Action::MenuToggleMode);
+        self.button(c, Rect { y: row(6), ..full }, "< Back", BTN_ACTIVE, Action::SettingsBack);
+    }
+
+    /// Resource strip (top left; the FPS counter uses the top-right corner): building materials, food and population, with the game's own goods icons.
     fn draw_resources(&mut self, c: &mut Canvas) {
         let Some(s) = self.snap.as_ref() else { return };
         let gv = |g: usize| s.goods.get(g).copied().unwrap_or(0);
@@ -709,9 +804,8 @@ impl MobileHud {
             .map(|(it, &hi)| measure_text(px, Weight::Bold, &label(it, hi)).0 + if hi { isz + self.u(4.0) } else { self.u(10.0) } + pad)
             .collect();
         let total: i32 = widths.iter().sum::<i32>() + pad;
-        let w = c.width() as i32;
-        let y0 = self.u(4.0);
-        let x0 = w - total - self.u(4.0);
+        let y0 = self.view.y + self.u(4.0);
+        let x0 = self.view.x + self.u(4.0);
         c.fill_rounded_rect(x0, y0, total, h, self.u(10.0) as f32, Rgba::rgba(18, 22, 30, 200));
         let mut x = x0 + pad;
         for ((it, &hi), wd) in items.iter().zip(&has).zip(widths) {
@@ -735,8 +829,8 @@ impl MobileHud {
 
     fn draw_selection(&mut self, m: &mut Machine, c: &mut Canvas) {
         let Some(s) = self.snap.clone() else { return };
-        let w = c.width() as i32;
-        let h = c.height() as i32;
+        let w = self.view.x + self.view.w;
+        let h = self.view.y + self.view.h;
         let cw = self.u(250.0);
         let bh = self.u(36.0);
         if s.page == 5 && !s.selection.is_empty() {
@@ -775,9 +869,9 @@ impl MobileHud {
             return;
         }
         let name = self.building_name(m, s.btype as u8);
-        let w = c.width() as i32;
-        let bw = self.u(330.0).min(w - self.u(150.0));
-        let r = Rect::new((w - bw) / 2, self.u(30.0), bw, self.u(44.0));
+        let v = self.view;
+        let bw = self.u(330.0).min(v.w - self.u(150.0));
+        let r = Rect::new(v.x + (v.w - bw) / 2, v.y + self.u(32.0), bw, self.u(44.0));
         c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(10.0) as f32, SHEET_BG);
         self.add(r, Action::Nothing);
         let cat = s.cat;
@@ -791,28 +885,59 @@ impl MobileHud {
         self.button(c, cb, "Cancel", BTN_DANGER, Action::CancelBuild);
     }
 
-    fn draw_minimap_frame(&mut self, m: &mut Machine, c: &mut Canvas) {
-        if !self.minimap_active(m) {
-            return;
+    /// Minimap widget (bottom left, above the bar): the game's minimap image + camera rectangle.
+    fn draw_minimap_widget(&mut self, c: &mut Canvas) {
+        self.mini_geom = None;
+        let Some(d) = self.mini.clone() else { return };
+        let v = self.view;
+        let h = self.u(96.0);
+        let w = h * 3 / 2;
+        let pad = self.u(5.0);
+        let card = Rect::new(v.x + self.u(6.0), v.y + v.h - self.u(BAR_H) - h - 2 * pad - self.u(6.0), w + 2 * pad, h + 2 * pad);
+        let pressed = self.pressed.as_ref().is_some_and(|(_, a)| *a == Action::Minimap);
+        c.fill_rounded_rect(card.x, card.y, card.w, card.h, self.u(10.0) as f32, Rgba::rgba(12, 15, 22, 215));
+        c.stroke_rounded_rect(card.x, card.y, card.w, card.h, self.u(10.0) as f32, 1.0, if pressed { CARD_HI } else { Rgba::rgba(255, 255, 255, 60) });
+        let g = MapGeom::fit(d.n, card.x + pad, card.y + pad, w, h);
+        minimap::draw(c, &d, &g, Rgba::WHITE);
+        // Small "expand" hint in the top-left corner (empty part of the sheared shape).
+        let hx = card.x + self.u(7.0);
+        let hy = card.y + self.u(7.0);
+        let hs = self.u(10.0);
+        c.fill_rect(hx, hy, hs, 2.max(self.u(1.5)), ACCENT);
+        c.fill_rect(hx, hy, 2.max(self.u(1.5)), hs, ACCENT);
+        self.mini_geom = Some(g);
+        self.add(card, Action::Minimap);
+    }
+
+    /// Full-screen map overlay: the whole map scaled to the screen, camera rectangle, tap = jump + close.
+    fn draw_full_map(&mut self, c: &mut Canvas) {
+        self.map_geom = None;
+        let v = self.view;
+        c.fill_rect(v.x, v.y, v.w, v.h, Rgba::rgba(8, 10, 16, 240));
+        self.add(v, Action::Nothing);
+        let top = self.u(40.0);
+        c.text(v.x + self.u(12.0), v.y + self.u(10.0), self.k() * 17.0, Weight::Bold, ACCENT, "Map");
+        c.text(v.x + self.u(60.0), v.y + self.u(13.0), self.k() * 12.0, Weight::Regular, TEXT_DIM, "Tap a place to go there");
+        match self.mini.clone() {
+            Some(d) => {
+                let g = MapGeom::fit(d.n, v.x + self.u(8.0), v.y + top, v.w - self.u(16.0), v.h - top - self.u(8.0));
+                minimap::draw(c, &d, &g, Rgba::WHITE);
+                minimap::draw_outline(c, &g, Rgba::rgba(255, 255, 255, 70));
+                let (bw, bh) = g.box_size();
+                self.add(Rect::new(g.x as i32, g.y as i32, bw as i32, bh as i32), Action::MapPoint);
+                self.map_geom = Some(g);
+            }
+            None => {
+                c.text_centered(v.x, v.y + v.h / 2 - self.u(12.0), v.w, self.u(24.0), self.k() * 14.0, Weight::Regular, TEXT_DIM, "Map not available yet");
+            }
         }
-        let (mx, my, mw, mb) = (
-            m.mem.read_u32(game::L_MINI_X) as f32,
-            m.mem.read_u32(game::L_MINI_Y) as f32,
-            m.mem.read_u32(game::L_MINI_W) as f32,
-            m.mem.read_u32(game::L_MINI_BOTTOM) as f32,
-        );
-        // Sheared parallelogram: top edge at y = my from x = mx + d .. mx + mw + d with d = (mb - y)/2.
-        let col = Rgba::rgba(240, 200, 120, 200);
-        let pts = [(mx + (mb - my) / 2.0, my), (mx + mw + (mb - my) / 2.0, my), (mx + mw, mb), (mx, mb)];
-        for i in 0..4 {
-            let (a, b) = (pts[i], pts[(i + 1) % 4]);
-            draw_line(c, a.0, a.1, b.0, b.1, col);
-        }
+        let close = Rect::new(v.x + v.w - self.u(96.0), v.y + self.u(6.0), self.u(90.0), self.u(32.0));
+        self.button(c, close, "Close", BTN_ACTIVE, Action::CloseSheet);
     }
 
     fn draw_peek(&mut self, c: &mut Canvas) {
-        let w = c.width() as i32;
-        let r = Rect::new(w - self.u(136.0), self.u(6.0), self.u(130.0), self.u(42.0));
+        let w = self.view.x + self.view.w;
+        let r = Rect::new(w - self.u(136.0), self.view.y + self.u(6.0), self.u(130.0), self.u(42.0));
         c.fill_rounded_rect(r.x - 2, r.y - 2, r.w + 4, r.h + 4, self.u(12.0) as f32, Rgba::rgba(0, 0, 0, 120));
         self.button(c, r, "Back to HUD", BTN_ACTIVE, Action::PeekDone);
     }
@@ -833,8 +958,8 @@ impl MobileHud {
         }
         let px = self.k() * 14.0;
         let (tw, th) = measure_text(px, Weight::Bold, &t);
-        let w = c.width() as i32;
-        let r = Rect::new((w - tw) / 2 - self.u(14.0), self.u(84.0), tw + self.u(28.0), th + self.u(14.0));
+        let v = self.view;
+        let r = Rect::new(v.x + (v.w - tw) / 2 - self.u(14.0), v.y + self.u(84.0), tw + self.u(28.0), th + self.u(14.0));
         c.fill_rounded_rect(r.x, r.y, r.w, r.h, (r.h / 2) as f32, Rgba::rgba(10, 12, 18, 210));
         c.text_centered(r.x, r.y, r.w, r.h, px, Weight::Bold, TEXT, &t);
     }
@@ -902,6 +1027,20 @@ impl Mod for MobileHud {
                 }
             }
         }
+        // Minimap image + camera rectangle (only while our widget / full-screen map can show it).
+        if in_game && now.saturating_sub(self.last_mini_ms) >= MINI_REFRESH_MS {
+            self.last_mini_ms = now;
+            let d = if game::full_layout_active(m) { minimap::read(m) } else { None };
+            if d != self.mini {
+                if std::env::var("S3_HUD_DEBUG").is_ok() {
+                    if let Some(d) = &d {
+                        eprintln!("ui-hud: minimap n {} world {} cam {:?}", d.n, d.world, d.cam);
+                    }
+                }
+                self.mini = d;
+                self.dirty = true;
+            }
+        }
         self.harvest_tick(m);
         self.sync_layout(m);
     }
@@ -916,8 +1055,11 @@ impl Mod for MobileHud {
 
     fn draw(&mut self, m: &mut Machine, c: &mut Canvas) {
         self.frame = (c.width(), c.height());
+        self.view = visible_view(m, c.width() as i32, c.height() as i32);
         self.dirty = false;
         self.targets.clear();
+        self.mini_geom = None;
+        self.map_geom = None;
         if !self.active || !self.in_game {
             return;
         }
@@ -940,18 +1082,29 @@ impl Mod for MobileHud {
             c.fill_rect(pw - 1, top, 1, r.h, Rgba::rgba(255, 255, 255, 40));
             self.add(r, Action::Nothing);
         }
-        self.draw_minimap_frame(m, c);
+        if self.sheet == Sheet::Map {
+            if self.widget_active(m) {
+                self.draw_full_map(c);
+                self.draw_toast(c);
+                return;
+            }
+            self.sheet = Sheet::None;
+        }
         self.draw_resources(c);
         self.draw_placement(m, c);
         if matches!(self.sheet, Sheet::None) {
+            if self.widget_active(m) {
+                self.draw_minimap_widget(c);
+            }
             self.draw_selection(m, c);
         }
         match self.sheet {
             Sheet::Build(cat) => self.draw_build_sheet(m, c, cat),
             Sheet::Settlers => self.draw_settlers_sheet(m, c),
             Sheet::Stats => self.draw_stats_sheet(m, c),
-            Sheet::Menu => self.draw_menu(m, c),
-            Sheet::None => {}
+            Sheet::Menu => self.draw_menu(c),
+            Sheet::Settings => self.draw_settings(m, c),
+            Sheet::Map | Sheet::None => {}
         }
         self.draw_bar(c);
         self.draw_toast(c);
@@ -964,13 +1117,12 @@ impl Mod for MobileHud {
         match *ev {
             TouchEvent::Down { id, x, y } => {
                 if let Some(a) = self.hit(x, y) {
+                    if a == Action::Minimap {
+                        self.mini_drag = Some((x, y, false));
+                        self.mini_last_tile = None;
+                    }
                     self.pressed = Some((id, a));
                     self.dirty = true;
-                    return ModEvent::Consumed;
-                }
-                if self.minimap_active(m) && minimap_tile(m, x, y).is_some() {
-                    self.pressed = Some((id, Action::Minimap));
-                    self.minimap_tap(m, x, y);
                     return ModEvent::Consumed;
                 }
                 if self.sheet != Sheet::None {
@@ -983,7 +1135,17 @@ impl Mod for MobileHud {
             TouchEvent::Move { id, x, y } => {
                 if let Some((pid, Action::Minimap)) = &self.pressed {
                     if *pid == id {
-                        self.minimap_tap(m, x, y);
+                        if let Some((x0, y0, dragging)) = self.mini_drag {
+                            let slop = self.k() * 7.0;
+                            let drag = dragging || (x - x0).abs() > slop || (y - y0).abs() > slop;
+                            self.mini_drag = Some((x0, y0, drag));
+                            if drag {
+                                if let Some(g) = self.mini_geom {
+                                    self.center_at(m, &g, x, y);
+                                }
+                            }
+                        }
+                        return ModEvent::Consumed;
                     }
                 }
                 ModEvent::Pass
@@ -995,8 +1157,25 @@ impl Mod for MobileHud {
                     return ModEvent::Pass;
                 }
                 self.dirty = true;
+                if a == Action::Minimap {
+                    // Tap (no drag) = full-screen map; a drag already moved the camera.
+                    let dragged = self.mini_drag.take().is_some_and(|d| d.2);
+                    if !dragged {
+                        self.run(m, Action::Minimap);
+                    }
+                    return ModEvent::Consumed;
+                }
+                if a == Action::MapPoint {
+                    if let Some(g) = self.map_geom {
+                        if g.in_box(x, y) {
+                            self.center_at(m, &g, x, y);
+                            self.sheet = Sheet::None;
+                        }
+                    }
+                    return ModEvent::Consumed;
+                }
                 let still_inside = match &a {
-                    Action::Minimap | Action::CloseSheet => true,
+                    Action::CloseSheet => true,
                     a => self.targets.iter().any(|(r, t)| t == a && r.contains(x, y)),
                 };
                 if still_inside {
@@ -1007,12 +1186,30 @@ impl Mod for MobileHud {
             TouchEvent::Cancel { id } => {
                 if self.pressed.as_ref().is_some_and(|(p, _)| *p == id) {
                     self.pressed = None;
+                    self.mini_drag = None;
                     self.dirty = true;
                 }
                 ModEvent::Pass
             }
             _ => ModEvent::Pass,
         }
+    }
+
+    fn on_key(&mut self, _m: &mut Machine, vk: u32, down: bool) -> ModEvent {
+        // Back (Android) / Esc closes the full-screen map, the settings page (back to the menu) or a sheet.
+        if vk != 0x1b || !self.active || !self.in_game {
+            return ModEvent::Pass;
+        }
+        let next = match self.sheet {
+            Sheet::None => return ModEvent::Pass,
+            Sheet::Settings => Sheet::Menu,
+            _ => Sheet::None,
+        };
+        if !down {
+            self.sheet = next;
+            self.dirty = true;
+        }
+        ModEvent::Consumed
     }
 }
 
@@ -1108,14 +1305,6 @@ fn draw_wrapped(c: &mut Canvas, r: Rect, px: f32, text: &str) {
     }
 }
 
-fn draw_line(c: &mut Canvas, x0: f32, y0: f32, x1: f32, y1: f32, col: Rgba) {
-    let n = ((x1 - x0).abs().max((y1 - y0).abs()) as i32).max(1);
-    for i in 0..=n {
-        let t = i as f32 / n as f32;
-        c.fill_rect((x0 + (x1 - x0) * t) as i32, (y0 + (y1 - y0) * t) as i32, 1, 1, col);
-    }
-}
-
 fn draw_house(c: &mut Canvas, r: Rect, k: f32) {
     let s = (r.w.min(r.h) as f32 * 0.8) as i32;
     let (x, y) = (r.x + (r.w - s) / 2, r.y + (r.h - s) / 2);
@@ -1151,33 +1340,39 @@ fn draw_burger(c: &mut Canvas, r: Rect, k: f32) {
     }
 }
 
-/// Tile under a minimap point (HandleInput's formula, game-state-ui.md §1), `None` if outside.
-pub(crate) fn minimap_tile(m: &Machine, x: f32, y: f32) -> Option<(u32, u32)> {
-    let g = game::gd(m)?;
-    let (mx, my, mw, mb) = (
-        m.mem.read_u32(game::L_MINI_X) as i32,
-        m.mem.read_u32(game::L_MINI_Y) as i32,
-        m.mem.read_u32(game::L_MINI_W) as i32,
-        m.mem.read_u32(game::L_MINI_BOTTOM) as i32,
-    );
-    let w = m.mem.read_u32(g + game::GD_WORLD_W) as i32;
-    minimap_tile_math(x as i32, y as i32, mx, my, mw, mb, w)
+/// The visible part of the game frame (display `Fill` mode crops), clamped to the canvas.
+fn visible_view(m: &mut Machine, cw: i32, ch: i32) -> Rect {
+    let (x, y, w, h) = crate::display::visible_game_rect(m);
+    let (x0, y0) = (x.clamp(0, cw), y.clamp(0, ch));
+    let (x1, y1) = ((x + w).clamp(0, cw), (y + h).clamp(0, ch));
+    if x1 - x0 < 160 || y1 - y0 < 120 {
+        return Rect::new(0, 0, cw, ch);
+    }
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
-pub(crate) fn minimap_tile_math(x: i32, y: i32, mx: i32, my: i32, mw: i32, mb: i32, w: i32) -> Option<(u32, u32)> {
-    if mw <= 0 || w <= 0 || y < my || y >= mb {
-        return None;
+/// Zoom one step (`dir` > 0 = closer). Uses the game's own resolutions (F1..F3, like pinch in touch.rs) until a
+/// finer zoom API exists (res-zoom, docs/porting/resolution-zoom.md). Returns a toast text.
+fn zoom_step(m: &mut Machine, dir: i32) -> Option<String> {
+    let res = m.mem.read_u32(game::L_RES) as i32;
+    let scale = if dir > 0 { 1.5 } else { 0.6 };
+    match crate::touch_logic::pinch_zoom_key(scale, res) {
+        Some(vk) => {
+            m.input.push(s3_runtime::HostEvent::Key { vk, down: true });
+            m.input.push(s3_runtime::HostEvent::Key { vk, down: false });
+            Some(if dir > 0 { "Zoom in".into() } else { "Zoom out".into() })
+        }
+        None => Some(if dir > 0 { "Closest zoom".into() } else { "Farthest zoom".into() }),
     }
-    let d = (mb - y) / 2;
-    if x <= mx + d || x >= mx + mw + d {
-        return None;
+}
+
+/// Current zoom level label (the game resolution).
+fn zoom_label(m: &mut Machine) -> String {
+    let (w, h) = (m.mem.read_u32(game::L_SCREEN_W), m.mem.read_u32(game::L_SCREEN_H));
+    if w == 0 || h == 0 {
+        return "-".into();
     }
-    let ty = w * (y - my) / mw;
-    let tx = w * ((y - my) / 2 - mw / 2 - mx + x) / mw;
-    if tx < 0 || ty < 0 || tx >= w || ty >= w {
-        return None;
-    }
-    Some((tx as u32, ty as u32))
+    format!("{w}x{h}")
 }
 
 /// Label of a settler type. Only the soldier kinds seen at the start are known (game-state-units.md;
@@ -1223,16 +1418,6 @@ mod tests {
         assert_eq!(slot_rect(1, 3, 8, 152), Rect::new(11, 218, 57, 30));
         assert_eq!(slot_rect(2, 3, 8, 152), Rect::new(71, 218, 57, 30));
         assert_eq!(slot_rect(3, 3, 8, 152), Rect::new(11, 254, 57, 30));
-    }
-
-    #[test]
-    fn minimap_math() {
-        // 640x480 minimap: x 5, y 10, w 128, bottom 142; 384 world.
-        assert_eq!(minimap_tile_math(200, 50, 5, 10, 128, 142, 384), None);
-        assert_eq!(minimap_tile_math(70, 5, 5, 10, 128, 142, 384), None);
-        let (tx, ty) = minimap_tile_math(100, 76, 5, 10, 128, 142, 384).unwrap();
-        assert!(tx < 384 && ty < 384);
-        assert_eq!(ty, 384 * 66 / 128);
     }
 
     #[test]

@@ -61,6 +61,10 @@ pub struct Settings {
     /// Scale factor for native HUD elements (mode B).
     pub hud_scale: f32,
     pub touch: TouchSettings,
+    /// Display mode / filter / FPS counter / refresh rate (docs/porting/display.md, `crate::display`).
+    pub display: crate::display::DisplaySettings,
+    /// Custom game resolution + zoom level (docs/porting/resolution-zoom.md, `crate::res` / `crate::zoom`).
+    pub res: crate::res::ResSettings,
 }
 
 impl Default for Settings {
@@ -72,6 +76,8 @@ impl Default for Settings {
             debug_overlay: false,
             hud_scale: 1.0,
             touch: TouchSettings::default(),
+            display: crate::display::DisplaySettings::default(),
+            res: crate::res::ResSettings::default(),
         }
     }
 }

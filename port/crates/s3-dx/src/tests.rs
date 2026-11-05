@@ -309,10 +309,14 @@ fn ddraw_menu_flow_presents() {
     // BltFast back -> primary.
     assert_eq!(call(&mut m, prim, IDIRECTDRAWSURFACE3, "BltFast", &[0, 0, back, rect, 0x10]), 0);
     assert_eq!(st.borrow_mut().fb.pixels[0], 0);
-    // WaitForVerticalBlank blocks until the next 60 Hz boundary (at most ~17 ms).
+    // WaitForVerticalBlank is a frame limiter (60 fps default): three waits take >= ~2 periods, not more
+    // than a few.
     let t0 = std::time::Instant::now();
-    assert_eq!(call(&mut m, dd, IDIRECTDRAW2, "WaitForVerticalBlank", &[1, 0]), 0);
-    assert!(t0.elapsed().as_millis() <= 40);
+    for _ in 0..3 {
+        assert_eq!(call(&mut m, dd, IDIRECTDRAW2, "WaitForVerticalBlank", &[1, 0]), 0);
+    }
+    let ms = t0.elapsed().as_millis();
+    assert!((30..=120).contains(&ms), "3 waits took {ms} ms");
     // Release frees the offscreen surface.
     assert_eq!(call(&mut m, back, IDIRECTDRAWSURFACE3, "Release", &[]), 0);
     assert!(!st.borrow_mut().surfaces.contains_key(&back));
@@ -751,4 +755,44 @@ fn dplay_two_machines_through_relay() {
     a.mem.write_u32(size, 0x400);
     assert_eq!(call(&mut a, dpa, IDIRECTPLAY4A, "Receive", &[from, to, 1, buf, size]), 0);
     assert_eq!(a.mem.read_u32(buf), dpsys::DESTROYPLAYERORGROUP);
+}
+
+/// res-zoom port extension: `SetDisplayMode(.., DDSDM_PORT_LOGICAL)` crops the presented primary surface without
+/// re-creating surfaces; a real mode change clears it (docs/porting/resolution-zoom.md).
+#[test]
+fn ddraw_logical_size_crops_present() {
+    use ddraw::*;
+    let mut m = machine();
+    let (_, f) = m.com.factories[&CLSID_DIRECTDRAW];
+    let dd = f(&mut m, IID_IDIRECTDRAW2).unwrap();
+    assert_eq!(call(&mut m, dd, IDIRECTDRAW2, "SetCooperativeLevel", &[0x1234, 0x13]), 0);
+    // Custom sizes are accepted.
+    assert_eq!(call(&mut m, dd, IDIRECTDRAW2, "SetDisplayMode", &[1920, 780, 16, 0, 0]), 0);
+    let ddsd = m.mem.alloc(DDSD_SIZE);
+    let out = m.mem.alloc(4);
+    m.mem.write_u32(ddsd, DDSD_SIZE);
+    m.mem.write_u32(ddsd + 4, DDSD_CAPS);
+    m.mem.write_u32(ddsd + 0x68, DDSCAPS_PRIMARYSURFACE);
+    assert_eq!(call(&mut m, dd, IDIRECTDRAW2, "CreateSurface", &[ddsd, out, 0]), 0);
+    let prim = m.mem.read_u32(out);
+    let fx = m.mem.alloc(0x64);
+    m.mem.write_u32(fx, 0x64);
+    m.mem.write_u32(fx + 0x50, 0x001F);
+    assert_eq!(call(&mut m, prim, IDIRECTDRAWSURFACE3, "Blt", &[0, 0, 0, DDBLT_COLORFILL | DDBLT_WAIT, fx]), 0);
+    let st = m.state::<DdState>();
+    let size = |st: &s3_runtime::Shared<DdState>| {
+        let s = st.borrow_mut();
+        (s.fb.width, s.fb.height)
+    };
+    assert_eq!(size(&st), (1920, 780));
+    // Logical 1480x600: presents are cropped, the mode stays.
+    assert_eq!(call(&mut m, dd, IDIRECTDRAW2, "SetDisplayMode", &[1480, 600, 16, 0, DDSDM_PORT_LOGICAL]), 0);
+    assert_eq!(call(&mut m, prim, IDIRECTDRAWSURFACE3, "Blt", &[0, 0, 0, DDBLT_COLORFILL | DDBLT_WAIT, fx]), 0);
+    assert_eq!(size(&st), (1480, 600));
+    assert_eq!(st.borrow_mut().mode, Some((1920, 780, 16)));
+    // Bigger than the mode: rejected.
+    assert_ne!(call(&mut m, dd, IDIRECTDRAW2, "SetDisplayMode", &[2000, 600, 16, 0, DDSDM_PORT_LOGICAL]), 0);
+    // A real mode change clears the logical size.
+    assert_eq!(call(&mut m, dd, IDIRECTDRAW2, "SetDisplayMode", &[800, 600, 16, 0, 0]), 0);
+    assert_eq!(st.borrow_mut().logical, None);
 }

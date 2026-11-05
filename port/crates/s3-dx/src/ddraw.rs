@@ -4,7 +4,8 @@
 //!
 //! Surfaces are plain guest memory (allocated with VirtualAlloc-style regions). Blt/BltFast/Unlock/ReleaseDC
 //! targeting the visible primary surface, and Flip, present the primary through `Machine::present`.
-//! Display modes: any of 640x480 / 800x600 / 1024x768 at 8 or 16 bpp (16-bit = RGB565).
+//! Display modes: EnumDisplayModes offers 640x480 / 800x600 / 1024x768 at 8 or 16 bpp (16-bit = RGB565);
+//! SetDisplayMode accepts any size up to 4096x4096 (custom resolutions, docs/porting/resolution-zoom.md).
 
 use std::collections::HashMap;
 
@@ -199,8 +200,14 @@ pub struct DdState {
     /// Reused presentation buffer.
     pub fb: FrameBuffer,
     pub presents: u64,
+    /// Frame limiter (see [`dd_wait_for_vertical_blank`]): time (ms, fractional) the last wait released.
+    pub vblank_last_ms: f64,
     /// Guest strings for DirectDrawEnumerateA (description, name).
     enum_strings: Option<(u32, u32)>,
+    /// Port extension (res-zoom): the game draws only the top-left `w x h` of the mode; the primary surface is
+    /// presented cropped to it. Set by `SetDisplayMode(w, h, bpp, 0, DDSDM_PORT_LOGICAL)`, cleared by a real
+    /// mode change (docs/porting/resolution-zoom.md).
+    pub logical: Option<(u32, u32)>,
 }
 
 impl DdState {
@@ -476,18 +483,42 @@ fn dd_set_cooperative_level(m: &mut Machine) -> ThunkResult {
     ret(DD_OK, 3)
 }
 
+/// `IDirectDraw2::SetDisplayMode` flag (port extension, not a DirectX flag): change only the presented size
+/// ("logical mode") without touching surfaces; `w x h` must fit the current mode. Used by the custom-resolution
+/// zoom of s3-mods (`res.rs`) to switch sizes without the game's slow display re-setup.
+pub const DDSDM_PORT_LOGICAL: u32 = 0x8000_0000;
+
+fn set_logical(m: &mut Machine, w: u32, h: u32) -> u32 {
+    let st = state(m);
+    let mut s = st.borrow_mut();
+    let (mw, mh, _) = s.mode();
+    if w == 0 || h == 0 || w > mw || h > mh {
+        return DDERR_INVALIDMODE;
+    }
+    s.logical = if (w, h) == (mw, mh) { None } else { Some((w, h)) };
+    DD_OK
+}
+
 fn set_mode(m: &mut Machine, w: u32, h: u32, bpp: u32) -> u32 {
-    if !(matches!(bpp, 8 | 16 | 32) && (320..=2048).contains(&w) && (200..=2048).contains(&h)) {
+    // Any size (res-zoom: custom game resolutions up to 2560 wide, docs/porting/resolution-zoom.md).
+    if !(matches!(bpp, 8 | 16 | 32) && (320..=4096).contains(&w) && (200..=4096).contains(&h)) {
         m.log(LogLevel::Warn, &format!("ddraw: SetDisplayMode({w}x{h}x{bpp}) rejected"));
         return DDERR_INVALIDMODE;
     }
     m.log(LogLevel::Info, &format!("ddraw: SetDisplayMode {w}x{h}x{bpp}"));
-    state(m).borrow_mut().mode = Some((w, h, bpp));
+    let st = state(m);
+    let mut s = st.borrow_mut();
+    s.mode = Some((w, h, bpp));
+    s.logical = None;
     DD_OK
 }
 
 /// IDirectDraw2::SetDisplayMode(this, w, h, bpp, refresh, flags).
 fn dd2_set_display_mode(m: &mut Machine) -> ThunkResult {
+    if m.arg_u32(5) & DDSDM_PORT_LOGICAL != 0 {
+        let r = set_logical(m, m.arg_u32(1), m.arg_u32(2));
+        return ret(r, 6);
+    }
     let r = set_mode(m, m.arg_u32(1), m.arg_u32(2), m.arg_u32(3));
     ret(r, 6)
 }
@@ -667,19 +698,53 @@ fn dd_get_vertical_blank_status(m: &mut Machine) -> ThunkResult {
     ret(DD_OK, 2)
 }
 
-/// WaitForVerticalBlank(this, flags, hEvent): blocks the calling guest thread until the next simulated 60 Hz
-/// vertical blank (this is S3's frame pacer when `WaitVBlank` = 1).
+/// Frame cap applied by `WaitForVerticalBlank` (frames per second; 0 = no wait at all). Default 60; env
+/// `S3_FPS_CAP` overrides it at the first wait; frontends / settings may call [`set_fps_cap`].
+static FPS_CAP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Set the frame cap (fps; 0 = unlimited). See [`dd_wait_for_vertical_blank`].
+pub fn set_fps_cap(fps: u32) {
+    FPS_CAP.store(fps, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Current frame cap (fps; 0 = unlimited).
+pub fn fps_cap() -> u32 {
+    use std::sync::atomic::Ordering::Relaxed;
+    let v = FPS_CAP.load(Relaxed);
+    if v != u32::MAX {
+        return v;
+    }
+    let v = std::env::var("S3_FPS_CAP").ok().and_then(|s| s.parse().ok()).unwrap_or(REFRESH_HZ);
+    FPS_CAP.store(v, Relaxed);
+    v
+}
+
+/// WaitForVerticalBlank(this, flags, hEvent): S3's frame pacer when `WaitVBlank` = 1 (the draw thread calls it
+/// once per frame before presenting).
+///
+/// It is a **frame limiter**, not a simulated vertical-blank grid: the wait releases `1000 / fps_cap` ms after
+/// the previous release, or at once if the frame already took longer. A 60 Hz grid (the original behaviour
+/// here, and real vsync) rounds every frame up to a whole number of refresh periods, so a frame needing 17 ms
+/// ran at 30 fps; with the limiter it runs at ~58 fps. Rendering only; the logic thread has its own 64 ms timer
+/// (docs/porting/performance.md).
 fn dd_wait_for_vertical_blank(m: &mut Machine) -> ThunkResult {
     let flags = m.arg_u32(1);
     if flags & DDWAITVB_BLOCKBEGINEVENT != 0 {
         return ret(DDERR_UNSUPPORTED, 3);
     }
-    let now = m.now_ms();
-    let since = m.thread().block_since.unwrap_or(now);
-    // Next frame boundary strictly after the wait started.
-    let (_, frame) = frame_phase(since);
-    let target = ((frame + 1) * 1000).div_ceil(REFRESH_HZ as u64);
-    if now >= target {
+    let cap = fps_cap();
+    let now = m.now_ms() as f64;
+    let st = state(m);
+    let mut s = st.borrow_mut();
+    if cap == 0 {
+        s.vblank_last_ms = now;
+        return ret(DD_OK, 3);
+    }
+    let period = 1000.0 / cap as f64;
+    let target = s.vblank_last_ms + period;
+    if now + 0.5 >= target {
+        // Late frames do not build up credit (no burst of frames after a slow one).
+        s.vblank_last_ms = if now - target > period { now } else { target };
         ret(DD_OK, 3)
     } else {
         ThunkResult::Block
@@ -859,7 +924,12 @@ pub fn present_primary(m: &mut Machine) {
     let mut s = st.borrow_mut();
     let Some(p) = s.primary else { return };
     let Some(sf) = s.surfaces.get(&p) else { return };
-    let (surf, rgb555, pal) = (sf.surf, sf.rgb555, sf.palette);
+    let (mut surf, rgb555, pal) = (sf.surf, sf.rgb555, sf.palette);
+    if let Some((lw, lh)) = s.logical {
+        // Logical mode (port extension): present only the part the game draws.
+        surf.width = surf.width.min(lw);
+        surf.height = surf.height.min(lh);
+    }
     let palette = if surf.bpp == 8 { s.palettes.get(&pal).cloned() } else { None };
     let mut fb = std::mem::take(&mut s.fb);
     blit::to_framebuffer_into(&m.mem, &surf, rgb555, palette.as_deref(), &mut fb);

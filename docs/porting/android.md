@@ -128,6 +128,13 @@ app ran). Screenshot: `scratch/android-shots/ux-firstrun-s.png`.
 
 ## Runtime design
 
+**2026-11-05 (display agent): presentation moved to a third thread**, the EGL/GLES render thread
+(`present.rs`, `gl.rs`): GPU scaling with display modes Fit / Fill / Stretch / Native wide, sharp-bilinear filter,
+high refresh rate request, cutout area used, engine never waits for the display. The activity thread now only
+handles lifecycle and input (touch mapping through `s3_mods::display::Viewport`). Details:
+[display.md](display.md). The description below is the older two-thread design; the frame/status parts now go to
+the render thread.
+
 Two threads (`crates/s3-android/src`):
 
 - **Activity thread** (`android.rs`, `android_main`): polls android-activity events, owns the `ANativeWindow`

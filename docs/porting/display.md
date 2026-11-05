@@ -1,0 +1,116 @@
+# Display: GPU presenter, full-screen modes, FPS counter
+
+Status 2026-11-05 (workflow `wf_a446e364-b12`, agent `display`). User request: high FPS and full-screen display
+options like Settlers United, an FPS counter setting. Related: [resolution-zoom.md](resolution-zoom.md) (custom game
+resolutions, zoom), [android.md](android.md), [mods.md](mods.md), [ui-hud.md](ui-hud.md).
+
+Everything here is **presentation only**: it never changes guest-visible memory, so lockstep multiplayer
+([determinism.md](determinism.md)) is unaffected.
+
+## Display modes (`s3_mods::display`)
+
+| Mode | What it does | Touch mapping |
+| --- | --- | --- |
+| `Fit` | aspect kept, whole frame visible, black bars (old behaviour); letterbox buttons ESC/ABC/RMB in the bars | bars clamp to the frame edge |
+| `Fill` | aspect kept, fills the screen, overflow cropped (centred) | cropped strip is unreachable; mods anchor UI with `visible_game_rect` |
+| `Stretch` | fills the screen, aspect distorted | linear per axis |
+| `Native wide` (default) | the game renders at a custom resolution with the screen's aspect (res-zoom picks it with `Viewport::native_wide_size`), shown like `Fit` → no bars. Frames of another aspect (menus 800x600) are shown like `Fit` | like `Fit` |
+
+There are no bars in Fill / Stretch / Native wide, so the letterbox buttons are not shown there; both UI modes have
+their own menu buttons (Classic: floating Menu, HUD: menu sheet), and the RMB/keyboard functions are gestures
+(two-finger tap = cancel, three-finger tap = keyboard), see [touch.md](touch.md).
+
+Filters: `Nearest` ("Pixel"), `Linear` ("Smooth"), `SharpBilinear` ("Sharp", default): nearest inside each source
+pixel, a one-screen-pixel linear band at the pixel edges → crisp but evenly sized pixels at non-integer scales
+(800x600 → 2229x904 is 1.507x). At an exact integer scale it equals nearest; when downscaling it uses linear.
+
+### The shared transform
+
+`s3_mods::display::Viewport` is the **only** screen↔game transform. Frontends build it per shown frame
+(`Viewport::new(mode, game_w, game_h, win_w, win_h)`), map touches/mouse with `window_to_game`, and publish it to the
+mods with `display::set_viewport(m, Some(vp))`. Mods read:
+
+- `display::viewport(m)` / `display::window_size(m)` (None headless without `--window`),
+- `display::visible_game_rect(m)`: part of the frame that is on screen (game px; the whole frame except in Fill),
+- `display::display_settings(m)`; menus change settings with `set_display` / `cycle_mode` / `cycle_filter` /
+  `cycle_fps` (persisted in `mods-settings.json`); `override_display` changes them for one run only (CLI).
+
+Gestures stay in game pixels (as before); thresholds (`touch.tap_slop` ...) are therefore in game pixels in every mode.
+
+### Settings JSON (`<data dir>/mods-settings.json`)
+
+```json
+"display": { "mode": "NativeWide", "filter": "SharpBilinear", "fps_counter": "Off", "refresh_hz": 0 }
+```
+
+`mode`: `Fit` | `Fill` | `Stretch` | `NativeWide`; `filter`: `Nearest` | `Linear` | `SharpBilinear`;
+`fps_counter`: `Off` | `Fps` | `Detailed`; `refresh_hz`: 0 = highest the panel offers, else e.g. 60 / 90 / 120.
+Missing fields use the defaults (old files keep loading).
+
+## FPS counter (`s3-mods/src/fps.rs`)
+
+A mod (`FpsMod`, installed last so it draws on top of the HUD) that counts **real guest presents**
+(`Machine::stats.presents`; overlay-only refreshes are not counted) and guest instructions over 500 ms windows.
+Drawn small in the top-right corner of the visible game area (Bold 11 px, dark backdrop; green ≥ 55 fps, yellow
+≥ 30, red below). `Fps`: "60 fps". `Detailed`: + "16.7 ms (max 33)" frame time avg/worst, "100 MIPS", and on Android
+"disp 120/120 Hz" = presenter swaps per second / panel refresh rate. Toggles: settings JSON, `s3run --fps`, and the
+UI modes' menus (they call `display::cycle_fps`).
+
+## Android presenter (`s3-android/src/present.rs`, `gl.rs`)
+
+Before: the activity thread copied the frame into an `ANativeWindow_lock`ed RGB565 buffer sized with the window's
+aspect (letterbox) and the compositor scaled it; Fit only, and drawing ran on the input thread.
+
+Now a **render thread** (`s3-present`):
+
+1. The engine's `Host::present` copies the frame into `Shared::frame` and signals `Shared::frame_cv`; it never waits
+   for the display (no vsync wait, no GL on the engine thread). The activity thread is no longer woken per frame.
+2. The render thread waits on `frame_cv` (or 250 ms), copies the newest frame, uploads it as an RGB565 texture
+   (`glTexImage2D` once per size, then `glTexSubImage2D`, `GL_UNSIGNED_SHORT_5_6_5`: no CPU conversion or scaling),
+   draws one quad placed by the `Viewport` with the selected filter (sharp bilinear = fragment shader
+   `gl::FS_SHARP` on a `GL_LINEAR` texture), the letterbox buttons as small textures (re-rendered only when size /
+   state change), then `eglSwapBuffers` with swap interval 1. Only new frames are drawn (no redraws of the same
+   frame), so at 60 game fps on a 120 Hz panel it swaps 60 times a second.
+3. High refresh: after each new surface it calls `ANativeWindow_setFrameRateWithChangeStrategy(win, hz, DEFAULT,
+   ALWAYS)` (API 31; `ANativeWindow_setFrameRate` on API 30; looked up with dlsym so the APK still runs on API 26).
+   The activity thread additionally sets `WindowManager.LayoutParams.preferredDisplayModeId` / `preferredRefreshRate`
+   to the mode with the current resolution and the highest refresh rate (or closest to `refresh_hz`), via JNI
+   (`uithread.rs` `display_prefs`). The chosen rate is shown by the detailed FPS counter.
+4. Full screen: the same JNI job sets `layoutInDisplayCutoutMode = ALWAYS` (API 30; `SHORT_EDGES` on 28-29), so the
+   window covers the camera-cutout strip too (on the Fold4 cover screen the window was 2229 of 2316 px wide).
+5. Window lifecycle: `Presenter::set_window(Some/None)` from `InitWindow` / `TerminateWindow` / resize waits until
+   the render thread destroyed / created its EGL surface (Android requires the surface gone before
+   `onNativeWindowDestroyed` returns). The EGL context survives window changes.
+6. Fallback: if EGL/GLES init or surface creation fails, the render thread uses the old CPU path (Fit only) and
+   publishes its `Letterbox` so touch mapping and button hits keep matching.
+
+Touch mapping (`android.rs`): `Shared::viewport` (written by the render thread) → `Viewport::window_to_game`;
+buttons via `overlay::hit_vp`. The engine thread forwards the viewport and display rates to the mods once per slice
+(`frontend.rs` `sync_display`) and pushes the display settings to the presenter (`Shared::set_display`).
+
+Measured cost: HYPOTHESIS until the Verify phase on the phone — the upload of 800x600 RGB565 (0.96 MB) per frame and a
+single quad are far below 1 ms on a Snapdragon 8+ Gen 1 GPU; the old path's `ANativeWindow_lock` + memcpy cost was
+similar, so the FPS gain comes from the engine side (perf-cpu agent), not from the presenter. The presenter's job is
+to not get in the way: no blocking of the engine thread, vsync-paced swaps at the panel's high refresh rate.
+
+## Desktop `s3run`
+
+Window is resizable; the frame is scaled on the CPU into a window-size buffer with the same `Viewport` and filters
+(`display::scale_to_xrgb`, per-axis tap tables; `minifb` `ScaleMode::UpperLeft`), mouse positions go through
+`window_to_game`. Options (override `mods-settings.json` for this run, not saved):
+
+```text
+--display fit|fill|stretch|native   --filter nearest|linear|sharp   --fps off|fps|full   --window WxH
+```
+
+Headless with `--window WxH`: a simulated viewport for that screen size is published to the mods (so Native wide
+and Fill can be tested headless; screenshots stay at game resolution).
+
+Example: `s3run --game-dir game-files/gog-s3-ultimate --data-dir scratch/d --window 2229x904 --display fill --fps full`.
+
+## Tests
+
+- `cargo test -p s3-mods display:: fps::` — viewport math for all modes on the Fold4 cover size, CPU scaler
+  (nearest / sharp = nearest at integer scale / linear), sharp tap monotonicity, enum parsing, FPS windows.
+- `cargo test -p s3-android` — viewport button layout / hit / button image, GL clip rect.
+- Android build: `scripts/build-apk.sh --abi arm64-v8a` (cargo ndk); device verification is a separate phase.

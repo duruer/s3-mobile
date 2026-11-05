@@ -14,11 +14,17 @@
 //! exe patch sets, `S3_MODS_DEBUG=1` turns on the touch debug overlay.
 
 pub mod call;
+pub mod display; // display modes + shared screen<->game transform (docs/porting/display.md)
+pub mod fps; // FPS counter overlay
 pub mod fallback;
+pub mod fast; // native fast paths for hot guest loops (docs/porting/performance.md)
+pub mod fast_blit;
+pub mod fast_sprite;
 pub mod gesture;
 pub mod hooks;
 pub mod overlay;
 pub mod patchset;
+pub mod res; // custom resolutions (docs/porting/resolution-zoom.md)
 pub mod settings;
 pub mod sha256;
 pub mod touch;
@@ -26,15 +32,19 @@ pub mod touch_fx;
 pub mod touch_game;
 pub mod touch_logic;
 pub mod view;
+pub mod zoom; // zoom = render resolution levels, pinch (docs/porting/resolution-zoom.md)
 pub mod ui_classic;
 pub mod ui_hud; // UI mode B "Mobile HUD" (docs/porting/ui-hud.md)
 mod ui_hud_data;
+pub mod ui_hud_minimap; // HUD minimap widget + full-screen map (docs/porting/ui-hud.md)
 pub mod ui_hud_game;
 
 mod debug_overlay;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod fast_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -79,6 +89,17 @@ pub trait Mod: Send {
     }
     /// Called once per scheduler slice.
     fn tick(&mut self, _m: &mut Machine, _now_ms: u64) {}
+    /// A host key event (Windows VK; Android Back arrives as `VK_ESCAPE` 0x1b), top mod first. `Consumed` keeps
+    /// it from the game (e.g. Back closes a HUD overlay).
+    fn on_key(&mut self, _m: &mut Machine, _vk: u32, _down: bool) -> ModEvent {
+        ModEvent::Pass
+    }
+}
+
+/// Offer a key event to the mods (top first). True if one consumed it.
+fn dispatch_key(m: &mut Machine, vk: u32, down: bool) -> bool {
+    let n = mod_count(m);
+    (0..n).rev().any(|i| with_mod(m, i, |md, m| md.on_key(m, vk, down)) == Some(ModEvent::Consumed))
 }
 
 type Deferred = Box<dyn FnOnce(&mut Machine) + Send>;
@@ -170,6 +191,13 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
             &format!("mods: unknown S3.EXE (sha256 {sha}); game patches disabled (expected GOG {}…)", &patchset::GOG_SHA256[..8]),
         ),
     }
+    // Custom resolutions + zoom (res-zoom): always with the GOG patch set, so every peer has the same heap layout.
+    if applied == Some("gog-base") {
+        match res::install(m) {
+            Ok(()) => zoom::install(m),
+            Err(e) => m.log(LogLevel::Warn, &format!("mods: {e}; custom resolutions disabled")),
+        }
+    }
     // Context-aware touch (W3): GOG exe with its patch set applied, unless turned off in the settings.
     // Installed before the UI modes so their mods sit on top of it (they get touches first).
     if applied == Some("gog-base") && settings.touch.context {
@@ -179,7 +207,9 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     }
     ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
     ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
+    add_mod(m, Box::new(fps::FpsMod::default())); // FPS counter, drawn on top of the UI modes
     hooks::commit(m);
+    fast::install(m, &sha); // after commit: regions containing hooks are skipped
     let n = m.hook_addrs().map(|h| h.len()).unwrap_or(0);
     let st = m.state::<ModsState>();
     st.borrow_mut().patch_set = applied;
@@ -348,6 +378,11 @@ fn event_filter(m: &mut Machine, e: HostEvent, out: &mut Vec<HostEvent>) {
             handle_pointer(m, id, phase, x, y);
             let now = m.now_ms();
             out.extend(m.state::<ModsState>().borrow_mut().fallback.drain_due(now));
+        }
+        HostEvent::Key { vk, down } => {
+            if !dispatch_key(m, vk, down) {
+                out.push(e);
+            }
         }
         e => out.push(e),
     }

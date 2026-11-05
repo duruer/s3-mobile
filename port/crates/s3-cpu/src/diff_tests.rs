@@ -51,9 +51,9 @@ impl Harness {
         c.regs = [v_eax, v_ecx, v_edx, v_ebx, STACK_TOP, 0x1111, 0x2222, 0x3333];
         c.push32(&mut self.mem, layout::MAGIC_RETURN);
         c.eip = CODE;
-        c.eflags = fin | 0x202;
+        c.set_eflags(fin | 0x202);
         let e = c.run(&mut self.mem, 100);
-        (e, c.regs, c.eflags)
+        (e, c.regs, c.eflags())
     }
 }
 

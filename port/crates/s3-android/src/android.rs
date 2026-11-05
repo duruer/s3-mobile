@@ -1,4 +1,5 @@
-//! NativeActivity glue (android-activity): lifecycle, window, input, presentation, AAudio.
+//! NativeActivity glue (android-activity): lifecycle, window, input, AAudio. Presentation runs on the render
+//! thread in `present` (EGL/GLES).
 //! Platform-independent logic lives in `frontend`, `touch`, `layout`, `screen`, `audio`, `keys`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,116 +12,14 @@ use ndk::audio::{
     AudioCallbackResult, AudioDirection, AudioFormat, AudioPerformanceMode, AudioSharingMode, AudioStream,
     AudioStreamBuilder,
 };
-use ndk::hardware_buffer_format::HardwareBufferFormat;
-use ndk::native_window::NativeWindow;
-use s3_runtime::{FrameBuffer, HostEvent, MouseButton};
+use s3_runtime::{HostEvent, MouseButton};
 
 use crate::audio::{AudioRing, OUT_CHANNELS, OUT_RATE};
-use crate::frontend::{run_engine, Phase, Shared};
-use crate::layout::{blit_letterboxed, Letterbox};
+use crate::frontend::{run_engine, Shared};
 use crate::overlay::{self, Button, OverlayState};
-use crate::screen;
+use crate::present::Presenter;
 use crate::touch::{pointer_events, Action, PointerFilter};
 use crate::uithread::UiThread;
-
-struct Ui {
-    window: Option<NativeWindow>,
-    /// Real window size (before our buffer geometry), physical pixels.
-    win_size: (u32, u32),
-    /// Geometry currently set on the window (buf_w, buf_h).
-    geometry: Option<(u32, u32)>,
-    lb: Option<Letterbox>,
-    shown: (u64, u64),
-    status_cache: Option<(u64, FrameBuffer)>,
-    dirty: bool,
-    /// Letterbox buttons (drawn only over game frames).
-    overlay: OverlayState,
-    buttons_shown: bool,
-}
-
-impl Ui {
-    fn attach(&mut self, w: Option<NativeWindow>) {
-        self.window = w;
-        self.geometry = None;
-        self.dirty = true;
-        if let Some(w) = &self.window {
-            // Reset to the window's own size to learn the real dimensions.
-            let _ = w.set_buffers_geometry(0, 0, None);
-            self.win_size = (w.width().max(1) as u32, w.height().max(1) as u32);
-            log::info!("window: {}x{} format {:?}", self.win_size.0, self.win_size.1, w.format());
-        }
-    }
-
-    fn render(&mut self, shared: &Shared) {
-        let Some(window) = &self.window else { return };
-        let frame_seq = shared.frame.lock().unwrap().seq;
-        let status = shared.status.lock().unwrap().clone();
-        if !self.dirty && self.shown == (frame_seq, status.seq) {
-            return;
-        }
-        // Pick the image: game frame (with an overlay when the engine stopped) or the status screen.
-        let mut owned: Option<FrameBuffer> = None;
-        let slot = shared.frame.lock().unwrap();
-        let fb: &FrameBuffer = match &slot.fb {
-            Some(fb) if status.phase == Phase::Stopped => {
-                let mut c = fb.clone();
-                screen::draw_panel(&mut c, &status.title, &status.body, true);
-                owned = Some(c);
-                owned.as_ref().unwrap()
-            }
-            Some(fb) => fb,
-            None => {
-                if self.status_cache.as_ref().map(|c| c.0) != Some(status.seq) {
-                    let img = if status.phase == Phase::MissingExe {
-                        screen::first_run_screen(&status.title, &status.body)
-                    } else {
-                        screen::status_screen(&status.title, &status.body)
-                    };
-                    self.status_cache = Some((status.seq, img));
-                }
-                &self.status_cache.as_ref().unwrap().1
-            }
-        };
-        let game_frame = slot.fb.is_some();
-        let lb = Letterbox::new(fb.width, fb.height, self.win_size.0, self.win_size.1);
-        if self.geometry != Some((lb.buf_w, lb.buf_h)) {
-            match window.set_buffers_geometry(lb.buf_w as i32, lb.buf_h as i32, Some(HardwareBufferFormat::R5G6B5_UNORM)) {
-                Ok(()) => log::info!(
-                    "geometry: game {}x{} -> buffer {}x{} (offset {},{}) on window {}x{}",
-                    lb.game_w, lb.game_h, lb.buf_w, lb.buf_h, lb.off_x, lb.off_y, lb.win_w, lb.win_h
-                ),
-                Err(e) => log::error!("set_buffers_geometry: {e}"),
-            }
-            self.geometry = Some((lb.buf_w, lb.buf_h));
-        }
-        self.lb = Some(lb);
-        match window.lock(None) {
-            Ok(mut guard) => {
-                let (bw, bh, stride) = (guard.width(), guard.height(), guard.stride());
-                if guard.format() != HardwareBufferFormat::R5G6B5_UNORM {
-                    log::warn!("window buffer format {:?}, expected RGB565", guard.format());
-                }
-                // Centre using the actual buffer size (in case the geometry was not applied yet).
-                let mut l = lb;
-                l.off_x = (bw as u32).saturating_sub(lb.game_w) / 2;
-                l.off_y = (bh as u32).saturating_sub(lb.game_h) / 2;
-                let dst = unsafe { std::slice::from_raw_parts_mut(guard.bits() as *mut u16, stride * bh) };
-                blit_letterboxed(&l, &fb.pixels, dst, stride, bh);
-                if game_frame {
-                    let mut lo = l;
-                    lo.buf_w = bw as u32;
-                    lo.buf_h = bh as u32;
-                    overlay::draw(&lo, &self.overlay, dst, stride, bh);
-                }
-            }
-            Err(e) => log::error!("ANativeWindow_lock: {e}"),
-        }
-        drop(owned);
-        self.buttons_shown = game_frame;
-        self.shown = (frame_seq, status.seq);
-        self.dirty = false;
-    }
-}
 
 fn open_audio(ring: Arc<AudioRing>, dead: Arc<AtomicBool>) -> Option<AudioStream> {
     let r2 = ring.clone();
@@ -207,17 +106,11 @@ fn android_main(app: AndroidApp) {
     let mut audio = open_audio(shared.audio.clone(), audio_dead.clone());
 
     let t0 = Instant::now();
-    let mut ui = Ui {
-        window: None,
-        win_size: (1, 1),
-        geometry: None,
-        lb: None,
-        shown: (0, 0),
-        status_cache: None,
-        dirty: true,
-        overlay: OverlayState::default(),
-        buttons_shown: false,
-    };
+    // Render thread (EGL/GLES presenter, docs/porting/display.md): the engine never waits for the display.
+    let presenter = Presenter::start(shared.clone());
+    let mut overlay_st = OverlayState::default();
+    // Refresh rate asked from the window manager (preferredDisplayModeId / preferredRefreshRate), per setting.
+    let mut prefs_hz: Option<u32> = None;
     // Letterbox button under the current finger (the gesture is not passed to the game).
     let mut button_touch: Option<Button> = None;
     // Delayed key-ups of synthetic key presses (Esc button), like CLICK_MS for the mouse.
@@ -235,7 +128,7 @@ fn android_main(app: AndroidApp) {
         if !pending_keys.is_empty() {
             wait = wait.min(30);
         }
-        if ui.overlay.keyboard {
+        if overlay_st.keyboard {
             wait = wait.min(1000);
         }
         app.poll_events(Some(Duration::from_millis(wait)), |event| match event {
@@ -244,11 +137,12 @@ fn android_main(app: AndroidApp) {
                     if let Some(u) = &ui_thread {
                         u.immersive();
                     }
-                    ui.attach(app.native_window());
+                    prefs_hz = None;
+                    presenter.set_window(app.native_window());
                 }
-                MainEvent::TerminateWindow { .. } => ui.attach(None),
-                MainEvent::WindowResized { .. } | MainEvent::ConfigChanged { .. } => ui.attach(app.native_window()),
-                MainEvent::RedrawNeeded { .. } | MainEvent::ContentRectChanged { .. } => ui.dirty = true,
+                MainEvent::TerminateWindow { .. } => presenter.set_window(None),
+                MainEvent::WindowResized { .. } | MainEvent::ConfigChanged { .. } => presenter.set_window(app.native_window()),
+                MainEvent::RedrawNeeded { .. } | MainEvent::ContentRectChanged { .. } => presenter.invalidate(),
                 MainEvent::Pause => {
                     log::info!("lifecycle: pause");
                     paused = true;
@@ -264,7 +158,7 @@ fn android_main(app: AndroidApp) {
                     if let Some(s) = &audio {
                         let _ = s.request_start();
                     }
-                    ui.dirty = true;
+                    presenter.invalidate();
                 }
                 MainEvent::LostFocus => log::info!("lifecycle: lost focus"),
                 MainEvent::GainedFocus => {
@@ -290,11 +184,21 @@ fn android_main(app: AndroidApp) {
                 let t = now_ms(t0);
                 let read = iter.next(|event| match event {
                     InputEvent::MotionEvent(me) => {
-                        let Some(lb) = ui.lb else { return InputStatus::Handled };
+                        // Screen -> game: the presenter's viewport (display mode), or the CPU fallback letterbox.
+                        let Some(vp) = *shared.viewport.lock().unwrap() else { return InputStatus::Handled };
+                        let lb = *shared.letterbox.lock().unwrap();
+                        let to_game = |x: f32, y: f32| match &lb {
+                            Some(l) => l.window_to_game(x, y),
+                            None => vp.window_to_game(x, y),
+                        };
+                        let hit = |x: f32, y: f32| match &lb {
+                            Some(l) => overlay::hit(l, x, y),
+                            None => overlay::hit_vp(&vp, x, y),
+                        };
                         let idx = me.pointer_index();
                         let p = me.pointer_at_index(idx);
                         let win = (p.x(), p.y());
-                        let game = lb.window_to_game(win.0, win.1);
+                        let game = to_game(win.0, win.1);
                         if p.tool_type() == ToolType::Mouse {
                             // Real mouse (ChromeOS, DeX, emulator with a mouse device): map directly.
                             shared.push_event(HostEvent::MouseMove { x: game.0, y: game.1 });
@@ -315,12 +219,11 @@ fn android_main(app: AndroidApp) {
                             return InputStatus::Handled;
                         }
                         // Letterbox buttons: a gesture that starts on a button belongs to it.
-                        if me.action() == MotionAction::Down && ui.buttons_shown {
-                            button_touch = overlay::hit(&lb, win.0, win.1);
+                        if me.action() == MotionAction::Down {
+                            button_touch = hit(win.0, win.1);
                             if let Some(b) = button_touch {
                                 log::info!("button {b:?} down");
-                                ui.overlay.pressed = Some(b);
-                                ui.dirty = true;
+                                overlay_st.pressed = Some(b);
                                 return InputStatus::Handled;
                             }
                         }
@@ -328,9 +231,8 @@ fn android_main(app: AndroidApp) {
                             match me.action() {
                                 MotionAction::Up | MotionAction::Cancel => {
                                     button_touch = None;
-                                    ui.overlay.pressed = None;
-                                    ui.dirty = true;
-                                    let still = overlay::hit(&lb, win.0, win.1) == Some(b);
+                                    overlay_st.pressed = None;
+                                    let still = hit(win.0, win.1) == Some(b);
                                     if me.action() == MotionAction::Up && still {
                                         log::info!("button {b:?} pressed");
                                         match b {
@@ -368,7 +270,7 @@ fn android_main(app: AndroidApp) {
                             log::info!("touch down at window ({:.0},{:.0}) -> game {:?}", win.0, win.1, game);
                         }
                         let all: Vec<(i32, (i32, i32))> =
-                            me.pointers().map(|q| (q.pointer_id(), lb.window_to_game(q.x(), q.y()))).collect();
+                            me.pointers().map(|q| (q.pointer_id(), to_game(q.x(), q.y()))).collect();
                         for ev in pointer_events(action, (p.pointer_id(), game), &all) {
                             if pointers.keep(&ev) {
                                 shared.push_event(ev);
@@ -439,10 +341,24 @@ fn android_main(app: AndroidApp) {
                     u.refresh_keyboard(kb_visible.clone());
                 }
             }
-            let st = OverlayState { pressed: ui.overlay.pressed, right_armed: shared.rmb_armed.load(Ordering::Acquire), keyboard: *kb_visible.lock().unwrap() };
-            if st != ui.overlay {
-                ui.overlay = st;
-                ui.dirty = true;
+            let st = OverlayState { pressed: overlay_st.pressed, right_armed: shared.rmb_armed.load(Ordering::Acquire), keyboard: *kb_visible.lock().unwrap() };
+            overlay_st = st;
+            let changed = {
+                let mut cur = shared.buttons.lock().unwrap();
+                let c = *cur != st;
+                *cur = st;
+                c
+            };
+            if changed {
+                shared.notify_render();
+            }
+            // Display cutout + high refresh display mode (window manager side; the presenter also asks the surface).
+            let hz = shared.display.lock().unwrap().refresh_hz;
+            if prefs_hz != Some(hz) && ui_thread.is_some() {
+                prefs_hz = Some(hz);
+                if let Some(u) = &ui_thread {
+                    u.display_prefs(hz, shared.clone());
+                }
             }
         }
         if audio_dead.swap(false, Ordering::AcqRel) {
@@ -456,9 +372,6 @@ fn android_main(app: AndroidApp) {
             }
         }
 
-        if !paused {
-            ui.render(&shared);
-        }
         if shared.guest_exited.load(Ordering::Acquire) && !finishing {
             finishing = true;
             match &ui_thread {
@@ -469,6 +382,7 @@ fn android_main(app: AndroidApp) {
     }
 
     log::info!("shutting down");
+    drop(presenter);
     shared.request_quit();
     if let Some(s) = audio.take() {
         let _ = s.request_stop();

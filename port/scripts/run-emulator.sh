@@ -112,7 +112,7 @@ push() {
     while IFS= read -r f; do
       local want have
       want=$(stat -c %s "$GAME_DIR/$f")
-      have=$($ADB shell "stat -c %s '$DEV_GAME/$f' 2>/dev/null" </dev/null | tr -d '\r')
+      have=$($ADB shell "stat -c %s '$DEV_GAME/$f' 2>/dev/null" </dev/null | tr -d '\r' || true)
       [ "$want" = "$have" ] && continue
       $ADB push -q "$GAME_DIR/$f" "$DEV_GAME/$f" >/dev/null </dev/null
     done < <(cd "$GAME_DIR" && find "$d" -type f)
