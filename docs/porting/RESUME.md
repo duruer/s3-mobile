@@ -53,3 +53,10 @@ The workflow cache does not carry over to a new session. Do this instead:
   "workflow wf_0ab9b0c8-5e1 stopped by user". Finished Foundation agents return cached results on resume (same session).
   Unfinished agents restart and should read their `docs/progress/<label>.md` first.
   Resume (same session): `Workflow({scriptPath: <session copy of s3-mobile-ux-and-online js>, resumeFromRunId: "wf_0ab9b0c8-5e1"})`.
+
+## FPS / zoom / full screen / HUD workflow (started 2026-11-05 ~14:40)
+
+- The mobile UX + online workflow `wf_0ab9b0c8-5e1` **finished** (commit `e200858`). The real phone now runs it (Galaxy Z Fold4).
+- Fourth workflow `wf_a446e364-b12`: 60+ fps, FPS counter, full-screen display modes, custom resolution + zoom, HUD panel
+  hiding + minimap with a full-screen map. Script copy: `tools/workflows/s3-fps-zoom-fullscreen-hud.js`.
+  Last known-good state: commit `0c571e8`.
