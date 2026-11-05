@@ -28,6 +28,7 @@ This file is an **index only**. Facts live in `docs/`. Keep this file short; add
 | Topic | Doc |
 | --- | --- |
 | **Current port status: what works, evidence, performance, known issues, next steps, licensing** | [docs/porting/status.md](docs/porting/status.md) |
+| **Product vision: easy mobile UX via game hooks/patches, native HUD, online play (workstreams W1-W7)** | [docs/porting/mobile-vision.md](docs/porting/mobile-vision.md) |
 | Chronological log of sessions and findings | [docs/journal.md](docs/journal.md) |
 | Where the game files came from, layout, sizes, hashes | [docs/game-files/inventory.md](docs/game-files/inventory.md) |
 | S3.EXE variants (GOG / Settlers United / multi / alobby) and byte patches | [docs/game-files/exe-variants.md](docs/game-files/exe-variants.md) |
