@@ -16,7 +16,8 @@ Status 2026-11-05: DirectDraw, DirectSound, DirectInput 3 and DirectPlay stubs i
 | `dsound.rs` | DirectSound: IDirectSound, IDirectSoundBuffer; exports DirectSoundCreate, DirectSoundEnumerateA; `mixer_service` |
 | `mixer.rs` | pure mixer core: dB/pan -> gain, `mix_voice` (8/16-bit, mono/stereo, linear resampling, looping), `mix_stream` (external PCM queues), clamping |
 | `dinput.rs` | DirectInput 3: IDirectInputA, IDirectInputDeviceA (SysMouse, SysKeyboard); export DirectInputCreateA; `pump_service`; VK -> DIK table |
-| `dplay.rs` | DirectPlay 6 stubs: IDirectPlay4A, IDirectPlayLobby3A (per-method arg counts tables); factories CLSID_DirectPlay / CLSID_DirectPlayLobby; exports |
+| `dplay.rs` | DirectPlay 6 COM plumbing: IDirectPlay4A, IDirectPlayLobby3A (per-method arg counts tables); factories CLSID_DirectPlay / CLSID_DirectPlayLobby; exports; lobby/group stubs |
+| `dplay_net.rs` | IDirectPlay4A over our relay (`s3-net`): connections, sessions, players, Send/Receive, DPSYS messages, SetEvent; see [multiplayer.md](multiplayer.md) section 5 |
 | `tests.rs` | vtable offsets vs S3 call sites, every method has a handler, blit/mixer unit tests, full COM flows through `call_guest` |
 
 ## Object model
@@ -140,6 +141,11 @@ Findings (GOG S3.EXE, menu -> random map in game, ~45 s runs):
   game clamps differently the cursor could drift (check on device; fix would be to resync on touch-down).
 
 ## DirectPlay behaviour
+
+**Update 2026-11-05 (mp-dplay):** the IDirectPlay4A methods the game uses are now real and backed by our relay
+(`dplay_net.rs`); the game's LAN multiplayer menu creates/joins sessions and runs lockstep games. Details, tests and
+the two-instance desktop test: [multiplayer.md](multiplayer.md) sections 5-6. The paragraph below describes the
+remaining stubs (lobby, groups) and the original stub behaviour.
 
 Both CLSIDs create objects for any requested IID (IDirectPlay2..4 A/W share the IDirectPlay4A vtable prefix;
 lobby 1..3). Enumerations (`EnumConnections`, `EnumSessions`, `EnumPlayers`, ...) succeed with no callbacks,

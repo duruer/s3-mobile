@@ -1,6 +1,6 @@
 //! Android frontend (NativeActivity) for the Settlers III port: `libs3android.so`.
 //!
-//! The platform-independent parts (shared state + [`frontend::AndroidHost`], letterboxing, touch -> mouse,
+//! The platform-independent parts (shared state + [`frontend::AndroidHost`], letterboxing, touch -> raw pointer events,
 //! status screen, audio ring/resampler, key map) build and are unit-tested on Linux. `android.rs` holds the
 //! NativeActivity glue and only builds for `target_os = "android"`. See docs/porting/android.md.
 

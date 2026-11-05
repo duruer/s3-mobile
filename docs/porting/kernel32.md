@@ -13,7 +13,7 @@ GetProcAddress targets have handlers; S3.EXE reaches the main menu and Game Setu
 | CPU / system | 1 × Pentium (586, level 5), 4 KiB pages, 64 KiB granularity, user range 0x10000-0x7FFEFFFF | `GetSystemInfo` |
 | Memory | 256 MiB RAM, 192 MiB free (`GlobalMemoryStatus`; all values < 2 GiB for 32-bit math) | |
 | Locale | LCID 0x0409, ANSI cp 1252, OEM cp 437; `GetLocaleInfoA/W` table for en-US (incl. `LOCALE_RETURN_NUMBER`) | game language comes from registry `Language` (registry.md), not the locale — HYPOTHESIS |
-| Install dir | `C:\S3`, exe `C:\S3\S3.EXE`, command line `S3.EXE`, cwd `C:\S3` | VFS (architecture.md) |
+| Install dir | `C:\S3`, exe `C:\S3\S3.EXE`, command line `S3.EXE` (+ env `S3_EXE_ARGS` if set, debug only, e.g. `-netmon`), cwd `C:\S3` | VFS (architecture.md) |
 | Drives | `GetDriveTypeA` = DRIVE_FIXED for every path, `GetLogicalDrives` = C: only, volume label `S3`, FAT32, 1 GiB free | wine-trace: fixed drive is accepted; no CD check |
 | Temp dir | `C:\S3\TEMP\` (overlay) | |
 | HLE DLL paths | `GetModuleFileNameA(hHLE)` = `C:\WINDOWS\SYSTEM\<NAME>.DLL` | |

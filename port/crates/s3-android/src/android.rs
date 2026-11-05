@@ -20,7 +20,7 @@ use crate::frontend::{run_engine, Phase, Shared};
 use crate::layout::{blit_letterboxed, Letterbox};
 use crate::overlay::{self, Button, OverlayState};
 use crate::screen;
-use crate::touch::TouchMapper;
+use crate::touch::{pointer_events, Action, PointerFilter};
 use crate::uithread::UiThread;
 
 struct Ui {
@@ -224,13 +224,14 @@ fn android_main(app: AndroidApp) {
     let mut pending_keys: Vec<(u64, HostEvent)> = Vec::new();
     let mut kb_checked = 0u64;
     let mut finishing = false;
-    let mut touch = TouchMapper::new(24.0);
+    // Fingers -> raw pointer events; gestures are recognized by s3-mods on the engine thread.
+    let mut pointers = PointerFilter::default();
     let mut quit = false;
     let mut paused = false;
     let mut touches_logged = 0u32;
 
     while !quit {
-        let mut wait = touch.next_deadline(now_ms(t0)).map(|d| d.clamp(1, 250)).unwrap_or(250);
+        let mut wait = 250;
         if !pending_keys.is_empty() {
             wait = wait.min(30);
         }
@@ -244,8 +245,6 @@ fn android_main(app: AndroidApp) {
                         u.immersive();
                     }
                     ui.attach(app.native_window());
-                    let m = ui.win_size.0.min(ui.win_size.1) as f32;
-                    touch.set_slop((m * 0.03).max(8.0));
                 }
                 MainEvent::TerminateWindow { .. } => ui.attach(None),
                 MainEvent::WindowResized { .. } | MainEvent::ConfigChanged { .. } => ui.attach(app.native_window()),
@@ -345,7 +344,9 @@ fn android_main(app: AndroidApp) {
                                                     u.soft_keyboard(None, kb_visible.clone());
                                                 }
                                             }
-                                            Button::RightClick => touch.set_right_next(!touch.right_next()),
+                                            Button::RightClick => {
+                                                shared.rmb_toggle.store(true, Ordering::Release);
+                                            }
                                         }
                                     }
                                 }
@@ -353,26 +354,25 @@ fn android_main(app: AndroidApp) {
                             }
                             return InputStatus::Handled;
                         }
-                        match me.action() {
-                            MotionAction::Down => {
-                                if touches_logged < 1000 {
-                                    touches_logged += 1;
-                                    log::info!("touch down at window ({:.0},{:.0}) -> game {:?}", win.0, win.1, game);
-                                }
-                                let drag = crate::touch::drag_button_for(lb.game_w, lb.game_h, game);
-                                touch.down_with_drag(p.pointer_id(), win, game, t, drag)
+                        let action = match me.action() {
+                            MotionAction::Down => Action::Down,
+                            MotionAction::PointerDown => Action::PointerDown,
+                            MotionAction::Move => Action::Move,
+                            MotionAction::PointerUp => Action::PointerUp,
+                            MotionAction::Up => Action::Up,
+                            MotionAction::Cancel => Action::Cancel,
+                            _ => return InputStatus::Handled,
+                        };
+                        if action == Action::Down && touches_logged < 1000 {
+                            touches_logged += 1;
+                            log::info!("touch down at window ({:.0},{:.0}) -> game {:?}", win.0, win.1, game);
+                        }
+                        let all: Vec<(i32, (i32, i32))> =
+                            me.pointers().map(|q| (q.pointer_id(), lb.window_to_game(q.x(), q.y()))).collect();
+                        for ev in pointer_events(action, (p.pointer_id(), game), &all) {
+                            if pointers.keep(&ev) {
+                                shared.push_event(ev);
                             }
-                            MotionAction::PointerDown => touch.pointer_down(t),
-                            MotionAction::PointerUp => touch.pointer_up(p.pointer_id(), t),
-                            MotionAction::Up => touch.up(t),
-                            MotionAction::Cancel => touch.cancel(t),
-                            MotionAction::Move => {
-                                for p in me.pointers() {
-                                    let g = lb.window_to_game(p.x(), p.y());
-                                    touch.moved(p.pointer_id(), (p.x(), p.y()), g, t);
-                                }
-                            }
-                            _ => {}
                         }
                         InputStatus::Handled
                     }
@@ -416,7 +416,7 @@ fn android_main(app: AndroidApp) {
                 }
             }
         }
-        if touch.take_keyboard_request() {
+        if shared.keyboard_req.swap(false, Ordering::AcqRel) {
             log::info!("three-finger tap: toggle soft keyboard");
             if let Some(u) = &ui_thread {
                 u.soft_keyboard(None, kb_visible.clone());
@@ -439,23 +439,12 @@ fn android_main(app: AndroidApp) {
                     u.refresh_keyboard(kb_visible.clone());
                 }
             }
-            let st = OverlayState { pressed: ui.overlay.pressed, right_armed: touch.right_next(), keyboard: *kb_visible.lock().unwrap() };
+            let st = OverlayState { pressed: ui.overlay.pressed, right_armed: shared.rmb_armed.load(Ordering::Acquire), keyboard: *kb_visible.lock().unwrap() };
             if st != ui.overlay {
                 ui.overlay = st;
                 ui.dirty = true;
             }
         }
-        for mut ev in touch.drain_due(now_ms(t0)) {
-            if let (HostEvent::MouseMove { x, y }, Some(lb)) = (&mut ev, ui.lb) {
-                *x = (*x).clamp(0, lb.game_w as i32 - 1);
-                *y = (*y).clamp(0, lb.game_h as i32 - 1);
-            }
-            if let HostEvent::MouseButton { .. } = ev {
-                log::info!("touch -> {ev:?}");
-            }
-            shared.push_event(ev);
-        }
-
         if audio_dead.swap(false, Ordering::AcqRel) {
             log::info!("AAudio: reopening stream");
             drop(audio.take());

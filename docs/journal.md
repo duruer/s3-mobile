@@ -2,6 +2,154 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-06 — mobile UX + online (workflow)
+
+Result: the game is now touch-native and online-capable without modifying S3.EXE: in-memory hooks keyed by the
+GOG sha256 `00a925cf…`, context-aware taps (no long-press right click), two switchable UI modes (A "Classic Touch",
+B "Mobile HUD"; comparison and recommendation in [ui-modes](porting/ui-modes.md)) and DirectPlay 6 over our own
+WebSocket relay (desktop <-> desktop lockstep without desync; Android joins a desktop host). Vision and workstream
+status: [mobile-vision](porting/mobile-vision.md). Summary: [status](porting/status.md).
+
+### wrap-up [done]
+- New [ui-modes.md](porting/ui-modes.md) (A vs B side by side, screenshot paths under `scratch/`, pros/cons,
+  recommendation: A default, B as in-game switch, decide after a real-phone test); AGENTS.md map row; status.md
+  (title, phone controls for the touch mods, relay URL, licensing re-check); mobile-vision.md workstream status table.
+- `cargo test --workspace --release -j 4`: 232 passed, 1 ignored, 0 failed. Headless run reaches in game in mode A
+  (`scratch/wrapup-ux/ingame50.png`). Legal: no game bytes tracked or staged; 160 deps permissive (`r-efi` has an
+  MIT option); overlays use the bundled Liberation Sans (OFL); HUD icons are sampled from the running game into
+  memory only, never stored.
+
+### hooks (W1 mod/hook framework) [done]
+- s3-cpu: `CpuExit::Hook` when EIP reaches a hooked address; blocks split before hooked addresses (one flag test per
+  executed block); `skip_hook_once` resumes the original code.
+- s3-runtime `ext.rs`: `MachineExt` (hook dispatch, input filter, overlay compose; frame order game -> overlay ->
+  cursor); `HostEvent::Pointer` for raw touch (ignored by the game).
+- New crate s3-mods: skip/jump/on-return hooks; guest calls (stdcall, cdecl, thiscall, fastcall, virtual); `defer`
+  to main-thread safe points; `guest_struct!` views; patch sets keyed by exe sha256 (own SHA-256), GOG set
+  `gog-base` (safe points 0x60d9e0, 0x60d740); fontdue overlay with Liberation Sans; gesture recognizer (tap, double
+  tap, long press, pan, pinch, two/three-finger tap); touch-to-mouse fallback (same as the old Android mapping);
+  settings JSON with `ui_mode`; debug overlay `S3_MODS_DEBUG=1`. s3-engine installs it after loading the exe; s3run
+  `--inject` gained `tap`, `tap2`, `drag`, `longpress`, `pinch`.
+- Verified: workspace tests green; arm64 `cargo check` of s3-android; headless menu -> game by taps only, drag
+  scrolls, tap opens the build menu. Overhead: micro-benchmark unchanged; in game hooks on/off in parallel 97.2 vs
+  97.0 and 95.0 vs 94.9 M instr/s (< 1 %; sequential runs vary up to 10 % with host load).
+- Finding: main-thread safe points are rare in game (~40-120 per 40 s; the main thread sleeps in GetMessageA), so
+  deferred work can wait seconds; game work is therefore done in the logic-thread HandleInput hook instead.
+
+### re-units (W2 part 1) [done]
+- Logic thread object at app+0x90, game data gd = [logic+0x3a0]. Settlers gd+0x12a5e60 (0x40 B), buildings
+  gd+0x1499e64 (0x3a B), tiles gd+0x67444 + (x*768+y)*0x18. UI selection 0x7dfd68/0x7ad620/0x7ad634/0x7ad5f8,
+  selected building 0x7dfd6c, on-screen hit list 0x7ade08. gd::ScreenToMap 0x4ff170 writes gd+0x2d2e4/e8.
+- Input: window messages -> 20-byte input events -> CLogicThread::HandleInput 0x524fa0. Left-up = box/single
+  select, right-up = move. A right click held >= 15 game steps is ignored (0x53437d): why long-press right click
+  cannot work.
+- Commands {0x21, cmd, len, ...} posted to logic+0x3c4, executor switch 0x535a9d: 1 place, 3 sync selection,
+  9/d/e/f move, 6 destroy, 4 building flag, 7/8/a/b/10/11 economy. Verified box select + move, placement, tower
+  panel. s3run inject `xdump`/`xpeek`/`scan` (debug_units.rs). Doc [game-state-units](reverse-engineering/game-state-units.md).
+
+### re-ui (W2 part 2) [done]
+- Camera gd+0x2d25c/0x2d260 (world px), clamp 0x51b4d0, center-on-tile 0x51b560. Layout setter 0x4c6d70 sets
+  0x730f08..0x730f40 for the 3 resolutions; panel grid cell 3/4/5 px, origin (8, 152/171/228). F1-F3 switch at
+  runtime via 0x49ded0 -> [0x7a7af0+0x70]; registry Resolution 1/2 (all VERIFIED).
+- Panel page gd+0x2d284 (1 build, 2 goods, 3 settlers, 4 building, 5 units, 7 menu, 8 messages, 9 paused), sub-tabs
+  +0x288/+0x290/+0x2a0/+0x298, slot +0x28c, type +0x2d2f0, dirty +0x27c; selecting a building by poke places a
+  site. Build list table via `tools/re-ui/panelmap.py`; names from the string table 0x5faaa0 (text 0x80000+type,
+  `tools/re-ui/strings.py`). Hotkeys Q/W/E/R categories, P pause. Tooltip path HandleInput -> logic+0x54 ->
+  snap+0x270 -> draw 0x4b3de1; panel renderer 0x4b4d00. Stock = sum of piles (one map). `dumpall mapped`.
+  Corrected part-1 rows for 0x2d284/88/8c. Doc [game-state-ui](reverse-engineering/game-state-ui.md).
+
+### determinism (W5 prerequisite) [done]
+- Audit: x87 fsin/fcos/fptan/fsincos/fpatan/f2xm1/fyl2x/fyl2xp1 used host libm, fprem host `%`, NaNs from the host
+  (x86 and ARM differ). Fix: `s3-cpu/src/fpu_math.rs` with pinned pure-Rust `libm =0.2.16`; exact f2xm1 (x*ln2,
+  <= 1 ulp); fprem/fprem1 by exact integer division with exact quotient bits; x87 NaN rules;
+  `host_float_env_check()`. `fpu_conv.rs`: bit-exact f32<->f64 NaN conversion. No FMA (0 fmadd/fmsub in the
+  aarch64 build). Golden vectors (`fpu_golden.rs`) identical on x86_64 debug/release and i686; arm64 built, not run.
+- REA: no rdtsc; CRT rand 0x61f802 (per-thread state `_getptd()+0x14`), srand 0x61f7f5 with time(NULL) in 0x431780
+  and CDrawThread init 0x4932e0; 16 rand callers; no common LCG constants in code.
+- Tool `s3det`: virtual clock from instruction count (150k/ms); fixed QPC, system/local time (2001), UTC time zone,
+  CoCreateGuid/UuidCreate seeds; memory/CPU hashes per second, `--dump-at`; `tools/memdiff.py`,
+  `tools/determinism-test.sh`. First divergence at 6 s = GUID at 0x7a7ac8 from CoCreateGuid; after fixing, two
+  parallel 75 s runs IDENTICAL (`insns=7699350378 mem=a68d8effad5b92f2`), reproduced after a rebuild.
+  Doc [determinism](porting/determinism.md).
+
+### mp-design (W5) [done]
+- Static RE of DirectPlay 6 use: CDirectPlay wrapper 0x5bb000-0x5c2100 (IDirectPlay4A at this+4, Lobby2A at
+  this+8; vtable offsets confirmed by call sites). Lobby probe compares DPERR_NOTLOBBIED 0x8877042E at 0x5bb730;
+  lobby-launch path exists. HRESULT name table 0x7a03b4. Open desc at 0x46ff80 (flags MIGRATEHOST|KEEPALIVE, app
+  GUID {0E9F8400-D9A5-11CF-8F4D-00804880B189}, dwUser3 0xA0). EnumSessions async every 250 ms up to 20 s;
+  CreatePlayer passes an event handle (HLE must SetEvent); setup sends guaranteed, lockstep bundles sent twice by the
+  host; Receive with DPRECEIVE_ALL; DPSYS switch 0x5bcde1; setup message switch 0x470e25; desync check 0x53b59a;
+  `-netmon` writes trace.lis. The Blue Byte lobby uses wsock32, not DirectPlay.
+- New crates s3-net (wire/protocol/link/client/dplay; resumable link with per-direction seq/ack) and s3-relay
+  (tokio + tokio-tungstenite hub, CLI). Doc [multiplayer](porting/multiplayer.md).
+
+### touch-context (W3) [done]
+- `touch-context` mod (GOG only): hook on HandleInput 0x524fa0; gd via [0x7e3408] (0 in menus). Hit list entry =
+  u16 kind, i16 x, i16 y, u16 id at 0x7ade08 + (buf+2i)*10 (VERIFIED).
+- Tap = select (enlarged hit box) / quick right click = move/attack / place; ✕ and two-finger tap cancel placement
+  (slot 0 + dirty) or deselect (count 0 + dirty + page 0); camera writes gd+0x2d25c/60 with the host clamp
+  (VERIFIED), inertia over an 80 ms window (fixed a 3x overestimate for two-finger flings); long press then drag =
+  box select (VERIFIED 10-11 soldiers); pinch = F1/F2/F3 step (VERIFIED 640<->800; a second switch ~3.5 s later
+  was ignored, HYPOTHESIS display re-init cool-down). Overlay: ripple, world-anchored flag, selection rings, press
+  ring, box, ✕. touch installs before the UI modes so they get touches first.
+- Android: TouchMapper replaced by raw HostEvent::Pointer; RMB/keyboard via Shared atomics. s3run inject `dtap`,
+  `tap3`, `drag2`, `fling`, `lpdrag`; `S3_TOUCH_TRACE=1`. Doc [touch](porting/touch.md).
+
+### ui-classic (UI mode A) [done]
+- `ui_classic.rs` + `ui_classic_panel.rs`: magnifier bubble with the game's own button names, snap to button
+  centres, floating Menu (page 7 via the HandleInput hook + click sound 0x53f560(0x3d)), context chip. Strings read
+  directly from [gfx+0x5f6b8] (gfx from ctor hook 0x42c820). Page-1 grid model matches the game (Woodcutter picked
+  and placed). In-game test: HandleInput within 1.5 s + gd vtable 0x658c18 + layout == frame size.
+- Not verified: tooltip id at snap+0x270 stayed empty (HYPOTHESIS: cleared before read / needs idle ticks).
+  Doc [ui-classic](porting/ui-classic.md), screenshots `scratch/ui-modes/A-*.png`.
+
+### ui-hud (UI mode B, W4) [done]
+- `ui_hud.rs`, `ui_hud_game.rs`, `ui_hud_data.rs`; active when `ui_mode == MobileHud`, switchable at runtime.
+- Full-screen map: [0x730f24] = 0, [0x730f18] = screen width at the return of 0x4c6d70; the landscape ring buffer
+  ([gfx+0x5f6cc], created by 0x54bec0, blitter 0x54c9d0 wraps at its width) must be widened, otherwise a zigzag
+  column appears; ScreenToMap 0x4ff170 needs sx += original panel width; panel 0x4b4d00 skipped (VERIFIED).
+- Placement by poke needs gd::0x4ff3f0 (marker generation); panel redraw only with [gd+0x2d27c]; destroy = command
+  0x06 via Queue::Post 0x4309c0; minimap via gd::CenterOn 0x51b560 from the logic hook (host camera writes left
+  stale columns) — all VERIFIED. Panel Inventory numbers are separate counters, not the pile sum (VERIFIED). Player
+  goods = piles on own tiles (tile +8); without the filter 2x vs AI. Good ids 4 Bread, 5 Coal, 7 Iron ore, 8 Fish,
+  12-16 tools, 24 Meat; 1/2, 17/32, 3 HYPOTHESIS. Icons copied from the presented frame while the original panel
+  shows each page (memory only).
+- Open: F1-F3 at runtime in HUD mode leaves a black band (HYPOTHESIS: second buffer sized at game start); starting
+  at 800x600 works. Doc [ui-hud](porting/ui-hud.md), screenshots `scratch/ui-modes/B-*.png`.
+
+### mp-dplay (W5) [done]
+- `s3-dx/src/dplay_net.rs`: DirectPlay 6 HLE over the relay (one connection "Internet (Settlers 3 Port)",
+  `S3_RELAY_URL` / `S3_NET_NAME`, sessions sync/async, Open CREATE/JOIN, players, Send/Receive with system messages
+  and buffer retry, service `dplay-pump` signals player events). Test `dplay_two_machines_through_relay`; builds for
+  aarch64-linux-android.
+- Menu: "Multi-player Game: LAN" (165,275) is the DirectPlay path; "Internet" needs the Blue Byte lobby. Full flow
+  with 2 headless s3run + local relay: create, search, join, ready, same map, lockstep. dwUser1/2 =
+  3c44fe57/3d439f21 = version id ("Siedler3 Version 1.60").
+- Lockstep RE: bundle = CRC32 (0x46dbd0) + sub-messages; receive loop 0x46adaa; 0x11 ExecuteTo (0x46d370), 0x20
+  ack (0x46d610); gd+0x2d2d8 frame counter, simulation tick at 0x53e5a1 runs when word [0x7ace62] == 0; gd+0x2d2dc
+  = simulation RNG state. Game log function 0x428720.
+- Tools: `s3run --mp-hash FILE` / `--mp-hash-every N` (per simulation tick, not frame), `S3_MP_DUMP_STEP`,
+  `S3_MP_HDR`, `S3_GAME_LOG`, `S3_MP_NETDBG`, `S3_EXE_ARGS`; `tools/mp_hash_compare.py`, `tools/mp_dump_diff.py`,
+  `port/scripts/mp-local-test.sh`.
+- Results: long1 (3979 ticks), long2 (5489), long3 (5052), a1 (391): no simulation desync (settlers, buildings,
+  piles, trade, economy, players identical; commands at the same ticks). Tile bytes +9/+b/+c/+d (HYPOTHESIS fog /
+  markers) and +0x0f on 3 tiles (HYPOTHESIS local marker) differ and are masked. "Stuck at Initiating
+  player2player communication" = slow random start-position search, not a network bug.
+
+### verify-1 (ux-verify1) [done]
+- Tests 232 passed / 0 failed / 1 ignored. Desktop A: long-press box select, tap move, two-finger deselect/pan,
+  panel build + tap place, save/quit/load. Desktop B: fixed `touch_game::layout()` to accept panel width 0 (+ test);
+  then move, deselect, pan, placement (boards 25 -> 24), HUD save/quit/load. Added A -> B switch button ("UI: Mobile
+  HUD" while the Menu is open).
+- BUG fixed: in multiplayer [0x7e3408] stays 0 on both peers, so taps were plain left clicks; `touch_game::gd()` and
+  `ui_hud_game::gd()` fall back to [logic+0x3a0] from the HandleInput hook. Desktop MP after the fix: 3104 ticks
+  IDENTICAL, units move on both peers.
+- Android: added INTERNET permission and `<data>/relay-url.txt` (-> `S3_RELAY_URL`). Emulator joined a desktop host
+  via `ws://10.0.2.2:7788`; tap select/move in A and B on both sides. Single player both modes by taps; mode switch
+  both ways. touch.rs no longer draws its ✕ in HUD mode (hit area still active). Cosmetic: stale minimap pixels for
+  a few seconds after HUD -> Classic. Not checkable via adb: long press + drag, multi-touch, pinch (covered by
+  desktop inject and unit tests). Progress note [ux-verify1](progress/ux-verify1.md).
+
 ## 2026-11-06 — polish night (workflow)
 
 Result: cursor, save/load, soft keyboard and Android UX polish on top of the working port; the whole flow (menu ->

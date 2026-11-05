@@ -1,355 +1,107 @@
-//! Touch -> mouse mapping (docs/porting/android.md "Controls").
+//! Touch input: Android MotionEvents -> raw [`HostEvent::Pointer`] events (docs/porting/android.md "Controls",
+//! docs/porting/touch.md).
 //!
-//! - tap (down + up, little movement, < 500 ms): left click at the finger;
-//! - long press (>= 500 ms without moving): right click at the finger;
-//! - one-finger drag (moved beyond the slop): mouse moves with the left button held, released on lift;
-//! - two-finger tap (second finger lands while the first has not started dragging): right click at the first finger,
-//!   sent when a finger lifts;
-//! - three-finger tap: no mouse event; requests the on-screen keyboard ([`TouchMapper::take_keyboard_request`]);
-//! - "right-click next" mode ([`TouchMapper::set_right_next`], letterbox button): the next tap is a right click.
-//!
-//! Button-up events are delayed by [`CLICK_MS`] so games that poll the button state (GetAsyncKeyState,
-//! DirectInput GetDeviceState) see the press. All events carry a due time; call [`TouchMapper::drain_due`].
+//! The frontend only reports fingers. Gesture recognition (tap, long press, pans, pinch, multi-finger taps) and
+//! what a gesture does in the game (context-aware touch, UI modes, touch->mouse fallback) live in `s3-mods`,
+//! shared with the desktop `s3run --inject` touch commands, so both behave the same.
 
-use s3_runtime::{HostEvent, MouseButton};
+use s3_runtime::{HostEvent, PointerPhase};
 
-pub const LONG_PRESS_MS: u64 = 500;
-
-/// Width of the in-game control panel (minimap, menus) at the left edge, in game pixels (640x480: ~135 px).
-pub const PANEL_W: i32 = 170;
-
-/// Which mouse button a one-finger drag starting at `game` holds.
-/// Menus run at 800x600 (left drag: scroll bars). In game (any other mode; default 640x480) a drag that starts on
-/// the map holds the right button, which scrolls the map in S3; drags on the left panel stay left.
-/// HYPOTHESIS: a user who sets the in-game resolution to 800x600 gets left drags on the map (arrow keys still scroll).
-pub fn drag_button_for(game_w: u32, game_h: u32, game: (i32, i32)) -> MouseButton {
-    let in_menu = game_w == 800 && game_h == 600;
-    if !in_menu && game.0 >= PANEL_W { MouseButton::Right } else { MouseButton::Left }
-}
-pub const CLICK_MS: u64 = 60;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum State {
-    Idle,
-    /// Finger down, not yet classified.
-    Pending { id: i32, win: (f32, f32), game: (i32, i32), t0: u64, drag: MouseButton },
-    /// `drag` button held, following the finger.
-    Dragging { id: i32, drag: MouseButton, origin: (i32, i32) },
-    /// Two fingers down without dragging: right click at `game` when one lifts, unless a third finger lands.
-    TwoFinger { game: (i32, i32) },
-    /// Gesture finished (long press / two-finger tap fired); ignore until all fingers are up.
-    Consumed,
-}
-
-/// Mouse position sent while dragging. A right drag scrolls the S3 map *in* the mouse direction (measured on the
-/// emulator: +40 game px moved the view ~+53 px, +89 px moved it ~+187 px; the game seems to accelerate), so it is
-/// mirrored around the start point and halved: the map then follows the finger roughly 1:1 ("grab" scrolling).
-/// The frontend clamps the result to the game screen.
-fn drag_pos(drag: MouseButton, origin: (i32, i32), cur: (i32, i32)) -> (i32, i32) {
-    match drag {
-        MouseButton::Right => (origin.0 - (cur.0 - origin.0) / 2, origin.1 - (cur.1 - origin.1) / 2),
-        _ => cur,
-    }
-}
-
-pub struct TouchMapper {
-    state: State,
-    /// Movement threshold in window pixels before a press becomes a drag.
-    slop: f32,
-    fingers: u32,
-    queue: Vec<(u64, HostEvent)>,
-    /// Last time an event was scheduled (keeps output ordered when delays overlap).
-    last_due: u64,
-    /// The next tap is a right click (letterbox button).
-    right_next: bool,
-    /// A three-finger tap asked for the on-screen keyboard.
-    keyboard_request: bool,
-}
-
-impl TouchMapper {
-    pub fn new(slop_px: f32) -> Self {
-        TouchMapper {
-            state: State::Idle,
-            slop: slop_px,
-            fingers: 0,
-            queue: Vec::new(),
-            last_due: 0,
-            right_next: false,
-            keyboard_request: false,
-        }
-    }
-
-    pub fn set_slop(&mut self, slop_px: f32) {
-        self.slop = slop_px;
-    }
-
-    /// Arm (or disarm) "the next tap is a right click".
-    pub fn set_right_next(&mut self, on: bool) {
-        self.right_next = on;
-    }
-
-    pub fn right_next(&self) -> bool {
-        self.right_next
-    }
-
-    /// True once after a three-finger tap.
-    pub fn take_keyboard_request(&mut self) -> bool {
-        std::mem::take(&mut self.keyboard_request)
-    }
-
-    fn push(&mut self, t: u64, ev: HostEvent) {
-        let t = t.max(self.last_due);
-        self.last_due = t;
-        self.queue.push((t, ev));
-    }
-
-    fn click(&mut self, t: u64, game: (i32, i32), button: MouseButton) {
-        self.push(t, HostEvent::MouseMove { x: game.0, y: game.1 });
-        self.push(t, HostEvent::MouseButton { button, down: true });
-        self.push(t + CLICK_MS, HostEvent::MouseButton { button, down: false });
-    }
-
-    /// First finger (ACTION_DOWN).
-    pub fn down(&mut self, id: i32, win: (f32, f32), game: (i32, i32), t: u64) {
-        self.down_with_drag(id, win, game, t, MouseButton::Left)
-    }
-
-    /// First finger; a drag that starts here holds `drag` (Right = scroll the map in game).
-    pub fn down_with_drag(&mut self, id: i32, win: (f32, f32), game: (i32, i32), t: u64, drag: MouseButton) {
-        self.fingers = 1;
-        self.state = State::Pending { id, win, game, t0: t, drag };
-        // Hover the cursor there right away (menus highlight under the cursor).
-        self.push(t, HostEvent::MouseMove { x: game.0, y: game.1 });
-    }
-
-    /// Additional finger (ACTION_POINTER_DOWN).
-    pub fn pointer_down(&mut self, t: u64) {
-        self.fingers += 1;
-        let _ = t;
-        match self.state {
-            State::Pending { game, .. } => self.state = State::TwoFinger { game },
-            State::TwoFinger { .. } => {
-                self.keyboard_request = true;
-                self.state = State::Consumed;
-            }
-            _ => {}
-        }
-    }
-
-    /// A finger other than the last one lifted (ACTION_POINTER_UP).
-    pub fn pointer_up(&mut self, id: i32, t: u64) {
-        self.fingers = self.fingers.saturating_sub(1);
-        match self.state {
-            State::Dragging { id: d, drag, .. } if d == id => {
-                self.push(t, HostEvent::MouseButton { button: drag, down: false });
-                self.state = State::Consumed;
-            }
-            State::TwoFinger { game } => {
-                self.click(t, game, MouseButton::Right);
-                self.state = State::Consumed;
-            }
-            _ => {}
-        }
-    }
-
-    /// Finger moved (ACTION_MOVE), for the pointer with `id`.
-    pub fn moved(&mut self, id: i32, win: (f32, f32), game: (i32, i32), t: u64) {
-        match self.state {
-            State::Pending { id: p, win: w0, game: g0, drag, .. } if p == id => {
-                let (dx, dy) = (win.0 - w0.0, win.1 - w0.1);
-                if dx * dx + dy * dy > self.slop * self.slop {
-                    self.push(t, HostEvent::MouseMove { x: g0.0, y: g0.1 });
-                    self.push(t, HostEvent::MouseButton { button: drag, down: true });
-                    let p = drag_pos(drag, g0, game);
-                    self.push(t, HostEvent::MouseMove { x: p.0, y: p.1 });
-                    self.state = State::Dragging { id, drag, origin: g0 };
-                }
-            }
-            State::Dragging { id: d, drag, origin } if d == id => {
-                let p = drag_pos(drag, origin, game);
-                self.push(t, HostEvent::MouseMove { x: p.0, y: p.1 })
-            }
-            _ => {}
-        }
-    }
-
+/// MotionEvent action kinds we care about (android-activity `MotionAction`, platform independent for tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// First finger down (ACTION_DOWN).
+    Down,
+    /// Another finger down (ACTION_POINTER_DOWN).
+    PointerDown,
+    /// One or more fingers moved (ACTION_MOVE): every pointer of the event is reported.
+    Move,
+    /// A finger other than the last lifted (ACTION_POINTER_UP).
+    PointerUp,
     /// Last finger lifted (ACTION_UP).
-    pub fn up(&mut self, t: u64) {
-        match self.state {
-            State::Pending { game, .. } => {
-                let b = if self.right_next { MouseButton::Right } else { MouseButton::Left };
-                self.right_next = false;
-                self.click(t, game, b)
+    Up,
+    /// The system took the gesture (ACTION_CANCEL): every pointer is cancelled.
+    Cancel,
+}
+
+/// Raw pointer events for one MotionEvent. `acting` = (pointer id, game position) of the pointer the action is
+/// about (`pointer_index()`); `all` = every pointer of the event. Positions are game pixels.
+pub fn pointer_events(action: Action, acting: (i32, (i32, i32)), all: &[(i32, (i32, i32))]) -> Vec<HostEvent> {
+    let ev = |id: i32, phase, p: (i32, i32)| HostEvent::Pointer { id: id as u32, phase, x: p.0, y: p.1 };
+    match action {
+        Action::Down | Action::PointerDown => vec![ev(acting.0, PointerPhase::Down, acting.1)],
+        Action::PointerUp | Action::Up => vec![ev(acting.0, PointerPhase::Up, acting.1)],
+        Action::Move => all.iter().map(|&(id, p)| ev(id, PointerPhase::Move, p)).collect(),
+        Action::Cancel => all.iter().map(|&(id, p)| ev(id, PointerPhase::Cancel, p)).collect(),
+    }
+}
+
+/// Drops Move events that do not change a finger's position (MotionEvents batch all pointers).
+#[derive(Default)]
+pub struct PointerFilter {
+    last: Vec<(u32, i32, i32)>,
+}
+
+impl PointerFilter {
+    pub fn keep(&mut self, e: &HostEvent) -> bool {
+        let HostEvent::Pointer { id, phase, x, y } = *e else { return true };
+        let i = self.last.iter().position(|l| l.0 == id);
+        match phase {
+            PointerPhase::Move => {
+                if let Some(i) = i {
+                    if (self.last[i].1, self.last[i].2) == (x, y) {
+                        return false;
+                    }
+                    self.last[i] = (id, x, y);
+                }
+                true
             }
-            State::TwoFinger { game } => self.click(t, game, MouseButton::Right),
-            State::Dragging { drag, .. } => self.push(t, HostEvent::MouseButton { button: drag, down: false }),
-            _ => {}
-        }
-        self.fingers = 0;
-        self.state = State::Idle;
-    }
-
-    /// Gesture cancelled by the system (ACTION_CANCEL).
-    pub fn cancel(&mut self, t: u64) {
-        if let State::Dragging { drag, .. } = self.state {
-            self.push(t, HostEvent::MouseButton { button: drag, down: false });
-        }
-        self.fingers = 0;
-        self.state = State::Idle;
-    }
-
-    /// Time passes: fires the long press.
-    pub fn tick(&mut self, t: u64) {
-        if let State::Pending { game, t0, .. } = self.state {
-            if t >= t0 + LONG_PRESS_MS {
-                self.click(t, game, MouseButton::Right);
-                self.state = State::Consumed;
+            PointerPhase::Down => {
+                match i {
+                    Some(i) => self.last[i] = (id, x, y),
+                    None => self.last.push((id, x, y)),
+                }
+                true
             }
-        }
-    }
-
-    /// Milliseconds until the next timer-driven event (long press or a delayed button-up), if any.
-    pub fn next_deadline(&self, t: u64) -> Option<u64> {
-        let mut d: Option<u64> = None;
-        if let State::Pending { t0, .. } = self.state {
-            d = Some((t0 + LONG_PRESS_MS).saturating_sub(t));
-        }
-        if let Some(q) = self.queue.iter().map(|e| e.0).min() {
-            let w = q.saturating_sub(t);
-            d = Some(d.map_or(w, |x| x.min(w)));
-        }
-        d
-    }
-
-    /// Events whose due time has come, in order.
-    pub fn drain_due(&mut self, t: u64) -> Vec<HostEvent> {
-        self.tick(t);
-        let mut out = Vec::new();
-        let mut rest = Vec::new();
-        for (due, ev) in self.queue.drain(..) {
-            if due <= t {
-                out.push(ev);
-            } else {
-                rest.push((due, ev));
+            PointerPhase::Up | PointerPhase::Cancel => {
+                if let Some(i) = i {
+                    self.last.swap_remove(i);
+                }
+                true
             }
         }
-        self.queue = rest;
-        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use HostEvent::MouseMove;
+    use PointerPhase::*;
 
-    const L: MouseButton = MouseButton::Left;
-    const R: MouseButton = MouseButton::Right;
-
-    #[test]
-    fn tap_is_left_click_with_delayed_up() {
-        let mut t = TouchMapper::new(20.0);
-        t.down(0, (100.0, 100.0), (50, 50), 1000);
-        t.up(1100);
-        assert_eq!(
-            t.drain_due(1100),
-            vec![MouseMove { x: 50, y: 50 }, MouseMove { x: 50, y: 50 }, HostEvent::MouseButton { button: L, down: true }]
-        );
-        assert_eq!(t.drain_due(1100 + CLICK_MS), vec![HostEvent::MouseButton { button: L, down: false }]);
-        assert!(t.drain_due(5000).is_empty());
+    fn p(id: u32, phase: PointerPhase, x: i32, y: i32) -> HostEvent {
+        HostEvent::Pointer { id, phase, x, y }
     }
 
     #[test]
-    fn long_press_is_right_click() {
-        let mut t = TouchMapper::new(20.0);
-        t.down(0, (100.0, 100.0), (50, 50), 0);
-        t.moved(0, (105.0, 100.0), (52, 50), 100); // within slop
-        t.drain_due(100);
-        assert_eq!(t.next_deadline(100), Some(400));
-        let ev = t.drain_due(500);
-        assert!(ev.contains(&HostEvent::MouseButton { button: R, down: true }));
-        assert!(!ev.iter().any(|e| matches!(e, HostEvent::MouseButton { button: MouseButton::Left, .. })));
-        t.up(800);
-        assert_eq!(t.drain_due(900), vec![HostEvent::MouseButton { button: R, down: false }]);
+    fn motion_actions_map_to_pointer_phases() {
+        assert_eq!(pointer_events(Action::Down, (0, (10, 20)), &[(0, (10, 20))]), vec![p(0, Down, 10, 20)]);
+        let all = [(0, (10, 20)), (1, (50, 60))];
+        assert_eq!(pointer_events(Action::PointerDown, (1, (50, 60)), &all), vec![p(1, Down, 50, 60)]);
+        assert_eq!(pointer_events(Action::Move, (0, (10, 20)), &all), vec![p(0, Move, 10, 20), p(1, Move, 50, 60)]);
+        assert_eq!(pointer_events(Action::PointerUp, (0, (11, 21)), &all), vec![p(0, Up, 11, 21)]);
+        assert_eq!(pointer_events(Action::Up, (1, (50, 61)), &[(1, (50, 61))]), vec![p(1, Up, 50, 61)]);
+        assert_eq!(pointer_events(Action::Cancel, (0, (0, 0)), &all), vec![p(0, Cancel, 10, 20), p(1, Cancel, 50, 60)]);
     }
 
     #[test]
-    fn drag_holds_left() {
-        let mut t = TouchMapper::new(20.0);
-        t.down(0, (100.0, 100.0), (50, 50), 0);
-        t.moved(0, (200.0, 100.0), (100, 50), 50);
-        t.moved(0, (300.0, 100.0), (150, 50), 60);
-        t.up(70);
-        let ev = t.drain_due(70);
-        assert_eq!(
-            ev,
-            vec![
-                MouseMove { x: 50, y: 50 },
-                MouseMove { x: 50, y: 50 },
-                HostEvent::MouseButton { button: L, down: true },
-                MouseMove { x: 100, y: 50 },
-                MouseMove { x: 150, y: 50 },
-                HostEvent::MouseButton { button: L, down: false },
-            ]
-        );
-        // No long press after a drag.
-        assert!(t.drain_due(2000).is_empty());
-    }
-
-    #[test]
-    fn map_drag_holds_right() {
-        let mut t = TouchMapper::new(20.0);
-        t.down_with_drag(0, (100.0, 100.0), (50, 50), 0, R);
-        t.moved(0, (200.0, 100.0), (100, 50), 50);
-        t.up(70);
-        let ev = t.drain_due(70);
-        assert!(ev.contains(&MouseMove { x: 25, y: 50 }), "mirrored: {ev:?}");
-        assert!(ev.contains(&HostEvent::MouseButton { button: R, down: true }));
-        assert!(ev.contains(&HostEvent::MouseButton { button: R, down: false }));
-        assert!(!ev.iter().any(|e| matches!(e, HostEvent::MouseButton { button: MouseButton::Left, .. })));
-    }
-
-    #[test]
-    fn two_finger_tap_is_right_click() {
-        let mut t = TouchMapper::new(20.0);
-        t.down(0, (100.0, 100.0), (50, 50), 0);
-        t.pointer_down(30);
-        t.pointer_up(1, 80);
-        t.up(90);
-        let ev = t.drain_due(1000);
-        assert!(ev.contains(&HostEvent::MouseButton { button: R, down: true }));
-        assert!(ev.contains(&HostEvent::MouseButton { button: R, down: false }));
-        assert!(!ev.iter().any(|e| matches!(e, HostEvent::MouseButton { button: MouseButton::Left, .. })));
-        assert!(!t.take_keyboard_request());
-    }
-
-    #[test]
-    fn three_finger_tap_requests_keyboard_without_clicks() {
-        let mut t = TouchMapper::new(20.0);
-        t.down(0, (100.0, 100.0), (50, 50), 0);
-        t.pointer_down(20);
-        t.pointer_down(40);
-        t.pointer_up(2, 90);
-        t.pointer_up(1, 95);
-        t.up(100);
-        let ev = t.drain_due(2000);
-        assert!(!ev.iter().any(|e| matches!(e, HostEvent::MouseButton { .. })), "{ev:?}");
-        assert!(t.take_keyboard_request());
-        assert!(!t.take_keyboard_request());
-    }
-
-    #[test]
-    fn right_next_turns_one_tap_into_right_click() {
-        let mut t = TouchMapper::new(20.0);
-        t.set_right_next(true);
-        t.down(0, (100.0, 100.0), (50, 50), 0);
-        t.up(50);
-        let ev = t.drain_due(1000);
-        assert!(ev.contains(&HostEvent::MouseButton { button: R, down: true }));
-        assert!(!t.right_next());
-        t.down(0, (100.0, 100.0), (50, 50), 2000);
-        t.up(2050);
-        let ev = t.drain_due(3000);
-        assert!(ev.contains(&HostEvent::MouseButton { button: L, down: true }));
+    fn filter_drops_unchanged_moves() {
+        let mut f = PointerFilter::default();
+        assert!(f.keep(&p(0, Down, 1, 1)));
+        assert!(f.keep(&p(1, Down, 5, 5)));
+        assert!(!f.keep(&p(0, Move, 1, 1)));
+        assert!(f.keep(&p(1, Move, 6, 5)));
+        assert!(!f.keep(&p(1, Move, 6, 5)));
+        assert!(f.keep(&p(1, Up, 6, 5)));
+        assert!(f.keep(&HostEvent::MouseMove { x: 0, y: 0 }));
     }
 }

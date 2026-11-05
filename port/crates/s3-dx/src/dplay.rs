@@ -1,7 +1,7 @@
-//! DirectPlay 6 HLE stubs (`dplayx.dll`). S3.EXE creates `CLSID_DirectPlay` (IID_IDirectPlay4A, `0x5c0808`) and
+//! DirectPlay 6 HLE (`dplayx.dll`): COM plumbing here, the relay-backed methods in `dplay_net.rs`. S3.EXE creates `CLSID_DirectPlay` (IID_IDirectPlay4A, `0x5c0808`) and
 //! `CLSID_DirectPlayLobby` (IID_IDirectPlayLobby2A, `0x5c0847`) at startup and releases them again (static RE
-//! + wine trace). Both factories hand out objects whose methods report "nothing available": no service
-//! providers, no sessions, not lobbied. Enough for single player; multiplayer shows its own error.
+//! + wine trace). IDirectPlay4A methods the game uses are implemented over our relay (see
+//! docs/porting/multiplayer.md); groups and the lobby are stubs (not lobbied, no groups).
 //! Method argument counts follow dplay.h / dplobby.h (from memory of the SDK headers; HYPOTHESIS until a game
 //! path exercises them).
 
@@ -9,6 +9,7 @@ use s3_runtime::com::Guid;
 use s3_runtime::{LogLevel, Machine, Registry, ThunkResult};
 
 use crate::hr::*;
+use crate::dplay_net as net;
 use crate::{declare_interface, put_u32, reg_method, ret};
 
 pub const DLL: &str = "dplayx.dll";
@@ -73,12 +74,29 @@ pub fn register(reg: &mut Registry) {
             "QueryInterface" => qi_self,
             "AddRef" => Machine::com_addref,
             "Release" => Machine::com_release,
-            // Enumerations: succeed with no entries.
-            "EnumConnections" | "EnumSessions" | "EnumPlayers" | "EnumGroups" | "EnumGroupPlayers"
-            | "EnumGroupsInGroup" => by_nargs_ok(IDIRECTPLAY4A_NARGS[i]),
-            "Close" | "Initialize" => by_nargs_ok(IDIRECTPLAY4A_NARGS[i]),
-            "GetMessageCount" => dp_get_message_count,
-            "Receive" => dp_receive,
+            // Relay-backed methods (dplay_net.rs).
+            "EnumConnections" => net::enum_connections,
+            "InitializeConnection" => net::initialize_connection,
+            "GetCaps" => net::get_caps,
+            "GetPlayerCaps" => net::get_player_caps,
+            "EnumSessions" => net::enum_sessions,
+            "Open" => net::open,
+            "Close" => net::close,
+            "EnumPlayers" => net::enum_players,
+            "CreatePlayer" => net::create_player,
+            "DestroyPlayer" => net::destroy_player,
+            "Send" => net::send,
+            "Receive" => net::receive,
+            "GetMessageCount" => net::get_message_count,
+            "GetSessionDesc" => net::get_session_desc,
+            "SetSessionDesc" => net::set_session_desc,
+            "GetPlayerData" => net::get_player_data,
+            "SetPlayerData" => net::set_player_data,
+            "GetPlayerName" => net::get_player_name,
+            "SetPlayerName" => net::set_player_name,
+            // No groups: succeed with no entries.
+            "EnumGroups" | "EnumGroupPlayers" | "EnumGroupsInGroup" => by_nargs_ok(IDIRECTPLAY4A_NARGS[i]),
+            "Initialize" => by_nargs_ok(IDIRECTPLAY4A_NARGS[i]),
             _ => by_nargs_unavailable(IDIRECTPLAY4A_NARGS[i]),
         };
         reg_method(reg, DLL, "IDirectPlay4A", name, h);
@@ -98,6 +116,7 @@ pub fn register(reg: &mut Registry) {
 }
 
 pub fn register_factories(m: &mut Machine) {
+    m.add_service("dplay-pump", net::pump_service);
     m.com.register_class(CLSID_DIRECTPLAY, "DirectPlay", create_dplay);
     m.com.register_class(CLSID_DIRECTPLAYLOBBY, "DirectPlayLobby", create_lobby);
 }
@@ -155,17 +174,6 @@ fn qi_self(m: &mut Machine) -> ThunkResult {
     m.mem.write_u32(this + 4, n);
     m.mem.write_u32(out, this);
     ret(S_OK, 3)
-}
-
-/// GetMessageCount(this, idPlayer, lpdwCount).
-fn dp_get_message_count(m: &mut Machine) -> ThunkResult {
-    let p = m.arg_u32(2);
-    put_u32(m, p, 0);
-    ret(DP_OK, 3)
-}
-
-fn dp_receive(_m: &mut Machine) -> ThunkResult {
-    ret(DPERR_NOMESSAGES, 6)
 }
 
 fn new_dplay(m: &mut Machine) -> u32 {

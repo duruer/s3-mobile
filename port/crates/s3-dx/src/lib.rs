@@ -11,6 +11,7 @@ pub mod blit;
 pub mod ddraw;
 pub mod dinput;
 pub mod dplay;
+pub mod dplay_net;
 pub mod dsound;
 pub mod mixer;
 

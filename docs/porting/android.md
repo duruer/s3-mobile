@@ -76,7 +76,7 @@ Steps in the script: `cargo ndk -t arm64-v8a -t x86_64 --platform 26 build --rel
 `apksigner sign` + `verify`. Tools: build-tools 36.0.0, NDK 27.2.12479018, cargo-ndk 4.1 in `~/.cargo/bin`.
 The script refuses to build with less than 2 GB free disk.
 
-Host unit tests (letterbox math, touch gestures incl. three-finger tap / right-click mode, letterbox buttons, audio ring/resampler, key map + chars, status and first-run screens, Host impl):
+Host unit tests (letterbox math, MotionEvent -> pointer events, letterbox buttons, audio ring/resampler, key map + chars, status and first-run screens, Host impl):
 `CARGO_TARGET_DIR=port/target cargo test -p s3-android -j 4`.
 
 ## Emulator (our AVD only)
@@ -164,15 +164,16 @@ callback (device change) reopens the stream. If AAudio cannot open, the app runs
 
 ## Controls
 
-| Touch | Mouse |
-| --- | --- |
-| Tap | left click (cursor moves to the finger, button down, up 60 ms later) |
-| Long press (500 ms without moving) | right click |
-| One-finger drag (beyond ~3 % of the screen height) in menus, or in game on the left control panel (x < 170 game px) | move with the left button held; released on lift |
-| One-finger drag on the map (in game = any display mode other than the 800x600 menu mode) | **scroll**: right button held, the mouse path is mirrored around the start point and halved so the map follows the finger (S3 scrolls the view *in* the right-drag direction, accelerated; measured +40 px drag -> +53 px view, +89 -> +187) |
-| Two-finger tap | right click at the first finger (sent when a finger lifts) |
-| Three-finger tap | show / hide the soft keyboard (no mouse event). Unit-tested; `adb shell input` cannot do multi-touch, so not yet tried on the emulator |
-| Finger touches down | cursor moves there at once (hover highlight) |
+Since 2026-11-05 the activity thread only reports fingers: every MotionEvent becomes raw `HostEvent::Pointer`
+events (`touch.rs`: Down/PointerDown -> Down, Move -> Move for every pointer with a changed position,
+PointerUp/Up -> Up, Cancel -> Cancel for all; game pixels via the letterbox). Gesture recognition and what a gesture
+does run in `s3-mods` on the engine thread, identical to the desktop `s3run --inject` touch commands:
+**see [touch.md](touch.md)** (in game: tap = select / move / attack / place, ✕ or two-finger tap = cancel, drag = camera
+with inertia, long-press-drag = box select, pinch = resolution zoom; no long-press right click). Menus: tap = left
+click, drag = left drag, two-finger tap = right click, three-finger tap = soft keyboard. Not yet tried on the
+emulator/phone (multi-touch needs a real device or emulator console gestures): unit-tested + desktop-verified.
+
+Former mapping (`TouchMapper`, removed): tap = left click, long press = right click, map drag = mirrored right drag.
 
 The 60 ms gap between button down and up is there because the game also polls the button state
 (DirectInput buffer, GetAsyncKeyState). A real mouse (ChromeOS, DeX, emulator with mouse) is passed through
@@ -189,7 +190,7 @@ ESC `2158 180`, ABC `2158 538`, RMB `2158 900`.
 | --- | --- |
 | `ESC` | VK_ESCAPE down + WM_CHAR 0x1B, key up 60 ms later |
 | `ABC` | show / hide the soft keyboard (highlighted while it is open; the real IME visibility is re-read once a second, so closing the IME with Back clears it) |
-| `RMB` | arm "next tap = right click" (highlighted while armed; one tap only). Verified: next tap sent Right down/up, the one after Left |
+| `RMB` | arm "next tap = right click" (highlighted while armed; one tap only). Since 2026-11-05 the flag lives in s3-mods (`Shared::rmb_toggle` -> `s3_mods::set_right_next` on the engine thread, state back via `rmb_armed`) |
 
 Keys (`keys.rs`): Back -> `VK_ESCAPE` (the IME takes Back first while it is open), hardware
 keyboard letters, digits, arrows, Enter, Space, Tab, Backspace, Delete, Shift/Ctrl/Alt, F1-F12, PgUp/PgDn,
@@ -236,6 +237,14 @@ uses) and the activity object. Java exceptions are cleared and logged.
 Arrow keys (hardware keyboard, `adb shell input keyevent DPAD_RIGHT`) also scroll the map (verified).
 
 Not done yet: pinch zoom; IME-aware layout (moving the game above the keyboard).
+
+## Multiplayer (relay)
+
+The APK has the `INTERNET` permission. The relay URL is read once at engine start from
+`/sdcard/Android/data/com.settlers3port.app/files/data/relay-url.txt` (one line, e.g. `ws://10.0.2.2:7788/` for a
+relay on the PC that runs the emulator); default `ws://127.0.0.1:7777/`. Then the game's own "Multi-player Game: LAN"
+menu lists "Internet (Settlers 3 Port)". Verified: the emulator joined a desktop-hosted game and played it by taps in
+both UI modes (ux-verify1, [integration-log.md](integration-log.md)). No in-app setting yet.
 
 ## Install for users (phone)
 

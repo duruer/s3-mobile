@@ -13,6 +13,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 s3-runtime.workspace = true
 s3-engine = { workspace = true, optional = true }
+# Gesture recognition / context-aware touch run on the engine thread (RMB button, keyboard request flags).
+s3-mods = { workspace = true, optional = true }
 log = "0.4"
 # 8x8 bitmap font (MIT) for the status / test-pattern screen.
 font8x8 = { version = "0.3", default-features = false }
@@ -20,7 +22,7 @@ font8x8 = { version = "0.3", default-features = false }
 [features]
 # The real engine. Without it (--no-default-features) the app is only the shell: status screen, input, audio.
 default = ["engine"]
-engine = ["dep:s3-engine"]
+engine = ["dep:s3-engine", "dep:s3-mods"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }

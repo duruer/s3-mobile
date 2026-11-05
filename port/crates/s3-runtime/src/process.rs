@@ -43,7 +43,11 @@ pub(crate) fn setup_process(m: &mut Machine, image_base: u32, image_size: u32, e
 
     let module_path = format!("{GUEST_GAME_DIR}\\{exe_name}");
     // Contract: the command line is just the exe name (kernel32 may append user arguments later).
-    let cmdline = exe_name.to_string();
+    // Debug: `S3_EXE_ARGS` appends guest arguments (e.g. `-netmon`, the game's network trace switch).
+    let cmdline = match std::env::var("S3_EXE_ARGS") {
+        Ok(a) if !a.trim().is_empty() => format!("{exe_name} {}", a.trim()),
+        _ => exe_name.to_string(),
+    };
     // Layout inside the params block: 0x000 RTL_USER_PROCESS_PARAMETERS (0x2A0), strings from 0x400.
     let mut p = params + 0x400;
     let cmdline_a = p;

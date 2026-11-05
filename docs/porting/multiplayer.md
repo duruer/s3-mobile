@@ -1,14 +1,24 @@
 # Online multiplayer (W5): how S3.EXE uses DirectPlay, and our relay stack
 
-Status 2026-11-05: **design + skeleton done.** Static RE of the game's DirectPlay usage (below), protocol v1,
-`port/crates/s3-net` (protocol, resumable link, sync client, DirectPlay constants/system-message layouts) and
-`port/crates/s3-relay` (tokio WebSocket relay, library + binary) implemented with 18 tests including two and three
-real clients talking through a local relay. **Not wired into the game yet:** s3-dx `dplay.rs` is still the stub
-(the build phase replaces it, see "HLE plan"). Nothing here has been exercised by S3.EXE at runtime, so every
-statement about game behaviour is static RE (OBSERVED in code) or marked HYPOTHESIS.
+Status 2026-11-05 (mp-dplay): **the game's own multiplayer menu works over our relay.** `s3-dx/src/dplay_net.rs`
+implements the IDirectPlay4A methods S3.EXE uses on top of `s3-net`; two headless `s3run` instances + a local
+`s3-relay` get through "Multi-player Game: LAN" -> our connection -> New Game / Join Game -> ready -> start, load
+the same map and run the game in lockstep. A per-simulation-tick state hash (section 6) found **no simulation desync** in
+runs of up to ~6 min game time with player commands from both sides (only a 3-tile difference in one world byte,
+HYPOTHESIS: local marker, see section 6). Not done yet: lobby launch, the
+"Multi-player Game: Internet" menu entry (not DirectPlay, see 5.1), desync hook into the relay, Android settings UI
+for the relay URL, cross-host (arm64) runs.
 
-Verify: `cd port && CARGO_TARGET_DIR=$PWD/target cargo test -p s3-net -p s3-relay -j 4`
-Run a relay: `port/target/debug/s3-relay --listen 0.0.0.0:7777 [--gog-only] [--grace 20] [-v]`
+Verify:
+```sh
+cd port && CARGO_TARGET_DIR=$PWD/target cargo test -p s3-net -p s3-relay -p s3-dx -j 4
+CARGO_TARGET_DIR=$PWD/target cargo build --release -j 4 -p s3-desktop -p s3-relay
+cd .. && port/scripts/mp-local-test.sh scratch/mp-test 120     # ends with "RESULT: IDENTICAL (no desync)"
+```
+Run a relay: `port/target/release/s3-relay --listen 0.0.0.0:7777 [--gog-only] [--grace 20] [-v]`; point the game at it
+with `S3_RELAY_URL=ws://host:7777/` (default `ws://127.0.0.1:7777/`). Android: one line in `<data dir>/relay-url.txt`
+(e.g. `ws://10.0.2.2:7788/` = the PC from the emulator), read at engine start; the APK has the `INTERNET` permission.
+Android joining a desktop host is verified (ux-verify1, [integration-log.md](integration-log.md)).
 
 ## 1. What S3.EXE does with DirectPlay (static RE, GOG exe sha256 `00a925cf…`)
 
@@ -72,7 +82,7 @@ their names; it does not hard-code SP GUIDs (none found besides the CLSIDs/IIDs)
 | `guidInstance` | only for join (from the chosen session) |
 | `dwMaxPlayers` | `0x435ac0()` (HYPOTHESIS: chosen map's player count) |
 | `lpszSessionName`, `lpszPassword` | from the dialog (empty string `0x6553a0` if none) |
-| `dwUser1/2` | globals `0x7a8000/0x7a8004` (runtime values; HYPOTHESIS: lobby/league ids) |
+| `dwUser1/2` | globals `0x7a8000/0x7a8004`; runtime value `3c44fe57 3d439f21` in every run, also logged as "Siedler3 Version 1.60: (3c44fe57,3d439f21)" (OBSERVED 2026-11-05: a build/version id, not lobby ids) |
 | `dwUser3` | 0xA0 (constant at `0x6970f0`; HYPOTHESIS: game/net version 1.60) |
 | `dwUser4` | 1 if `0x437450()` (HYPOTHESIS: Amazons/mission CD flag, cf. "RemoteSetup with AmazonsSupport") |
 
@@ -262,6 +272,9 @@ must be listed. Payload limit 64 KiB per message (S3's largest buffer is 40000 b
 | `port/crates/s3-net/src/link.rs` | seq/ack/retransmit bookkeeping (both sides) |
 | `port/crates/s3-net/src/client.rs` | `NetClient`: blocking requests (`create_session`, `join_session`, `create_player`, …), non-blocking `send`, `poll_event`/`wait_event`, `snapshot()` (session, host, players, rtt), auto-resume |
 | `port/crates/s3-net/src/dplay.rs` | DPERR table (from the exe), DPSYS/DPSESSION/DPSEND constants, `SystemMessage::layout(guest_addr)` = DPMSG_* bytes for Receive, `hresult_for` |
+| `port/crates/s3-dx/src/dplay_net.rs` | the DirectPlay HLE over `NetClient` (section 5) |
+| `port/crates/s3-desktop/src/mp_hash.rs` | `s3run --mp-hash`: per-simulation-tick state hash, exec log, game-log / net debug hooks (section 6) |
+| `port/scripts/mp-local-test.sh`, `tools/mp_hash_compare.py`, `tools/mp_dump_diff.py` | two-instance test and its comparison tools |
 | `port/crates/s3-relay/src/lib.rs` | `start(RelayConfig) -> RelayHandle` (url, stats, kick for tests); hub actor |
 | `port/crates/s3-relay/src/main.rs` | CLI binary |
 | `port/crates/s3-relay/tests/two_clients.rs` | create/list/join/players/ordered data/spoofing/data+desc changes/desync/leave; host migration (3 clients) and session loss; password/full/exe rules; exe allow-list; resume after drop without loss; slot expiry |
@@ -270,7 +283,7 @@ Dependencies (all MIT/Apache-2.0, GPL-3.0-compatible): tokio, tokio-tungstenite/
 futures-util, log. Randomness for GUIDs/tokens comes from std's OS-seeded hasher (HYPOTHESIS: good enough for a
 hobby relay; switch to `getrandom` before public deployment).
 
-## 3. HLE plan for the build phase (s3-dx `dplay.rs`)
+## 3. HLE plan (original plan; what was built is in section 5)
 
 1. `DirectPlayLobby::GetConnectionSettings`: keep `DPERR_NOTLOBBIED` unless the frontend requested a lobby launch
    (then return a DPLCONNECTION; see 1.2).
@@ -315,12 +328,133 @@ Options, cheapest first:
 Our protocol keeps everything the DirectPlay wire model needs (DPIDs, session desc incl. `dwUser`, guaranteed flag,
 system events), so a bridge can translate 1:1.
 
-## 5. Open questions (runtime)
+## 5. DirectPlay HLE (implemented 2026-11-05, `port/crates/s3-dx/src/dplay_net.rs`)
 
-- Exact meaning of setup types 16/20/26/27, `dwUser1/2/4`, and `dwMaxPlayers` source — capture with `-netmon` and a
-  two-instance desktop run.
-- Does the game's network loop wait on the CreatePlayer event (MsgWaitForMultipleObjects) or poll?
-- How the in-game multiplayer menus react to a connection list with one entry; whether `InitializeConnection`
-  failures hide entries.
-- Lobby-launch landing screen (1.2).
-- Cross-host determinism of our x87 (blocking issue for real online play, separate workstream).
+`dplay.rs` keeps the COM plumbing (vtables, factories, lobby stubs) and routes these IDirectPlay4A methods to
+`dplay_net.rs`; one `NetClient` per machine (`Machine::state::<DpNet>`), shared by all DirectPlay objects the game
+creates (it re-creates them per connection test).
+
+| Method | Behaviour |
+| --- | --- |
+| `EnumConnections` | one callback: SP GUID `SP_GUID_S3PORT`, connection blob `"S3PORTv1"+GUID` (24 bytes), DPNAME "Internet (Settlers 3 Port)", flags `DPCONNECTION_DIRECTPLAY` |
+| `InitializeConnection` | checks the blob, connects to the relay once (`NetConfig`: `set_config(m, ..)` or env `S3_RELAY_URL`, `S3_NET_NAME`); relay down -> `DPERR_UNAVAILABLE` |
+| `GetCaps` / `GetPlayerCaps` | `GUARANTEEDOPTIMIZED|GUARANTEEDSUPPORTED` (+`ISHOST`), so the game does not add `DIRECTPLAYPROTOCOL`; 65000-byte buffers, 1 local player |
+| `EnumSessions` | sync: `list_sessions(app GUID)` + callbacks + `DPESC_TIMEDOUT`; `ASYNC`: cached list, refreshed by a background thread; `STOPASYNC`: no-op. Session names live in stable guest strings (the game may keep the pointer) |
+| `Open` | `CREATE` -> `create_session(desc from the game)`, `JOIN` -> `join_session(instance, password)`; errors via `hresult_for` |
+| `Close` | `leave_session`, clears local players and the queue |
+| `EnumPlayers` | local (flag `DPENUMPLAYERS_LOCAL` 0x8) + remote (0x10) players sorted by DPID |
+| `CreatePlayer` / `DestroyPlayer` | relay player; remembers the **Win32 event** per local DPID |
+| `Send` | `NetClient::send` (never blocks); to a local DPID: queued locally |
+| `Receive` / `GetMessageCount` | drain relay events into a host queue (data -> `from`/`to`; events -> `DPSYS_*` via `SystemMessage::layout` at the game's buffer address, `from = 0`); `BUFFERTOOSMALL` + size; `TOPLAYER`/`FROMPLAYER`/`PEEK` honoured |
+| `Get/SetSessionDesc`, `Get/SetPlayerData`, `Get/SetPlayerName` | relay snapshot / requests |
+| groups, `Initialize` | succeed with no entries |
+
+Service `dplay-pump` (every scheduler slice) and every Receive/GetMessageCount drain relay events and **SetEvent the
+local players' events** when messages are queued. Debug: `S3_DPLAY_TRACE=1` logs every Send/Receive with the first
+24 bytes. Test: `s3-dx` `dplay_two_machines_through_relay` (two machines, real relay in-process, guest callbacks:
+EnumConnections -> InitializeConnection -> Open CREATE / EnumSessions + Open JOIN -> CreatePlayer -> DPSYS
+CREATEPLAYER with `BUFFERTOOSMALL` retry -> ordered data both ways -> event signalled -> GetSessionDesc ->
+Close -> DESTROYPLAYER).
+
+### 5.1 Menu flow observed at runtime (GOG exe, 800x600 menu coordinates)
+
+- Main menu "Multi-player Game: **LAN**" (165,275) opens "LAN Game": "Type of Network" lists our connection
+  (200,131); "Search for games" (175,240); "Open Games" list (first entry ~200,330); "Join Game" (610,567);
+  "New Game" (730,567).
+- "Multi-player Game: **Internet**" (165,315) says "Internet connection not detected." without touching DirectPlay
+  (HYPOTHESIS: it is the Blue Byte lobby over wsock32, whose `WSAStartup` fails on purpose). The LAN entry is the
+  DirectPlay path; a mobile UI should rename/route it.
+- New Game -> Game Setup with the map picker (tabs Random 181,133 / Multi-player Map 181,180; "384-2-Artokia" =
+  first MP map 165,255; OK 630,467), setup OK (730,567) -> **Open(CREATE)** + CreatePlayer -> waiting room
+  ("Status: Waiting for Players"). The joiner appears after Join Game. Each player must press its ready button
+  (right of the chat line: host row 723,114, second row 723,134), then the host's OK (730,567) starts. OK before
+  everyone is ready shows "Not all players are ready".
+- Session desc the game creates (OBSERVED): flags 0x44, `dwMaxPlayers` 2 (from the map/setup), name
+  "Player's game", `dwUser1/2` = `3c44fe57 3d439f21` (constant across runs; the game logs
+  "Siedler3 Version 1.60: (3c44fe57,3d439f21)" — a build/version id), `dwUser3` 0xA0, `dwUser4` 1.
+- Setup traffic (OBSERVED with `S3_DPLAY_TRACE`): host -> joiner GameSetup (type 0x19, 315 B, guaranteed) and slot
+  infos (0x1a, 53 B, to all); ping pairs type 0x10 (12 B, `10 00 0c 00 ...` with a `timeGetTime` value, echoed);
+  joiner `SetPlayerData` (-> DPSYS 0x102 at the host); host `SetSessionDesc` at game start (-> DPSYS 0x104);
+  final slot info type 0x14. "LOGIC: GameLogic random seed N" is the same on both peers (seed from GameSetup).
+
+### 5.2 In-game lockstep protocol (OBSERVED + STATIC)
+
+- Every in-game message is a **bundle**: dword CRC32 (table at `session+0xe78`, `0x46dbd0`, over the rest) then
+  4-byte sub-message headers `type, 0, size, retry` + payload. Receive loop `0x46adaa`: GetMessageCount, Receive
+  into a 40000-byte buffer, DPID -> slot (`0x434ec0`), drop unless `session+0x23d[slot]` (active) and not
+  `session+0x251[slot]` (left), drop on CRC mismatch, then dispatch by type (`0x46afe8` / `0x46afb8`):
+  0x06 `0x46c8b0`, 0x10 `0x45c380` (ping), 0x11 `0x46d370` (**ExecuteTo**: `session+0x224 = max(.., value)`),
+  0x12 `0x46cbd0`, 0x13 `0x46d190`, 0x16 `0x46d6a0`, 0x17 `0x46d7c0`, 0x18 `0x46d820`,
+  0x20 `0x46d610` (ack: `session+0x1d4[slot] = max(.., value)`), 0x21 `0x46c8d0` (player request), 0x22 `0x46db40`.
+- Start: the host (TimeServer) sends `11 00 08 01 | 0x11` (ExecuteTo 17) twice per round, the joiner answers
+  `20 00 08 01 | 0`, until both logic threads run; then the joiner's first request `21 fb 10 01 ...` arrives and
+  normal traffic starts. While a peer is still building the map both screens show "Initiating player2player
+  communication....". With a **random map** this phase took 30-100+ s in our runs ("Position gefunden nach ~30000
+  Versuchen" start-position search, slow in the interpreter): runs cut at 50-80 s looked "stuck" there but were
+  only slow. The test script therefore uses the fixed map 384-2-Artokia.
+- Logic side: `CLogicThread` loop `0x53dxxx` increments the **frame counter** `gd+0x2d2d8` by 4 every pass
+  (`0x53dda5`), executes queued logic messages (`0x535990`; switch on the class byte at `0x535a59`) and runs the
+  **simulation tick** (`0x53e5a1`: `gd` tick calls `0x4e7810`, `0x4e05e0`, `0x4e9670`, then AI `0x550f80` per slot)
+  only when `word [0x7ace62] == 0`. The frame counter keeps running while lockstep pauses the simulation, so it
+  differs between peers; the number of simulation ticks does not.
+- Logic message classes seen: `0x01` = player commands from the network (`01 cmd len 0 ...`, e.g. `0x03`
+  selection, `0x09` move, `0x01` place building, `0xfb` sent by each player every ~256 ticks with a
+  checksum-like value: HYPOTHESIS: the game's own sync check); `0x02` = local timing (`02 00 08 01 v`, value differs
+  per peer); `0x22` (0x58 bytes, local, executed at slightly different ticks per peer, bytes 4..5 differ).
+- `gd+0x2d2dc` = simulation RNG state (changes exactly on simulation ticks; equal on both peers).
+- Game debug log: function `0x428720` (printf-like). `S3_GAME_LOG=1` makes s3run print it (`[game] ...`);
+  `S3_EXE_ARGS=-netmon` passes the game's net-monitor switch (more `NET:` lines, e.g. "Erstelle Zufallswelt").
+
+## 6. Local two-instance test and desync check
+
+`port/scripts/mp-local-test.sh [OUT] [SECONDS]` starts `s3-relay` on 127.0.0.1:$PORT (7787), two
+`s3run --headless` (env `S3_RELAY_URL`, `S3_NET_NAME=host|join`), injects the menu clicks of 5.1 (host creates on
+Artokia, joiner searches/joins at 17-20 s, both ready, host starts at 29 s), takes screenshots every 20 s and
+compares the hash files with `tools/mp_hash_compare.py`. Env: `MAP=random`, `HOST_EXTRA`/`JOIN_EXTRA` (more inject
+items, e.g. in-game build/select/move clicks), `HASH_EVERY`, `PORT`.
+
+**Hash** (`s3run --mp-hash FILE [--mp-hash-every N]`, `port/crates/s3-desktop/src/mp_hash.rs`): a hook at the start of
+every simulation tick (`0x53e5a1`) writes `step=TICK rng=.. n=settlers/buildings/piles settlers=.. buildings=..
+piles=.. trade=.. econ=.. players=.. [world=.. every 64 ticks] frame=.. local=..` (FNV-1a over the tables of
+game-state-units.md). World tile bytes `+0x09 +0x0b +0x0c +0x0d` are masked: they differ per peer from the first
+tick (+9/+d, one region: HYPOTHESIS fog / local view) or around the local player's land in build mode (+b/+c:
+HYPOTHESIS placement markers) while all simulation tables stay identical. A hook on the logic executor
+(`0x535a59`) writes `exec at=TICK frame=.. msg=HEX` for every executed logic message; the compare tool checks
+that both peers execute the same class-0x01 messages at the same ticks. Debug: `S3_MP_DUMP_STEP=t1,t2` writes the
+raw tables before those ticks (`tools/mp_dump_diff.py DIR TICK` lists differing per-entry offsets), `S3_MP_HDR=1`
+adds `gd+0x2d240..` dwords, `S3_MP_NETDBG=1` logs the receive filter and CRC failures.
+
+Results (2026-11-05, x86_64 desktop, both peers on this PC; logs/hashes in `scratch/mp-dplay/`, local only):
+
+| Run | Setup | Result |
+| --- | --- | --- |
+| long1 | random 384 map, 330 s, select+move by both players, 1 building placed | 3979 ticks (~4.2 min game time at 64 ms/tick), 5 player commands executed at identical ticks, all simulation tables identical at every tick; world differed only in bytes masked since (+b/+c) |
+| a1 | Artokia, 60 s | 391 ticks, IDENTICAL |
+| long2 | Artokia, 400 s, build/select/move by both players | 5489 ticks (~5.9 min), 8 player commands (4 building sites, 2 selections, 2 moves) at identical ticks, settlers/buildings/piles/trade/econ/players identical at **every** tick; world hash differs from tick 4992 |
+| long3 | same as long2 + raw dumps | 5052 ticks, same picture; world differs from tick 3392: dump at tick 4800 = only the masked bytes plus **tile byte +0x0f on 3 tiles** ((293,345), (301,335), (301,341): 0x18 on one peer, 0 on the other) |
+
+Conclusion: no simulation desync found in ~16 min of combined two-peer game time. The remaining world difference is
+3 tiles of byte +0x0f while every settler/building/pile/economy/player record stays bit-identical for thousands of
+ticks afterwards; HYPOTHESIS: another local-only marker (e.g. a move-target / selection marker drawn for the local
+player), not simulation state. To confirm: watch writes to those tiles (add a write watchpoint to s3run) and check
+whether the game's own sync messages (`0xfb`) still agree. The compare tool reports this case as
+`RESULT: SIMULATION TABLES IDENTICAL; world tiles differ` (exit code 3).
+
+Pitfall found on the way: hashing at the frame counter (`gd+0x2d2d8`) instead of the simulation tick reported
+"desyncs" from step ~84 in about half the runs; the sequences of distinct states were identical — the peers had just
+paused at different frames. Always key comparisons by simulation tick.
+
+## 7. Open questions / next steps
+
+- Hook the game's own desync detection ("Desync!" `0x53ad7c`, "Message ChecksumFailure" `0x53b59a`) and call
+  `dplay_net::report_desync` so the relay forwards it (the relay side exists).
+- Android: the APK manifest has no `android.permission.INTERNET` yet (needed before `InitializeConnection` can reach a
+  relay; s3-dx with s3-net/tokio already compiles for `aarch64-linux-android`).
+- Lobby launch (1.2) from a native mobile lobby, and a frontend setting for the relay URL (Android: today only the
+  env var / `dplay_net::set_config`).
+- Cross-host: run the same test with one peer on arm64 (emulator-5610 / phone) — determinism.md golden vectors first.
+- Exact meaning of setup types 16/20/26/27, of class-0x22 logic messages and of the per-peer tile bytes
+  (+0x09/+0x0b/+0x0c/+0x0d masked; +0x0f differs on a few tiles after ~3400-5000 ticks, unmasked).
+- Host migration / player leaving in game (relay supports it; game reaction untested).
+- More than 2 players; the 20-slot `dwMaxPlayers` path.
+

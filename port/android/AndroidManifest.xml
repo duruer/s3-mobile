@@ -5,6 +5,9 @@
     android:versionCode="1"
     android:versionName="0.1.0">
 
+    <!-- Online multiplayer: WebSocket connection to our relay (docs/porting/multiplayer.md). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <uses-feature android:glEsVersion="0x00020000" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 

@@ -42,5 +42,17 @@ without shipping a modified exe:
   - **A "Classic Touch"**: the original panel and game UI, patched for touch. Context-aware taps (no long-press right-click),
     larger hit areas, gestures, the panel scaled for readability.
   - **B "Mobile HUD"**: a native large-button HUD (JSettlers-like) on top of or instead of the original panel.
-  Both modes can be switched in settings and are shown side by side with screenshots.
+  Both modes can be switched in settings and are shown side by side with screenshots: [ui-modes.md](ui-modes.md).
 - Multi-agent workflows approved for W1-W5.
+
+## Workstream status (2026-11-06, after the mobile UX + online workflow)
+
+| # | Status | Where |
+| --- | --- | --- |
+| W1 Mod/hook framework | **done**: CPU hook exit, `s3-mods` (hooks, guest calls, struct views, patch sets by sha256, overlay, gestures, settings), touch inject in `s3run`; overhead < 1 % | [mods.md](mods.md) |
+| W2 Game-state RE | **done for UX needs**: units/buildings/tiles/selection/commands, camera, layouts, panel pages, build list, strings. Open: panel goods counters, building cost tables, some good/settler ids (HYPOTHESIS), simulation RNG location | [game-state-units.md](../reverse-engineering/game-state-units.md), [game-state-ui.md](../reverse-engineering/game-state-ui.md) |
+| W3 Touch input v2 | **done**: context tap (no long press), ✕/two-finger cancel, pan with inertia, long-press-drag box select, pinch = resolution step (not a scaled zoom). Double tap = select same type nearby: implemented (Ctrl+click), not runtime-verified (HYPOTHESIS) | [touch.md](touch.md) |
+| W4 UI modes | **both done and switchable in game**: A "Classic Touch", B "Mobile HUD". User decision pending (recommendation: A default, B option) | [ui-modes.md](ui-modes.md) |
+| W5 Online multiplayer | **works**: DirectPlay 6 HLE over our WebSocket relay (`s3-net`, `s3-relay`); desktop <-> desktop lockstep without desync over runs up to ~6 min; Android joins a desktop host. Determinism: own x87 math, golden vectors identical x86_64/i686 (arm64 not run yet). Missing: lobby UI/accounts, public relay, Android-hosted game, arm64 peer, PC crossplay | [multiplayer.md](multiplayer.md), [determinism.md](determinism.md) |
+| W6 Launcher | not started (relay URL is a text file, mode switch is in game) | [strategy.md](strategy.md) |
+| W7 Real-device tuning | not started (no phone tested yet) | [status.md](status.md) |

@@ -38,13 +38,13 @@ pub struct TouchMouse {
 }
 
 impl TouchMouse {
-    fn push(&mut self, t: u64, e: HostEvent) {
+    pub(crate) fn push(&mut self, t: u64, e: HostEvent) {
         let t = t.max(self.last_due);
         self.last_due = t;
         self.queue.push((t, e));
     }
 
-    fn click(&mut self, t: u64, p: (i32, i32), button: MouseButton) {
+    pub(crate) fn click(&mut self, t: u64, p: (i32, i32), button: MouseButton) {
         self.push(t, HostEvent::MouseMove { x: p.0, y: p.1 });
         self.push(t, HostEvent::MouseButton { button, down: true });
         self.push(t + CLICK_MS, HostEvent::MouseButton { button, down: false });

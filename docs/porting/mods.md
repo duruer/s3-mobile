@@ -94,7 +94,11 @@ Next (W2): find a safe point that runs every frame or tick (for example the logi
 that may call the game functions we need.
 HYPOTHESIS: both addresses run only on the main thread (deferred work also checks the main thread id).
 
-W2/W3/W4 add their hooks to `gog_base` (or new sets) in `patchset.rs`.
+W2/W3/W4 add their hooks to `gog_base` (or new sets) in `patchset.rs`. UI mode A registers its hooks
+(`0x524fa0` HandleInput, `0x42c820` gfx ctor) and its mod from `ui_classic::install(m, gog)` in `install`, see
+[ui-classic.md](ui-classic.md). UI mode B registers its hooks (`0x4c6d70` layout, `0x54bec0` landscape buffer,
+`0x4b4d00` panel render, `0x4ff170` ScreenToMap, `0x524fa0` HandleInput, `0x5faaa0` text lookup) and its mod from
+`ui_hud::install(m, gog)`, see [ui-hud.md](ui-hud.md). Several hooks on one address (both modes use `0x524fa0`) chain.
 
 ## Overlay (`s3_mods::overlay`)
 
@@ -132,25 +136,30 @@ on a running one-finger pan or long press ends that gesture.
 
 ### Fallback touch->mouse (`fallback.rs`)
 
-Unconsumed gestures map like the legacy Android mapper (`s3-android/src/touch.rs`), so behaviour does not change until
-W3 replaces it: Tap = left click (button-up 60 ms later), LongPress / TwoFingerTap = right click (`long_press_right_click`
+**W3 (2026-11-05):** for the GOG exe the `touch-context` mod ([touch.md](touch.md)) sits above the fallback and
+handles in-game gestures (and all long presses); the fallback only sees what it passes (menus, RMB-armed taps,
+three-finger taps). Android now sends raw pointers too (old `TouchMapper` removed).
+Unconsumed gestures map like the former Android mapper: Tap = left click (button-up 60 ms later), LongPress / TwoFingerTap = right click (`long_press_right_click`
 setting), ThreeFingerTap = keyboard request (`take_keyboard_request`), one-finger Pan = left drag, or right drag on the
 in-game map (x >= 170, not 800x600), mirrored and halved = "grab" scrolling. `set_right_next(m, true)` = RMB button.
-Android still uses its own `touch.rs` (sends mouse events); switching it to `HostEvent::Pointer` is the build phase's job.
+Android sends `HostEvent::Pointer` since 2026-11-05 (`s3-android/src/touch.rs`, RMB/keyboard flags via
+`Shared::rmb_toggle/rmb_armed/keyboard_req` <-> `s3_mods::set_right_next/right_next/take_keyboard_request`).
 
 ## Settings (`settings.rs`)
 
 `<data_dir>/mods-settings.json`, loaded at install, saved atomically with `s3_mods::set_settings(m, s)`; missing fields
 use defaults, a broken file falls back to defaults with a warning.
 `{ version, ui_mode: "ClassicTouch"|"MobileHud", patches_enabled, debug_overlay, hud_scale,
-touch: { long_press_ms, tap_max_ms, tap_slop, double_tap_ms, double_tap_slop, long_press_right_click } }`.
+touch: { long_press_ms, tap_max_ms, tap_slop, double_tap_ms, double_tap_slop, long_press_right_click, context } }`
+(`context` = W3 context-aware touch, default on, see [touch.md](touch.md)).
 `S3_MODS_DEBUG=1` turns on the built-in debug overlay (finger circles + last gesture label).
 
 ## Desktop testing (`s3run --inject` touch commands)
 
-Screen coordinates = game pixels (800x600 menus, 640x480 in game): `tap x y`, `tap2 x y`,
-`drag x1 y1 x2 y2 [ms=300]` (moves every 16 ms), `longpress x y [ms=800]`, `pinch cx cy scale [ms=300]`
-(fingers 80 px apart -> 80*scale). Example (menu -> in game by taps, map drag, build menu tap):
+Screen coordinates = game pixels (800x600 menus, 640x480 in game): `tap x y`, `dtap x y`, `tap2 x y`, `tap3 x y`,
+`drag x1 y1 x2 y2 [ms=300]` (moves every 16 ms), `drag2 ...` (two fingers 60 px apart), `fling ... [ms=120]`,
+`longpress x y [ms=800]`, `lpdrag x1 y1 x2 y2 [hold=700] [ms=400]`, `pinch cx cy scale [ms=300]`
+(fingers 80 px apart -> 80*scale). Code: `s3-desktop/src/touch_inject.rs`. Example (menu -> in game by taps, map drag, build menu tap):
 
 ```sh
 I="1200:tap 165 235;3200:tap 630 467;5200:tap 730 567;7200:tap 730 567;30000:shot a.png;31000:drag 400 300 300 250 400;33000:shot c.png;34000:tap 25 167;36000:shot e.png"

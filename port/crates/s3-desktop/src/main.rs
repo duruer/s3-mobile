@@ -10,8 +10,7 @@
 //! digits, space, `-`, `_` as VK codes so the guest's TranslateMessage makes WM_CHAR), `shot file.png` (write the
 //! current frame), `quit`.
 //! Touch commands (raw pointer events in screen = game pixels, recognized by s3-mods like on Android):
-//! `tap x y`, `tap2 x y` (two-finger tap), `drag x1 y1 x2 y2 [ms=300]`, `longpress x y [ms=800]`,
-//! `pinch cx cy scale [ms=300]` (two fingers 80 px apart -> 80*scale).
+//! `tap`, `dtap`, `tap2`, `tap3`, `drag`, `drag2`, `fling`, `longpress`, `lpdrag`, `pinch`; see touch_inject.rs.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -21,9 +20,11 @@ use std::time::Instant;
 mod audio;
 mod debug;
 mod debug_units;
+mod touch_inject;
+mod mp_hash;
 
 use s3_engine::Engine;
-use s3_runtime::{FrameBuffer, Host, HostEvent, LogLevel, MouseButton, PointerPhase, SliceResult};
+use s3_runtime::{FrameBuffer, Host, HostEvent, LogLevel, MouseButton, SliceResult};
 
 /// Max PNG files written by --screenshot-every-present (disk is shared and small).
 const MAX_PRESENT_SHOTS: u64 = 300;
@@ -47,13 +48,17 @@ struct Args {
     debug_cmds: Vec<(u64, debug::DebugCmd)>,
     /// re-units read-only commands (xdump/xpeek/scan, see debug_units.rs).
     units_cmds: Vec<(u64, debug_units::UnitsCmd)>,
+    /// `--mp-hash FILE`: per-game-step simulation hash (mp_hash.rs), every `mp_hash_every` steps.
+    mp_hash: Option<PathBuf>,
+    mp_hash_every: u32,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: s3run --game-dir <dir> --data-dir <dir> [--exe <path>] [--headless] [--max-seconds N]\n\
          \x20            [--screenshot-every-present <dir>] [--screenshot <file.png>] [--inject \"t:cmd x y;...\"] [-v]\n\
-         \x20            [--audio-wav <file.wav> [--audio-wav-seconds N (300)]] [--audio-play (feature audio-cpal)]"
+         \x20            [--audio-wav <file.wav> [--audio-wav-seconds N (300)]] [--audio-play (feature audio-cpal)]\n\
+         \x20            [--mp-hash <file> [--mp-hash-every N]]   (multiplayer: env S3_RELAY_URL, S3_NET_NAME)"
     );
     std::process::exit(2)
 }
@@ -136,12 +141,12 @@ fn parse_inject_all(spec: &str) -> Result<(Vec<(u64, HostEvent)>, Vec<(u64, Path
                 shots.push((t, PathBuf::from(f)));
             }
             Some("quit") => out.push((t, HostEvent::Quit)),
-            Some(c @ ("tap" | "tap2" | "drag" | "longpress" | "pinch")) => {
+            Some(c) if touch_inject::COMMANDS.contains(&c) => {
                 let num = |i: usize| -> Result<f64, String> {
                     w.get(i).and_then(|s| s.parse::<f64>().ok()).ok_or(format!("missing/bad argument {i} in '{item}'"))
                 };
                 let opt = |i: usize, d: f64| w.get(i).and_then(|s| s.parse::<f64>().ok()).unwrap_or(d);
-                touch_events(&mut out, t, c, &num, &opt)?;
+                touch_inject::touch_events(&mut out, t, c, &num, &opt)?;
             }
             _ => return Err(format!("unknown inject command '{cmd}'")),
         }
@@ -149,60 +154,6 @@ fn parse_inject_all(spec: &str) -> Result<(Vec<(u64, HostEvent)>, Vec<(u64, Path
     out.sort_by_key(|(t, _)| *t);
     shots.sort_by_key(|(t, _)| *t);
     Ok((out, shots))
-}
-
-/// Raw pointer events for the touch inject commands.
-fn touch_events(
-    out: &mut Vec<(u64, HostEvent)>,
-    t: u64,
-    cmd: &str,
-    num: &dyn Fn(usize) -> Result<f64, String>,
-    opt: &dyn Fn(usize, f64) -> f64,
-) -> Result<(), String> {
-    let p = |id: u32, phase: PointerPhase, x: f64, y: f64| HostEvent::Pointer { id, phase, x: x.round() as i32, y: y.round() as i32 };
-    match cmd {
-        "tap" | "tap2" => {
-            let (x, y) = (num(1)?, num(2)?);
-            out.push((t, p(1, PointerPhase::Down, x, y)));
-            if cmd == "tap2" {
-                out.push((t + 10, p(2, PointerPhase::Down, x + 40.0, y)));
-                out.push((t + 60, p(2, PointerPhase::Up, x + 40.0, y)));
-            }
-            out.push((t + 70, p(1, PointerPhase::Up, x, y)));
-        }
-        "longpress" => {
-            let (x, y, ms) = (num(1)?, num(2)?, opt(3, 800.0) as u64);
-            out.push((t, p(1, PointerPhase::Down, x, y)));
-            out.push((t + ms, p(1, PointerPhase::Up, x, y)));
-        }
-        "drag" => {
-            let (x1, y1, x2, y2, ms) = (num(1)?, num(2)?, num(3)?, num(4)?, opt(5, 300.0).max(16.0) as u64);
-            out.push((t, p(1, PointerPhase::Down, x1, y1)));
-            let steps = (ms / 16).max(1);
-            for i in 1..=steps {
-                let k = i as f64 / steps as f64;
-                out.push((t + i * ms / steps, p(1, PointerPhase::Move, x1 + (x2 - x1) * k, y1 + (y2 - y1) * k)));
-            }
-            out.push((t + ms + 1, p(1, PointerPhase::Up, x2, y2)));
-        }
-        "pinch" => {
-            let (cx, cy, scale, ms) = (num(1)?, num(2)?, num(3)?, opt(4, 300.0).max(16.0) as u64);
-            let d0 = 40.0;
-            out.push((t, p(1, PointerPhase::Down, cx - d0, cy)));
-            out.push((t, p(2, PointerPhase::Down, cx + d0, cy)));
-            let steps = (ms / 16).max(1);
-            for i in 1..=steps {
-                let d = d0 * (1.0 + (scale - 1.0) * i as f64 / steps as f64);
-                let at = t + i * ms / steps;
-                out.push((at, p(1, PointerPhase::Move, cx - d, cy)));
-                out.push((at, p(2, PointerPhase::Move, cx + d, cy)));
-            }
-            out.push((t + ms + 1, p(1, PointerPhase::Up, cx - d0 * scale, cy)));
-            out.push((t + ms + 2, p(2, PointerPhase::Up, cx + d0 * scale, cy)));
-        }
-        _ => unreachable!(),
-    }
-    Ok(())
 }
 
 fn parse_args() -> Args {
@@ -222,6 +173,8 @@ fn parse_args() -> Args {
         audio_play: false,
         debug_cmds: Vec::new(),
         units_cmds: Vec::new(),
+        mp_hash: None,
+        mp_hash_every: 1,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -254,6 +207,8 @@ fn parse_args() -> Args {
             "--audio-wav" => a.audio_wav = Some(val().into()),
             "--audio-wav-seconds" => a.audio_wav_seconds = val().parse().unwrap_or_else(|_| usage()),
             "--audio-play" => a.audio_play = true,
+            "--mp-hash" => a.mp_hash = Some(val().into()),
+            "--mp-hash-every" => a.mp_hash_every = val().parse().unwrap_or_else(|_| usage()),
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -508,6 +463,15 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if std::env::var_os("S3_GAME_LOG").is_some() {
+        mp_hash::install_game_log(&mut engine.machine);
+    }
+    if std::env::var_os("S3_MP_NETDBG").is_some() {
+        mp_hash::install_net_debug(&mut engine.machine);
+    }
+    if let Some(p) = &args.mp_hash {
+        mp_hash::install(&mut engine.machine, p, args.mp_hash_every);
+    }
     let start = Instant::now();
     let mut win = if args.headless { None } else { Some(window::Win::new()) };
     let mut shown_serial = 0;
@@ -601,6 +565,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use s3_runtime::PointerPhase;
 
     #[test]
     fn inject_touch_parsing() {
@@ -610,6 +575,14 @@ mod tests {
         assert!(v.contains(&(301, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 100, y: 0 })));
         assert!(v.contains(&(1302, HostEvent::Pointer { id: 2, phase: PointerPhase::Up, x: 380, y: 200 })));
         assert_eq!(v.last().unwrap(), &(2600, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 5, y: 5 }));
+        let v = parse_inject("0:lpdrag 10 10 110 60 700 160; 5000:drag2 300 200 400 200 160; 9000:tap3 50 50; 9500:dtap 5 5").unwrap();
+        assert_eq!(v[0], (0, HostEvent::Pointer { id: 1, phase: PointerPhase::Down, x: 10, y: 10 }));
+        assert_eq!(v[1].0, 716, "lpdrag moves start after the hold");
+        assert!(v.contains(&(861, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 110, y: 60 })));
+        assert!(v.contains(&(5005, HostEvent::Pointer { id: 2, phase: PointerPhase::Down, x: 330, y: 200 })));
+        assert!(v.contains(&(5172, HostEvent::Pointer { id: 2, phase: PointerPhase::Up, x: 430, y: 200 })));
+        assert_eq!(v.iter().filter(|e| e.0 >= 9000 && e.0 < 9100 && matches!(e.1, HostEvent::Pointer { phase: PointerPhase::Down, .. })).count(), 3);
+        assert_eq!(v.iter().filter(|e| e.0 >= 9500 && matches!(e.1, HostEvent::Pointer { phase: PointerPhase::Up, .. })).count(), 2);
     }
 
     #[test]

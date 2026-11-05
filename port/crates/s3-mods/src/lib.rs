@@ -21,7 +21,15 @@ pub mod overlay;
 pub mod patchset;
 pub mod settings;
 pub mod sha256;
+pub mod touch;
+pub mod touch_fx;
+pub mod touch_game;
+pub mod touch_logic;
 pub mod view;
+pub mod ui_classic;
+pub mod ui_hud; // UI mode B "Mobile HUD" (docs/porting/ui-hud.md)
+mod ui_hud_data;
+pub mod ui_hud_game;
 
 mod debug_overlay;
 
@@ -162,6 +170,15 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
             &format!("mods: unknown S3.EXE (sha256 {sha}); game patches disabled (expected GOG {}…)", &patchset::GOG_SHA256[..8]),
         ),
     }
+    // Context-aware touch (W3): GOG exe with its patch set applied, unless turned off in the settings.
+    // Installed before the UI modes so their mods sit on top of it (they get touches first).
+    if applied == Some("gog-base") && settings.touch.context {
+        if let Err(e) = touch::install(m) {
+            m.log(LogLevel::Warn, &format!("mods: {e}; context-aware touch disabled"));
+        }
+    }
+    ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
+    ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
     hooks::commit(m);
     let n = m.hook_addrs().map(|h| h.len()).unwrap_or(0);
     let st = m.state::<ModsState>();
@@ -221,6 +238,11 @@ pub fn set_settings(m: &mut Machine, s: Settings) -> Result<(), String> {
 /// Arm "the next tap is a right click" (letterbox RMB button in the legacy UI).
 pub fn set_right_next(m: &mut Machine, on: bool) {
     m.state::<ModsState>().borrow_mut().fallback.right_next = on;
+}
+
+/// Is "the next tap is a right click" armed? (Cleared by the next tap.)
+pub fn right_next(m: &mut Machine) -> bool {
+    m.state::<ModsState>().borrow_mut().fallback.right_next
 }
 
 /// True once after a three-finger tap (frontend shows the soft keyboard).

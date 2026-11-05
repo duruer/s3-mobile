@@ -469,8 +469,11 @@ fn dplay_factories_and_stubs() {
     let (_, f) = m.com.factories[&CLSID_DIRECTPLAYLOBBY];
     let lobby = f(&mut m, IID_IDIRECTPLAYLOBBY2A).unwrap();
     let out = m.mem.alloc(4);
-    assert_eq!(call(&mut m, dp, IDIRECTPLAY4A, "EnumConnections", &[0, 0, 0, 0]), DP_OK);
-    assert_eq!(call(&mut m, dp, IDIRECTPLAY4A, "InitializeConnection", &[0, 0]), DPERR_UNAVAILABLE);
+    // No callback / no connection blob: invalid parameters (the relay-backed calls are tested below).
+    assert_eq!(call(&mut m, dp, IDIRECTPLAY4A, "EnumConnections", &[0, 0, 0, 0]), 0x8007_0057);
+    assert_eq!(call(&mut m, dp, IDIRECTPLAY4A, "InitializeConnection", &[0, 0]), 0x8007_0057);
+    // Not connected yet.
+    assert_eq!(call(&mut m, dp, IDIRECTPLAY4A, "Receive", &[out, out, 1, 0, out]), s3_net::dplay::dperr::NOMESSAGES);
     assert_eq!(call(&mut m, lobby, IDIRECTPLAYLOBBY3A, "GetConnectionSettings", &[0, 0, out]), DPERR_NOTLOBBIED);
     assert_eq!(call(&mut m, dp, IDIRECTPLAY4A, "Release", &[]), 0);
     assert_eq!(call(&mut m, lobby, IDIRECTPLAYLOBBY3A, "Release", &[]), 0);
@@ -584,4 +587,168 @@ fn mixer_drift_guard_caps_host_queue() {
     std::thread::sleep(std::time::Duration::from_millis(30));
     dsound::mixer_service(&mut m);
     assert!(audio.lock().unwrap().len() / 2 > first);
+}
+
+// ------------------------------------------------------------------------------------------ DirectPlay over a relay
+
+struct TestRelay {
+    rt: tokio::runtime::Runtime,
+    handle: Option<s3_relay::RelayHandle>,
+}
+
+impl TestRelay {
+    fn start() -> TestRelay {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let handle = rt.block_on(s3_relay::start(s3_relay::RelayConfig::default())).unwrap();
+        TestRelay { rt, handle: Some(handle) }
+    }
+}
+
+impl Drop for TestRelay {
+    fn drop(&mut self) {
+        if let Some(h) = self.handle.take() {
+            h.shutdown();
+        }
+        let _ = &self.rt;
+    }
+}
+
+/// A machine with one IDirectPlay4A object connected to `url` through EnumConnections + InitializeConnection.
+fn dp_machine(url: &str) -> (Machine, u32) {
+    use dplay::*;
+    let mut m = machine();
+    dplay_net::set_config(&mut m, dplay_net::NetConfig { relay_url: url.into(), client_name: "test".into() });
+    let (_, f) = m.com.factories[&CLSID_DIRECTPLAY];
+    let dp = f(&mut m, IID_IDIRECTPLAY4A).unwrap();
+    // EnumConnectionsCallback (stdcall, 6 args): store lpConnection (arg 2) at CODE+0x800, count at CODE+0x804.
+    let cb = CODE + 0x100;
+    let mut code = vec![0x8B, 0x44, 0x24, 0x08, 0xA3];
+    code.extend_from_slice(&(CODE + 0x800).to_le_bytes());
+    code.extend_from_slice(&[0xFF, 0x05]);
+    code.extend_from_slice(&(CODE + 0x804).to_le_bytes());
+    code.extend_from_slice(&[0xB8, 1, 0, 0, 0, 0xC2, 0x18, 0x00]);
+    m.mem.write_bytes(cb, &code);
+    assert_eq!(call(&mut m, dp, IDIRECTPLAY4A, "EnumConnections", &[0, cb, 0, 1]), 0);
+    assert_eq!(m.mem.read_u32(CODE + 0x804), 1, "one connection");
+    let conn = m.mem.read_u32(CODE + 0x800);
+    assert_eq!(call(&mut m, dp, IDIRECTPLAY4A, "InitializeConnection", &[conn, 0]), 0);
+    (m, dp)
+}
+
+/// Pump until `GetMessageCount` reports a message (relay events arrive on a background thread).
+fn wait_msg(m: &mut Machine, dp: u32, cnt: u32) -> bool {
+    for _ in 0..200 {
+        call(m, dp, dplay::IDIRECTPLAY4A, "GetMessageCount", &[0, cnt]);
+        if m.mem.read_u32(cnt) > 0 {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
+
+#[test]
+fn dplay_two_machines_through_relay() {
+    use dplay::*;
+    use s3_net::dplay::{dpsys, DPOPEN_CREATE, DPOPEN_JOIN};
+    let relay = TestRelay::start();
+    let url = relay.handle.as_ref().unwrap().url();
+    let (mut a, dpa) = dp_machine(&url);
+    let (mut b, dpb) = dp_machine(&url);
+
+    // Host: DPSESSIONDESC2 like S3 builds it (0x46ff80), then Open(CREATE).
+    let sd = a.mem.alloc(0x50);
+    a.mem.write_u32(sd, 0x50);
+    a.mem.write_u32(sd + 4, 0x44);
+    a.mem.write_bytes(sd + 0x18, &s3_net::S3_APP_GUID);
+    a.mem.write_u32(sd + 0x28, 2);
+    let name = a.mem.alloc(16);
+    a.mem.write_cstr(name, "Test game");
+    a.mem.write_u32(sd + 0x30, name);
+    a.mem.write_u32(sd + 0x48, 0xa0);
+    assert_eq!(call(&mut a, dpa, IDIRECTPLAY4A, "Open", &[sd, DPOPEN_CREATE]), 0);
+    // CreatePlayer with a Win32 event that must be signalled when messages arrive.
+    let ev_a = a.handles.insert(KernelObject::Event { manual_reset: false, signaled: false });
+    let (pid, pname) = (a.mem.alloc(4), a.mem.alloc(16));
+    let short = a.mem.alloc(8);
+    a.mem.write_cstr(short, "Host");
+    a.mem.write_u32(pname, 16);
+    a.mem.write_u32(pname + 8, short);
+    assert_eq!(call(&mut a, dpa, IDIRECTPLAY4A, "CreatePlayer", &[pid, pname, ev_a, 0, 0, 0]), 0);
+    let host_id = a.mem.read_u32(pid);
+    assert!(host_id > 1);
+
+    // Joiner: EnumSessions (sync, guest callback stores the desc's instance GUID), Open(JOIN), CreatePlayer.
+    let cb = CODE + 0x200;
+    // EnumSessionsCallback2(lpThisSD, lpdwTimeOut, dwFlags, lpContext): if lpThisSD: copy 16 bytes from +8 to
+    // CODE+0x900; return 0 (stop).
+    let mut code = vec![0x8B, 0x74, 0x24, 0x04, 0x85, 0xF6, 0x74, 0x0F, 0x83, 0xC6, 0x08, 0xBF];
+    code.extend_from_slice(&(CODE + 0x900).to_le_bytes());
+    code.extend_from_slice(&[0xB9, 4, 0, 0, 0, 0xF3, 0xA5, 0x31, 0xC0, 0xC2, 0x10, 0x00]);
+    b.mem.write_bytes(cb, &code);
+    let sdb = b.mem.alloc(0x50);
+    b.mem.write_u32(sdb, 0x50);
+    b.mem.write_bytes(sdb + 0x18, &s3_net::S3_APP_GUID);
+    assert_eq!(call(&mut b, dpb, IDIRECTPLAY4A, "EnumSessions", &[sdb, 0, cb, 0, 0]), 0);
+    let inst = b.mem.read_bytes(CODE + 0x900, 16);
+    assert_ne!(inst, vec![0u8; 16], "session found");
+    b.mem.write_bytes(sdb + 8, &inst);
+    assert_eq!(call(&mut b, dpb, IDIRECTPLAY4A, "Open", &[sdb, DPOPEN_JOIN]), 0);
+    let (pidb, pnameb) = (b.mem.alloc(4), b.mem.alloc(16));
+    b.mem.write_u32(pnameb, 16);
+    assert_eq!(call(&mut b, dpb, IDIRECTPLAY4A, "CreatePlayer", &[pidb, pnameb, 0, 0, 0, 0]), 0);
+    let join_id = b.mem.read_u32(pidb);
+
+    // Host sees DPSYS_CREATEPLAYERORGROUP from DPID_SYSMSG, and its event is signalled by the pump service.
+    let cnt = a.mem.alloc(4);
+    assert!(wait_msg(&mut a, dpa, cnt), "host got no system message");
+    dplay_net::pump_service(&mut a);
+    let (from, to, buf, size) = (a.mem.alloc(4), a.mem.alloc(4), a.mem.alloc(0x400), a.mem.alloc(4));
+    a.mem.write_u32(size, 4);
+    assert_eq!(call(&mut a, dpa, IDIRECTPLAY4A, "Receive", &[from, to, 1, buf, size]), s3_net::dplay::dperr::BUFFERTOOSMALL);
+    assert!(a.mem.read_u32(size) >= 48);
+    a.mem.write_u32(size, 0x400);
+    assert_eq!(call(&mut a, dpa, IDIRECTPLAY4A, "Receive", &[from, to, 1, buf, size]), 0);
+    assert_eq!(a.mem.read_u32(from), 0);
+    assert_eq!(a.mem.read_u32(buf), dpsys::CREATEPLAYERORGROUP);
+    assert_eq!(a.mem.read_u32(buf + 8), join_id);
+
+    // Data both ways, in order.
+    let data = b.mem.alloc(16);
+    for i in 0..3u32 {
+        b.mem.write_u32(data, 0x1000 + i);
+        assert_eq!(call(&mut b, dpb, IDIRECTPLAY4A, "Send", &[join_id, host_id, 0, data, 4]), 0);
+    }
+    for i in 0..3u32 {
+        assert!(wait_msg(&mut a, dpa, cnt));
+        a.mem.write_u32(size, 0x400);
+        assert_eq!(call(&mut a, dpa, IDIRECTPLAY4A, "Receive", &[from, to, 1, buf, size]), 0);
+        assert_eq!((a.mem.read_u32(from), a.mem.read_u32(to), a.mem.read_u32(size)), (join_id, host_id, 4));
+        assert_eq!(a.mem.read_u32(buf), 0x1000 + i);
+    }
+    let dataa = a.mem.alloc(8);
+    a.mem.write_bytes(dataa, b"bundle!!");
+    assert_eq!(call(&mut a, dpa, IDIRECTPLAY4A, "Send", &[host_id, 0, 0, dataa, 8]), 0);
+    let (fb, tb, bufb, sizeb, cntb) = (b.mem.alloc(4), b.mem.alloc(4), b.mem.alloc(64), b.mem.alloc(4), b.mem.alloc(4));
+    // The joiner first sees the host's player in EnumPlayers (already there on join) and then the data.
+    assert!(wait_msg(&mut b, dpb, cntb));
+    b.mem.write_u32(sizeb, 64);
+    assert_eq!(call(&mut b, dpb, IDIRECTPLAY4A, "Receive", &[fb, tb, 1, bufb, sizeb]), 0);
+    assert_eq!(b.mem.read_bytes(bufb, 8), b"bundle!!");
+    assert_eq!(b.mem.read_u32(fb), host_id);
+    // Event of the host was set when the joiner's player arrived.
+    assert!(matches!(a.handles.get_mut(ev_a), Some(KernelObject::Event { signaled: true, .. })));
+    // GetSessionDesc on the joiner returns the host's name and dwUser3.
+    let sz = b.mem.alloc(4);
+    b.mem.write_u32(sz, 0x100);
+    let d = b.mem.alloc(0x100);
+    assert_eq!(call(&mut b, dpb, IDIRECTPLAY4A, "GetSessionDesc", &[d, sz]), 0);
+    assert_eq!(b.mem.read_cstr(b.mem.read_u32(d + 0x30)), "Test game");
+    assert_eq!(b.mem.read_u32(d + 0x48), 0xa0);
+    assert_eq!(call(&mut b, dpb, IDIRECTPLAY4A, "Close", &[]), 0);
+    // Host gets DESTROYPLAYER.
+    assert!(wait_msg(&mut a, dpa, cnt));
+    a.mem.write_u32(size, 0x400);
+    assert_eq!(call(&mut a, dpa, IDIRECTPLAY4A, "Receive", &[from, to, 1, buf, size]), 0);
+    assert_eq!(a.mem.read_u32(buf), dpsys::DESTROYPLAYERORGROUP);
 }

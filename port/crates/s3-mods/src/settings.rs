@@ -27,8 +27,11 @@ pub struct TouchSettings {
     pub tap_slop: f32,
     pub double_tap_ms: u64,
     pub double_tap_slop: f32,
-    /// Fallback touch->mouse mapping: a long press right-clicks (legacy behaviour until W3 replaces it).
+    /// Fallback touch->mouse mapping: a long press right-clicks (legacy behaviour; with `context` on, the
+    /// context-aware touch mod consumes long presses, so this only applies when `context` is off).
     pub long_press_right_click: bool,
+    /// Context-aware touch (W3, `touch.rs`; GOG exe only). Off = legacy touch->mouse mapping only.
+    pub context: bool,
 }
 
 impl Default for TouchSettings {
@@ -40,6 +43,7 @@ impl Default for TouchSettings {
             double_tap_ms: 300,
             double_tap_slop: 24.0,
             long_press_right_click: true,
+            context: true,
         }
     }
 }

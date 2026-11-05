@@ -11,6 +11,8 @@ Names used below:
 
 - `gd` = `CGameData` = `[logic+0x3a0]` (part 1). Also `*(0x7e3408)` (= `*(0x7e7b60)`). `0x18790000` in every s3run run
   so far (deterministic in our emulator; mods should take it from the ctor hook `0x4fc990` instead of hard-coding).
+  **In a multiplayer game `*(0x7e3408)` stays 0** (VERIFIED 2026-11-05 ux-verify1, host and joiner); `[logic+0x3a0]` is
+  valid there, so mods use it as the fallback (`touch_game::gd`).
 - `logic` = `CLogicThread` (part 1). `HandleInput` = `0x524fa0` (thiscall logic), runs on the logic thread.
 - `gfx` = the render-side screen object (`new 0x5f700` at `0x42c6b9`, ctor `0x42c820`, vtable `0x656aec`; `0x1011def8`
   in s3run). Owns the string table `[gfx+0x5f6b8]` and the text renderer `[gfx+0x5f6e0]`. Runs on the render thread.
@@ -302,3 +304,21 @@ cursor composer (see [user32-gdi32.md](../porting/user32-gdi32.md)); the game ca
 - Pages 6 and 0xb, `gd+0x2d29c..0x2d2a8`, number keys `0x542820`.
 - Map -> screen formula (HUD markers), edge scrolling.
 - Whether skipping `0x4b4d00` leaves stale pixels (test with a mods hook).
+
+## Additions from the Mobile HUD work (ui-hud, 2026-11-05)
+
+Details and evidence: [ui-hud.md](../porting/ui-hud.md).
+
+- Programmatic building selection also needs `gd::0x4ff3f0` (thiscall gd, no args; bumps the placement-marker
+  generation `gd+0x2d300`) after the pokes, else no placement markers are drawn and map clicks do not place (VERIFIED;
+  the earlier poke test had markers from a previous real click).
+- The panel is only redrawn when `[gd+0x2d27c]` is set (VERIFIED). The panel renderer `0x4b4d00` does not read
+  `[0x730f24]`; it draws at fixed positions.
+- Landscape ring buffer: object `[gfx+0x5f6cc]` (vtable `0x65a520`), width `+0x50` = map view width + `[0x730f44]`
+  (32 in s3run), set by `0x54bec0` from the display setup `0x42ef..`; blitter `0x54c9d0` wraps at that width. A wider
+  map view therefore needs the layout change before the display setup.
+- Full-screen map works with `[0x730f24] = 0`, `[0x730f18] = screen width` set at `0x4c6d70` return plus a
+  `ScreenToMap` x correction (VERIFIED at 640x480 and 800x600 from start; runtime F1-F3 switch leaves a black band, open).
+- Goods: the panel's Inventory numbers are separate counters, not a live sum of piles (VERIFIED by poking piles).
+  Piles of the local player = piles on tiles owned by the player (tile +8). Good ids, see ui-hud.md.
+- Command `0x06` (destroy building) VERIFIED through `Queue::Post 0x4309c0` from a HandleInput-entry hook.

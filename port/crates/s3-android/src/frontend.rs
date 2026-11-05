@@ -63,6 +63,12 @@ pub struct Shared {
     pub delivered: AtomicU64,
     /// The game ended itself (ExitProcess, e.g. "Exit Game" or Esc in the main menu): the app should close.
     pub guest_exited: AtomicBool,
+    /// UI -> engine: the RMB letterbox button was pressed (toggle s3-mods "next tap = right click").
+    pub rmb_toggle: AtomicBool,
+    /// Engine -> UI: "next tap = right click" is armed (button highlight).
+    pub rmb_armed: AtomicBool,
+    /// Engine -> UI: a three-finger tap asked for the soft keyboard.
+    pub keyboard_req: AtomicBool,
 }
 
 impl Shared {
@@ -81,6 +87,9 @@ impl Shared {
             paused_since: AtomicU64::new(0),
             delivered: AtomicU64::new(0),
             guest_exited: AtomicBool::new(false),
+            rmb_toggle: AtomicBool::new(false),
+            rmb_armed: AtomicBool::new(false),
+            keyboard_req: AtomicBool::new(false),
         })
     }
 
@@ -180,7 +189,9 @@ impl Host for AndroidHost {
         let evs = std::mem::take(&mut *self.shared.events.lock().unwrap());
         for e in &evs {
             match e {
-                HostEvent::MouseMove { .. } => log::debug!("engine <- {e:?}"),
+                HostEvent::MouseMove { .. } | HostEvent::Pointer { phase: s3_runtime::PointerPhase::Move, .. } => {
+                    log::debug!("engine <- {e:?}")
+                }
                 _ => log::info!("engine <- {e:?}"),
             }
         }
@@ -286,6 +297,15 @@ pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) {
     let _ = std::fs::create_dir_all(&game_dir);
     let _ = std::fs::create_dir_all(&data_dir);
     log::info!("engine thread: game dir {} data dir {}", game_dir.display(), data_dir.display());
+    // Multiplayer relay (docs/porting/multiplayer.md): `<data dir>/relay-url.txt` (one line, e.g.
+    // `ws://10.0.2.2:7787/` for a relay on the emulator's host) overrides the default `ws://127.0.0.1:7777/`.
+    if let Ok(s) = std::fs::read_to_string(data_dir.join("relay-url.txt")) {
+        let url = s.trim();
+        if !url.is_empty() {
+            log::info!("multiplayer relay: {url} (from relay-url.txt)");
+            std::env::set_var("S3_RELAY_URL", url);
+        }
+    }
 
     // 1. Wait for the game files.
     let mut announced: Option<Vec<&str>> = None;
@@ -371,6 +391,7 @@ fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
         if engine.run_for_ms(16) == SliceResult::Stopped {
             return Ok(engine.summary());
         }
+        sync_touch_flags(&shared, &mut engine.machine);
         if last_report.elapsed() > Duration::from_secs(10) {
             last_report = Instant::now();
             let s = &engine.machine.stats;
@@ -382,6 +403,24 @@ fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
                 shared.delivered.load(Ordering::Relaxed)
             );
         }
+    }
+}
+
+/// Exchange the touch flags between the UI thread and the mod layer (RMB button, three-finger keyboard request).
+#[cfg(feature = "engine")]
+fn sync_touch_flags(shared: &Shared, m: &mut s3_runtime::Machine) {
+    if shared.rmb_toggle.swap(false, Ordering::AcqRel) {
+        let on = !s3_mods::right_next(m);
+        s3_mods::set_right_next(m, on);
+    }
+    let armed = s3_mods::right_next(m);
+    let mut wake = shared.rmb_armed.swap(armed, Ordering::AcqRel) != armed;
+    if s3_mods::take_keyboard_request(m) {
+        shared.keyboard_req.store(true, Ordering::Release);
+        wake = true;
+    }
+    if wake {
+        (shared.wake)();
     }
 }
 
