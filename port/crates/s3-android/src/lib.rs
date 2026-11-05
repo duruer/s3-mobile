@@ -8,11 +8,14 @@ pub mod audio;
 pub mod frontend;
 pub mod keys;
 pub mod layout;
+pub mod overlay;
 pub mod screen;
 pub mod touch;
 
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_os = "android")]
+mod uithread;
 
 /// Package id of the APK.
 pub const PACKAGE: &str = "com.settlers3port.app";

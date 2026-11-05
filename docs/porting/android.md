@@ -6,9 +6,10 @@ x86_64, release APK with arm64-v8a + x86_64). Same point as desktop s3run:
 | Step | Result on the emulator |
 | --- | --- |
 | Launch -> main menu 800x600x16 | < 1 s, all buttons, logo, "Version 1.60" (intro AVI is skipped, no error dialog any more) |
-| Tap "Single Player: Scenario" | Game Setup dialog |
-| Tap OK | players screen |
-| Tap OK (**twice**: the first tap on this screen is ignored, same on desktop where the inject recipe also clicks twice) | loading (3 threads, 640x480x16), in game after about 20-25 s |
+| Tap "Single Player: Scenario" | Game Setup with the map-selection popup (Random / World size) on top |
+| Tap the popup's OK | Game Setup |
+| Tap Game Setup OK | players screen |
+| Tap players OK (same position as Game Setup OK) | loading (3 threads, 640x480x16), in game after about 20-25 s |
 | In game | castle, settlers, AI thread messages, music `MCI cdaudio play tracks 7..8` |
 | Tap build menu, category, building, then a ghost site on the map | construction site placed (stakes + flag) |
 | One-finger drag on the map | map scrolls with the finger (see Controls) |
@@ -22,9 +23,21 @@ Performance (x86_64 emulator, 4 vCPU, release): menu idle; loading ~125 M guest 
 Desktop showed ~48 presents/s at a similar instruction rate on another random map, so frames cost more here
 (HYPOTHESIS: busier map; not profiled). The game stays responsive. A real arm64 phone was not tested yet.
 
+**End-to-end verification 1 (2026-11-05)**: release APK with both ABIs on emulator-5610, the whole flow by
+`adb shell input`: menu -> Single Player -> popup OK -> soft keyboard (`ABC` button) typing into the game name ->
+Game Setup OK -> players OK -> in game (~25 s) -> build menu, Woodcutter's Hut, tap a ghost site -> construction
+site -> computer icon -> Save Game -> slot 1 ("Game Saved") -> Back (harmless) -> Home + reopen (game continues) ->
+drag scroll -> Quit Game -> YES -> Game Statistics (tap) -> main menu -> Load Game -> entry -> saved game loads and
+continues. The cursor shows on every screen. In game ~102 M instr/s, ~30 presents/s, process ~96 % CPU, RSS 225 MB.
+Screenshots `scratch/android-shots/verify1-*.png` (list in [status.md](status.md)).
+
 Tap coordinates used for testing (emulator screen 2400x1080, landscape): menu 800x600 is drawn at scale 1.8 with x
-offset 267 buffer px, so `screen = ((267 + gx) * 1.8, gy * 1.8)`: Single Player: Scenario `778 423`, Game Setup OK
-`1615 841`, players OK `1795 1021`. In game 640x480: scale 2.25, offset 214: build menu `538 376`.
+offset 267 buffer px, so `screen = ((267 + gx) * 1.8, gy * 1.8)`: Single Player: Scenario `778 423`, map popup OK
+`1615 841`, Game Setup OK and players OK (same spot) `1795 1021`. In game 640x480: scale 2.25, offset 214: build menu `538 376`.
+Both mappings put the 4:3 frame at the same screen x (480), so a screenshot does not tell which mode is active:
+**Load Game is 800x600** (entry `300 126` in 800x600 = screen `1020 227`; using the 640x480 formula misses).
+More in-game taps (640x480 game coords): first category `25 200`, first building `37 237`, computer icon `21 452`,
+Save Game `68 225`, slot 1 `40 244`, Quit Game `68 420`, YES `38 420`; Game Statistics: tap anywhere.
 
 Code: `port/crates/s3-android` (crate `s3-android`, library `libs3android.so`), `port/android/` (manifest, icon),
 `port/scripts/build-apk.sh`, `port/scripts/run-emulator.sh`.
@@ -63,7 +76,7 @@ Steps in the script: `cargo ndk -t arm64-v8a -t x86_64 --platform 26 build --rel
 `apksigner sign` + `verify`. Tools: build-tools 36.0.0, NDK 27.2.12479018, cargo-ndk 4.1 in `~/.cargo/bin`.
 The script refuses to build with less than 2 GB free disk.
 
-Host unit tests (letterbox math, touch gestures, audio ring/resampler, key map, status screen, Host impl):
+Host unit tests (letterbox math, touch gestures incl. three-finger tap / right-click mode, letterbox buttons, audio ring/resampler, key map + chars, status and first-run screens, Host impl):
 `CARGO_TARGET_DIR=port/target cargo test -p s3-android -j 4`.
 
 ## Emulator (our AVD only)
@@ -105,8 +118,13 @@ The script checks free space on the device first. On a real phone use the same t
 `adb push` or a file manager with access to `Android/data` (newer Android versions restrict this; adb always
 works).
 
-If `S3.EXE` is missing, the app shows the status screen with these instructions and checks again every 2 s, so
-pushing files while the app runs is enough.
+**First-run screen** (android-ux, verified on the emulator): while any of `S3.EXE`, `GFX`, `SND`, `Map`
+(`frontend::REQUIRED_PARTS`, case-insensitive) is missing, the app shows a plain "Game files needed" screen
+(`screen::first_run_screen`) with the folder as the user sees it (`Android/data/com.settlers3port.app/files/game/`,
+highlighted), the full path, what to copy, which parts are still missing, the `adb push` command and the hint that
+Android 11+ file managers cannot open `Android/data`. It checks again every 2 s; once everything is there it waits
+3 s more (a push may still be running) and starts by itself (verified: moved the game dir away and back while the
+app ran). Screenshot: `scratch/android-shots/ux-firstrun-s.png`.
 
 ## Runtime design
 
@@ -152,23 +170,72 @@ callback (device change) reopens the stream. If AAudio cannot open, the app runs
 | Long press (500 ms without moving) | right click |
 | One-finger drag (beyond ~3 % of the screen height) in menus, or in game on the left control panel (x < 170 game px) | move with the left button held; released on lift |
 | One-finger drag on the map (in game = any display mode other than the 800x600 menu mode) | **scroll**: right button held, the mouse path is mirrored around the start point and halved so the map follows the finger (S3 scrolls the view *in* the right-drag direction, accelerated; measured +40 px drag -> +53 px view, +89 -> +187) |
-| Two-finger tap | right click at the first finger |
+| Two-finger tap | right click at the first finger (sent when a finger lifts) |
+| Three-finger tap | show / hide the soft keyboard (no mouse event). Unit-tested; `adb shell input` cannot do multi-touch, so not yet tried on the emulator |
 | Finger touches down | cursor moves there at once (hover highlight) |
 
 The 60 ms gap between button down and up is there because the game also polls the button state
 (DirectInput buffer, GetAsyncKeyState). A real mouse (ChromeOS, DeX, emulator with mouse) is passed through
 directly: move, left/right/middle buttons.
 
-Keys (`keys.rs`): Back -> `VK_ESCAPE` (skips the intro, closes menus; the app does not close on Back), hardware
+**Letterbox buttons** (`overlay.rs`, android-ux): three buttons drawn by the host into the black bars after the
+frame is blitted (only over game frames, not on the status screens): a column centred in the right bar
+(landscape phone), or a row in the bottom bar when the window is taller than the game; none if the bars are too
+narrow (4:3 tablet). Size about 12 % of the short screen side (~58 buffer px in game). A touch that starts on a
+button never reaches the game; the action fires on lift if the finger is still on it. Emulator centres (2400x1080):
+ESC `2158 180`, ABC `2158 538`, RMB `2158 900`.
+
+| Button | Action |
+| --- | --- |
+| `ESC` | VK_ESCAPE down + WM_CHAR 0x1B, key up 60 ms later |
+| `ABC` | show / hide the soft keyboard (highlighted while it is open; the real IME visibility is re-read once a second, so closing the IME with Back clears it) |
+| `RMB` | arm "next tap = right click" (highlighted while armed; one tap only). Verified: next tap sent Right down/up, the one after Left |
+
+Keys (`keys.rs`): Back -> `VK_ESCAPE` (the IME takes Back first while it is open), hardware
 keyboard letters, digits, arrows, Enter, Space, Tab, Backspace, Delete, Shift/Ctrl/Alt, F1-F12, PgUp/PgDn,
-Home/End/Insert. Only `HostEvent::Key` is sent (no `Char`). HYPOTHESIS: USER32's TranslateMessage creates
-WM_CHAR from the key messages. Volume keys stay with the system.
+Home/End/Insert, comma, period. Volume keys stay with the system.
+
+Text: for every key-down the character is taken from Android's `KeyCharacterMap` (key code + meta state, via
+android-activity `device_key_character_map`) and sent as `HostEvent::Char` after the `Key` event
+(`keys::char_for_key`): printable characters, plus Enter 0x0D, Backspace 0x08, Esc 0x1B, Tab 0x09 like Windows'
+TranslateMessage. Once the host sends any Char, USER32 stops synthesizing WM_CHAR itself (`host_chars`), so all
+chars come from the host. Keys with a character but no VK mapping get a plausible VK (`keys::vk_for_char`) or
+only the Char.
+
+**Soft keyboard**: `ABC` button or three-finger tap. On the UI thread: `InputMethodManager.showSoftInput(
+activity.getCurrentFocus(), 0)` (the NativeActivity content view, like `ANativeActivity_showSoftInput`) /
+`hideSoftInputFromWindow`; visibility from `getRootWindowInsets().isVisible(WindowInsets.Type.ime())`. The IME
+has no real InputConnection (NativeContentView), so Android's fallback connection turns typed characters into
+plain key events, which arrive through the normal input queue. Verified on the emulator (Gboard): Game Setup
+"Name of the Game" field: 4x soft Backspace deleted "game", soft `h` `i` typed, `adb shell input text "Bob1"`
+(Shift meta for the capital) gave "Player's hiBob1" (`scratch/android-shots/ux-ime-s.png`, `ux-typed-s.png`).
+The game window is not resized for the IME (it covers the lower half; the field in Game Setup stays visible).
+Note: with the emulator's `hw.keyboard=yes` the soft keyboard still showed.
+
+**Back / Esc in the game itself** (same on desktop s3run, so game behaviour, not Android): in the **main menu**
+Esc = "Exit Game": the guest calls ExitProcess. The app then closes itself (`Shared::guest_exited` ->
+`Activity.finish()`, then `process::exit(0)` after `android_main` returns, so the next launch starts clean) —
+like Back at the root of any Android app (verified; relaunch reaches the menu again). **In game Esc does not
+open a menu** in the port (the manual lists "Esc: Exit game"; desktop s3run with `key 0x1B` in game shows no
+dialog either). The in-game menu (save / end game) is the "computer" icon at the bottom of the left panel
+(640x480 game ~(19,453), screen ~(525,1015)); it works since the save-load fix (gdi32 1 bpp DIB sections: the panel
+text is drawn as a mask; before that the panel looked empty), see [user32-gdi32.md](user32-gdi32.md). So Back does
+not open the in-game menu; Back in game is harmless (the game keeps running); use the computer icon for Save / Quit.
+
+**Immersive fullscreen**: status and navigation bars are hidden (`WindowInsetsController.hide(systemBars())`,
+behaviour "show transient bars by swipe"; fallback for API < 30: `setSystemUiVisibility(0x1706)` sticky
+immersive). Re-applied on window init and on every focus gain. Android shows its one-time "Viewing full screen"
+hint on the first start. `FLAG_KEEP_SCREEN_ON` stays set while the activity is in front.
+
+**UI-thread calls without Java code** (`uithread.rs`): View/IME calls must run on the Java main thread, but
+`android_main` runs on its own thread. A Unix socket pair's read end is registered on the Java main looper
+(`AndroidApp::java_main_looper().add_fd_with_callback`); `UiThread::run` queues a closure and writes one byte, the
+looper then calls us on the UI thread, where the closure gets a JNI env (jni 0.22, the version android-activity
+uses) and the activity object. Java exceptions are cleared and logged.
 
 Arrow keys (hardware keyboard, `adb shell input keyevent DPAD_RIGHT`) also scroll the map (verified).
 
-Not done yet: an on-screen keyboard for text input (save names, player name), pinch zoom, a scroll gesture
-immersive mode (hiding the
-navigation bar needs Java/JNI on the UI thread). The letterboxing handles the bar area.
+Not done yet: pinch zoom; IME-aware layout (moving the game above the keyboard).
 
 ## Install for users (phone)
 
@@ -187,9 +254,9 @@ Uninstalling the app deletes both folders.
 
 | Issue | Notes |
 | --- | --- |
-| No mouse cursor is drawn | the game uses the Windows cursor (`GDIMouse`=1); SetCursor only stores the handle. Taps work without it; a real mouse user sees no pointer |
-| First tap on the players screen ("Waiting for Players") OK is ignored | tap OK again; same on desktop (not Android specific) |
-| No on-screen keyboard | save names / player name need a hardware keyboard |
+| ~~No mouse cursor is drawn~~ | fixed 2026-11-05: the game's cursor is composed into the frame at the emulated mouse position (follows taps/drags), see [user32-gdi32.md](user32-gdi32.md#cursor-drawing). Verified on the emulator 2026-11-05 (verify1: arrow follows taps, hourglass while loading) |
+| Back / ESC do not open an in-game menu | Esc does nothing in game (desktop too, game behaviour or unknown option). Use the panel's "computer" icon (Save / Quit), which works since 2026-11-05 |
+| Three-finger tap not tried on a device | adb input has no multi-touch; unit-tested only |
 | Intro and mission videos are skipped | MCI AVI faked |
 | Long press needs < ~3 % screen movement within 500 ms | a slow drag turns into a right click |
 | Not tested on a real arm64 phone | the arm64 library is built and in the APK |

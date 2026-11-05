@@ -46,13 +46,13 @@ This file is an **index only**. Facts live in `docs/`. Keep this file short; add
 | Per-agent progress notes | [docs/progress/](docs/progress/) |
 | Porting strategy, options, decision status | [docs/porting/strategy.md](docs/porting/strategy.md) |
 | Port architecture: crates, memory map, thunk ABI, threads, SEH, VFS, how to add HLE functions, build/run | [docs/porting/architecture.md](docs/porting/architecture.md) |
-| USER32/GDI32 (windows, messages, input, text/fonts), registry, WINMM (timers, MCI CD audio -> ogg, fake videos), small DLL stubs | [docs/porting/user32-gdi32.md](docs/porting/user32-gdi32.md) |
-| Android app: build APK (no Gradle), our emulator AVD, copying game files, touch controls, frontend design | [docs/porting/android.md](docs/porting/android.md) |
+| USER32/GDI32 (windows, messages, input, text/fonts, 1/4 bpp DIBs, mouse cursor drawing from `.rsrc`), registry, WINMM (timers, MCI CD audio -> ogg, fake videos), small DLL stubs | [docs/porting/user32-gdi32.md](docs/porting/user32-gdi32.md) |
+| Android app: build APK (no Gradle), our emulator AVD, copying game files, touch controls, letterbox buttons, soft keyboard, immersive mode, install on a phone, frontend design | [docs/porting/android.md](docs/porting/android.md) |
 | x86-32 integer interpreter: decode cache, threaded dispatch, exact flag semantics, tests, MIPS | [docs/porting/cpu.md](docs/porting/cpu.md) |
 | KERNEL32 HLE: OS identity, threads/waits/timers/critical sections, files+VFS+mapped files, locale, SEH, resources | [docs/porting/kernel32.md](docs/porting/kernel32.md) |
 | x87 FPU / MMX emulation: model, instruction coverage, precision limits | [docs/porting/x87-fpu.md](docs/porting/x87-fpu.md) |
-| DirectX HLE (DirectDraw surfaces/present, DirectSound mixer, DirectInput, DirectPlay stubs) | [docs/porting/directx-hle.md](docs/porting/directx-hle.md) |
-| Integration runs of s3run against the real game: how far it gets, blockers, performance, inject recipes | [docs/porting/integration-log.md](docs/porting/integration-log.md) |
+| DirectX HLE (DirectDraw surfaces/present, DirectSound mixer + music stream, audio verification via `s3run --audio-wav`, DirectInput, DirectPlay stubs) | [docs/porting/directx-hle.md](docs/porting/directx-hle.md) |
+| Integration runs of s3run against the real game: how far it gets, blockers, performance, inject recipes (clicks, text, screenshots, save/load round trip) | [docs/porting/integration-log.md](docs/porting/integration-log.md) |
 
 ## Layout
 
@@ -61,7 +61,7 @@ settlers-3/
   AGENTS.md          this index (CLAUDE.md -> @AGENTS.md)
   LICENSE            GPL-3.0 text (our code is GPL-3.0-or-later)
   docs/              all knowledge, see Map
-  tools/             our own analysis scripts (e.g. tools/pe_imports.py)
+  tools/             our own analysis scripts (e.g. tools/pe_imports.py, tools/wav_stats.py); tools/workflows/ = workflow scripts
   port/              Rust workspace: the emulator/HLE host and frontends (see docs/porting/architecture.md)
   game-files/        LOCAL ONLY, gitignored: copies of the user's install
     gog-s3-ultimate/            GOG install (+ Settlers United patches applied)

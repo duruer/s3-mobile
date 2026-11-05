@@ -7,6 +7,7 @@
 //! blocks, and `Leave` hands ownership directly to one blocked waiter (FIFO by thread slot order) so a thread
 //! that re-enters in a loop cannot starve the others.
 
+use s3_mem::align_up;
 use s3_runtime::handles::{CURRENT_PROCESS, CURRENT_THREAD};
 use s3_runtime::machine::teb;
 use s3_runtime::{KernelObject, Machine, Registry, ThreadState, ThunkResult, WaitPoll};
@@ -93,7 +94,20 @@ pub fn thread_slot(m: &Machine, h: u32) -> Option<usize> {
 /// `CreateThread(sa, stack, start, param, flags, *tid)`.
 fn create_thread(m: &mut Machine) -> ThunkResult {
     let (stack, start, param, flags, ptid) = (m.arg_u32(1), m.arg_u32(2), m.arg_u32(3), m.arg_u32(4), m.arg_u32(5));
-    let size = if stack == 0 { m.process.stack_reserve } else { stack.max(0x1_0000) };
+    // Windows: `stack` is the initial *commit* (unless STACK_SIZE_PARAM_IS_A_RESERVATION 0x10000); the reserve
+    // stays the PE default and is only raised (to a 1 MiB multiple) when the commit is larger. S3.EXE starts
+    // threads with small values and then uses 256 KiB locals (save/load, FUN_004a5c80), so using `stack` as the
+    // whole size made those frames run below the stack (SEH frames rejected -> "unhandled exception").
+    let reserve = m.process.stack_reserve.max(0x1_0000);
+    let size = if stack == 0 {
+        reserve
+    } else if flags & 0x1_0000 != 0 {
+        stack.max(0x1_0000)
+    } else if stack >= reserve {
+        align_up(stack, 0x10_0000)
+    } else {
+        reserve
+    };
     let suspended = flags & 4 != 0; // CREATE_SUSPENDED
     match m.create_thread(start, param, size, suspended) {
         Ok(slot) => {
@@ -101,7 +115,7 @@ fn create_thread(m: &mut Machine) -> ThunkResult {
             if ptid != 0 {
                 m.mem.write_u32(ptid, tid);
             }
-            m.log(s3_runtime::LogLevel::Info, &format!("CreateThread entry={start:#x} param={param:#x} -> tid {tid:#x} slot {slot}{}", if suspended { " (suspended)" } else { "" }));
+            m.log(s3_runtime::LogLevel::Info, &format!("CreateThread entry={start:#x} param={param:#x} stack {stack:#x} -> {size:#x} -> tid {tid:#x} slot {slot}{}", if suspended { " (suspended)" } else { "" }));
             ThunkResult::stdcall(h, 6)
         }
         Err(e) => {

@@ -286,9 +286,27 @@ impl Machine {
     }
 
     /// Present a frame through the host (counts presents).
+    /// The current mouse cursor (`crate::cursor::CursorState`) is composed into a host-side copy of `fb`.
     pub fn present(&mut self, fb: &crate::FrameBuffer) {
         self.stats.presents += 1;
-        self.host.present(fb);
+        let (x, y) = (self.input.mouse_x, self.input.mouse_y);
+        let cs = self.state::<crate::cursor::CursorState>();
+        let mut c = cs.borrow_mut();
+        match c.compose(fb, x, y) {
+            Some(out) => self.host.present(out),
+            None => self.host.present(fb),
+        }
+    }
+
+    /// Re-present the last guest frame if only the cursor changed (moved, new shape, shown/hidden). Called
+    /// by the user32 "cursor" service once per `run_slice`; not counted in `stats.presents`.
+    pub fn refresh_cursor(&mut self) {
+        let (x, y) = (self.input.mouse_x, self.input.mouse_y);
+        let cs = self.state::<crate::cursor::CursorState>();
+        let mut c = cs.borrow_mut();
+        if let Some(out) = c.refresh(x, y) {
+            self.host.present(out);
+        }
     }
 
     /// Log through the host.

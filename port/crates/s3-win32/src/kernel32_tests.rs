@@ -559,3 +559,83 @@ fn process_and_strings() {
     assert_eq!(api(&mut m, "IsBadReadPtr", &[0x100, 4]), 1);
     assert_eq!(api(&mut m, "LocalFree", &[la]), 0);
 }
+
+/// Save/load round trip as S3.EXE does it (save-load task, 2026-11-05): `CreateDirectoryA("Save")` on a game dir
+/// that already has `Save\Multi` (GOG install) -> ERROR_ALREADY_EXISTS; `slot N.sav` probes fail with
+/// ERROR_FILE_NOT_FOUND; the save is created with GENERIC_READ|WRITE + CREATE_ALWAYS in the overlay; the Load Game
+/// screen lists `Save\*.sav` (overlay) and `Save\Multi\*.mps` from the game dir stays visible.
+#[test]
+fn save_slots_overlay_and_game_dir() {
+    let (mut m, d) = direct("saves");
+    let game = d.join("game");
+    std::fs::create_dir_all(game.join("Save").join("Multi")).unwrap();
+    std::fs::write(game.join("Save").join("Multi").join("abc.146.mps"), b"mp").unwrap();
+
+    let save = cstr(&mut m, "C:\\S3\\Save");
+    assert_eq!(api(&mut m, "CreateDirectoryA", &[save, 0]), 0);
+    assert_eq!(m.last_error(), 183);
+    let multi = cstr(&mut m, "C:\\S3\\Save\\Multi");
+    assert_eq!(api(&mut m, "CreateDirectoryA", &[multi, 0]), 0);
+    assert_eq!(m.last_error(), 183);
+
+    let slot = cstr(&mut m, "C:\\S3\\Save\\slot 1.sav");
+    assert_eq!(api(&mut m, "CreateFileA", &[slot, 0x8000_0000, 1, 0, 3, 0x80, 0]), 0xFFFF_FFFF);
+    assert_eq!(m.last_error(), 2);
+    let h = api(&mut m, "CreateFileA", &[slot, 0xC000_0000, 0, 0, 2, 0x80, 0]);
+    assert_ne!(h, 0xFFFF_FFFF);
+    let buf = m.mem.alloc(16);
+    let n = m.mem.alloc(4);
+    m.mem.write_cstr(buf, "S3SAVE");
+    assert_eq!(api(&mut m, "WriteFile", &[h, buf, 6, n, 0]), 1);
+    // the game rewinds and patches the header (checksum) before closing
+    assert_eq!(api(&mut m, "SetFilePointer", &[h, 0, 0, 0]), 0);
+    m.mem.write_cstr(buf, "s");
+    assert_eq!(api(&mut m, "WriteFile", &[h, buf, 1, n, 0]), 1);
+    api(&mut m, "CloseHandle", &[h]);
+    assert_eq!(std::fs::read(d.join("data/overlay/Save/slot 1.sav")).unwrap(), b"s3SAVE");
+
+    // Load Game list: *.sav (case-insensitive pattern), the Multi folder from the game dir is still there.
+    let fd = m.mem.alloc(320);
+    let pat = cstr(&mut m, "C:\\S3\\SAVE\\*.SAV");
+    let fh = api(&mut m, "FindFirstFileA", &[pat, fd]);
+    assert_ne!(fh, 0xFFFF_FFFF);
+    assert_eq!(m.mem.read_cstr(fd + 44), "slot 1.sav");
+    assert_ne!(m.mem.read_u32(fd + 20) | m.mem.read_u32(fd + 24), 0, "last write time set");
+    assert_eq!(api(&mut m, "FindNextFileA", &[fh, fd]), 0);
+    api(&mut m, "FindClose", &[fh]);
+    let pat = cstr(&mut m, "C:\\S3\\Save\\Multi\\*.mps");
+    let fh = api(&mut m, "FindFirstFileA", &[pat, fd]);
+    assert_ne!(fh, 0xFFFF_FFFF);
+    assert_eq!(m.mem.read_cstr(fd + 44), "abc.146.mps");
+    api(&mut m, "FindClose", &[fh]);
+    let pat = cstr(&mut m, "C:\\S3\\Save\\*");
+    let fh = api(&mut m, "FindFirstFileA", &[pat, fd]);
+    let mut names = vec![m.mem.read_cstr(fd + 44)];
+    while api(&mut m, "FindNextFileA", &[fh, fd]) == 1 {
+        names.push(m.mem.read_cstr(fd + 44));
+    }
+    api(&mut m, "FindClose", &[fh]);
+    assert_eq!(names, vec![".", "..", "Multi", "slot 1.sav"]);
+
+    // reopen for reading (load) gets the overlay copy
+    let h = api(&mut m, "CreateFileA", &[slot, 0x8000_0000, 1, 0, 3, 0x80, 0]);
+    assert_ne!(h, 0xFFFF_FFFF);
+    assert_eq!(api(&mut m, "GetFileSize", &[h, 0]), 6);
+    api(&mut m, "CloseHandle", &[h]);
+}
+
+/// CreateThread's stack argument is the initial commit; the reserve stays the PE default (S3.EXE passes 0x1000
+/// and later uses 256 KiB of locals on that thread).
+#[test]
+fn create_thread_stack_is_commit_not_reserve() {
+    let (mut m, _d) = direct("stack");
+    let tid = m.mem.alloc(4);
+    let h = api(&mut m, "CreateThread", &[0, 0x1000, CODE, 0, 4, tid]);
+    assert_ne!(h, 0);
+    let t = m.threads.last().unwrap();
+    assert_eq!(t.stack_top - t.stack_bottom, 0x10_0000, "PE reserve (1 MiB)");
+    let h = api(&mut m, "CreateThread", &[0, 0x18_0000, CODE, 0, 4, tid]);
+    assert_ne!(h, 0);
+    let t = m.threads.last().unwrap();
+    assert_eq!(t.stack_top - t.stack_bottom, 0x20_0000, "commit > reserve rounds up to 1 MiB");
+}

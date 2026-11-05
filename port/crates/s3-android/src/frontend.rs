@@ -61,6 +61,8 @@ pub struct Shared {
     paused_since: AtomicU64,
     /// Mouse/button events delivered to the engine (diagnostics, shown in the log).
     pub delivered: AtomicU64,
+    /// The game ended itself (ExitProcess, e.g. "Exit Game" or Esc in the main menu): the app should close.
+    pub guest_exited: AtomicBool,
 }
 
 impl Shared {
@@ -78,6 +80,7 @@ impl Shared {
             paused_total: AtomicU64::new(0),
             paused_since: AtomicU64::new(0),
             delivered: AtomicU64::new(0),
+            guest_exited: AtomicBool::new(false),
         })
     }
 
@@ -228,15 +231,43 @@ impl Host for AndroidHost {
     }
 }
 
+/// Parts of an install the engine needs before it can start (case-insensitive names).
+pub const REQUIRED_PARTS: [&str; 4] = ["S3.EXE", "GFX", "SND", "Map"];
+
+/// Required parts missing from `game_dir`.
+pub fn missing_parts(game_dir: &Path) -> Vec<&'static str> {
+    REQUIRED_PARTS.iter().copied().filter(|p| Vfs::lookup_ci(game_dir, &[p.to_string()]).is_none()).collect()
+}
+
+/// The path as the user sees it in a file manager / MTP ("Android/data/<pkg>/files/game/").
+pub fn user_visible_path(game_dir: &Path) -> String {
+    let s = game_dir.display().to_string();
+    match s.find("/Android/data/") {
+        Some(i) => format!("{}/", &s[i + 1..]),
+        None => format!("{s}/"),
+    }
+}
+
+/// First-run text (status screen body). Lines starting with "> " are drawn highlighted.
 pub fn missing_exe_text(game_dir: &Path) -> String {
+    let missing = missing_parts(game_dir);
     format!(
-        "S3.EXE was not found. Copy your own Settlers III (GOG) installation into\n{}\n\
-         (S3.EXE plus the GFX, SND, MUSIC, MAP, S3 ... folders), e.g. with\n\
-         adb push <install>/. {}/\n\
-         or use scripts/run-emulator.sh push. The app checks again every 2 seconds.\n\
-         No game files are included in this app.",
+        "Copy your own Settlers III installation (GOG / Gold / Ultimate) to this folder on the phone:\n\
+         > {}\n\
+         full path: {}\n\
+         \n\
+         Copy the CONTENTS of the install folder (the folder that contains S3.EXE), so that the folder above \
+         holds S3.EXE, GFX, SND, MUSIC, Map, S3 ...\n\
+         Still missing: {}\n\
+         \n\
+         From a PC: adb push \"<GOG folder>/.\" /sdcard/{}\n\
+         (Android 11+ file managers often cannot open Android/data; use adb or a USB/MTP connection.)\n\
+         \n\
+         No game files are included in this app. It checks again every 2 seconds and starts by itself.",
+        user_visible_path(game_dir),
         game_dir.display(),
-        game_dir.display()
+        if missing.is_empty() { "nothing".to_string() } else { missing.join(", ") },
+        user_visible_path(game_dir),
     )
 }
 
@@ -257,18 +288,24 @@ pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) {
     log::info!("engine thread: game dir {} data dir {}", game_dir.display(), data_dir.display());
 
     // 1. Wait for the game files.
-    let mut announced = false;
+    let mut announced: Option<Vec<&str>> = None;
     loop {
         if shared.quit.load(Ordering::Acquire) {
             return;
         }
-        if find_exe(&game_dir).is_some() {
+        let missing = missing_parts(&game_dir);
+        if missing.is_empty() {
+            if announced.is_some() {
+                // Files are arriving (adb push): give the copy a moment to finish.
+                shared.set_status(Phase::Starting, "Game files found", "Starting in a few seconds ...");
+                shared.park_for(3000);
+            }
             break;
         }
-        if !announced {
-            log::warn!("S3.EXE missing in {}", game_dir.display());
-            shared.set_status(Phase::MissingExe, "Game files missing", &missing_exe_text(&game_dir));
-            announced = true;
+        if announced.as_ref() != Some(&missing) {
+            log::warn!("game files missing in {}: {}", game_dir.display(), missing.join(", "));
+            shared.set_status(Phase::MissingExe, "Game files needed", &missing_exe_text(&game_dir));
+            announced = Some(missing);
         }
         shared.park_for(2000);
     }
@@ -282,6 +319,11 @@ pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) {
         Ok(Ok(summary)) => {
             // Stop reason first (it is the last line of the summary).
             let stop = summary.lines().find(|l| l.starts_with("stop:")).unwrap_or("stop: ?").to_string();
+            if stop.contains("process exited") {
+                log::info!("engine: the game exited ({stop}); closing the app");
+                shared.guest_exited.store(true, Ordering::Release);
+                (shared.wake)();
+            }
             ("Engine stopped".to_string(), format!("{stop}\n{summary}"))
         }
         Ok(Err(e)) => ("Engine failed to start".to_string(), format!("error: {e}")),
@@ -374,9 +416,19 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(sh.status.lock().unwrap().phase, Phase::MissingExe);
+        assert!(sh.status.lock().unwrap().body.contains("S3.EXE, GFX, SND, Map"));
         sh.request_quit();
         t.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn first_run_text_shows_user_path() {
+        let p = Path::new("/storage/emulated/0/Android/data/com.settlers3port.app/files/game");
+        assert_eq!(user_visible_path(p), "Android/data/com.settlers3port.app/files/game/");
+        let t = missing_exe_text(p);
+        assert!(t.contains("> Android/data/com.settlers3port.app/files/game/\n"));
+        assert!(t.contains("adb push \"<GOG folder>/.\" /sdcard/Android/data/com.settlers3port.app/files/game/"));
     }
 
     #[test]

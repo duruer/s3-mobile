@@ -168,6 +168,8 @@ pub trait Host: Send {
 ```
 Input consumers (USER32 queue, DirectInput) read `m.input` (current mouse/buttons/keys) and
 `m.input.events_since(&mut cursor)` (each keeps its own cursor; start with `cursor_now()`).
+`Machine::present` composes the mouse cursor (`s3_runtime::cursor::CursorState`) into a host copy of the frame before
+`Host::present`; `Machine::refresh_cursor` re-presents when only the cursor changed (see [user32-gdi32.md](user32-gdi32.md#cursor-drawing)).
 `NullHost` is the headless implementation used by tests.
 
 ## COM
@@ -183,7 +185,8 @@ methods are implemented, see [directx-hle.md](directx-hle.md).
 
 The DirectSound mixer service in s3-dx is the only caller of `Host::queue_audio` (44100 Hz stereo i16). Other
 producers (winmm waveOut / CD music) push PCM into `m.state::<s3_runtime::audio::AudioStreams>()`; the mixer
-resamples and mixes them (details in [directx-hle.md](directx-hle.md)).
+resamples and mixes them (details in [directx-hle.md](directx-hle.md)). `s3run --audio-wav <file>` records the host audio stream (and
+`--audio-play` plays it with the cargo feature `audio-cpal`); `tools/wav_stats.py` analyses the WAV.
 
 ## Adding an HLE function
 
@@ -225,8 +228,8 @@ Details: [user32-gdi32.md](user32-gdi32.md). Interfaces for other crates:
   the implementation in `gdi32::register`.
 - **Display mode:** s3-dx calls `s3_win32::user32::set_screen_size(m, w, h, bpp)` from `SetDisplayMode`
   (GetSystemMetrics, full-screen windows, WM_DISPLAYCHANGE).
-- **Music:** `s3_win32::winmm::set_external_music_mixer(m, true)` + `winmm::mix_music(m, buf, rate, ch)` if a
-  DirectSound mixer owns `Host::queue_audio`; otherwise winmm queues 44100 Hz stereo itself.
+- **Music:** winmm decodes CD music into `AudioStreams[winmm::MUSIC_STREAM_ID]`; the s3-dx mixer mixes it (single
+  `Host::queue_audio` producer, fixed 2026-11-05). `set_external_music_mixer` + `mix_music` remain for a pull mixer.
 - **Messages from other modules:** `s3_win32::user32::post_message(m, hwnd, msg, wp, lp)`.
 
 ## Building, testing, running

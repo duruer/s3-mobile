@@ -1,6 +1,6 @@
 # DirectX HLE (`port/crates/s3-dx`)
 
-Status 2026-11-05: DirectDraw, DirectSound, DirectInput 3 and DirectPlay stubs implemented; 13 unit tests
+Status 2026-11-05: DirectDraw, DirectSound, DirectInput 3 and DirectPlay stubs implemented; 16 unit tests
 (`cargo test -p s3-dx -j 4`). Exercised by the real S3.EXE since integration round 1 (menu 800x600x16, in game
 640x480x16, WaitForVerticalBlank pacing, DirectInput mouse, DirectSound mixer; see
 [integration-log.md](integration-log.md)). DirectPlay is still only stubs (multiplayer menus not exercised). What the game uses comes from [directx-surface.md](../reverse-engineering/directx-surface.md)
@@ -78,10 +78,48 @@ Status 2026-11-05: DirectDraw, DirectSound, DirectInput 3 and DirectPlay stubs i
   per call (longer stalls are skipped, not replayed). Output 44100 Hz stereo i16 -> `Host::queue_audio`. Gains:
   `10^(vol/2000)`, pan attenuates the opposite side the same way, master = primary volume. Play cursors therefore
   advance in real time even headless. Paused (`m.input.paused`) -> no output, pacing restarts on resume.
+- **Device drift guard** (audio-verify, 2026-11-05): if the host reports a device queue
+  (`Host::audio_queued_frames`, Android AAudio ring, s3run `--audio-play`), the mixer never lets it exceed
+  `MAX_HOST_QUEUE_MS` (250 ms): frames above it are not produced this call (voices are delayed, not skipped;
+  counted in `DsState::drift_cut_frames`). Nominal queue is ~60 ms, so this only acts on a slow/stalled device
+  clock. Hosts without a device report 0 (pure wall-clock pacing).
+- Every secondary `Play` is logged at Debug (`dsound: Play <buf> vol pan rate ch/bit bytes flags`, `s3run -v`) and
+  counted in `DsState::voices_started`.
 - **Other audio sources** (winmm waveOut / CD music): push interleaved i16 into
   `m.state::<s3_runtime::audio::AudioStreams>()` (`streams[id] = AudioStream { rate, channels, samples, gain }`);
   the mixer resamples and mixes them. This keeps a single producer for the host audio sink.
   (`s3-runtime/src/audio.rs` was added for this by the directx agent.)
+
+## Audio verification (s3run `--audio-wav`, 2026-11-05)
+
+How: `s3run ... --audio-wav ../scratch/audio/x.wav [--audio-wav-seconds 300]` writes exactly what reaches
+`Host::queue_audio` (44100 Hz stereo i16; header rewritten every second, so a killed run still leaves a valid
+file) and prints `audio timing: ... lead min/max/last, drift since 2 s, max gap between calls` at exit (lead =
+audio produced minus wall time since the first block). Analyse with `python3 -I tools/wav_stats.py x.wav [--from
+S] [--to S] [--window-ms N]` (RMS dBFS per window L/R, peak, clipped samples, silent windows, 2-200 ms zero gaps
+inside signal). `S3_MUSIC_VOLUME=0` mutes the CD music to isolate effects. Optional real playback: build with
+`--features audio-cpal` (cpal 0.15/ALSA, needs `pkg-config alsa`; off by default) and pass `--audio-play`.
+
+Findings (GOG S3.EXE, menu -> random map in game, ~45 s runs):
+
+- **Timing**: lead constant 59-60 ms from start to end (= `LATENCY_MS`), drift 0 ms over 40 s, 44.07 s audio for
+  44.01 s wall; largest gap between mixer calls 39-67 ms (busy loading); no zero gaps inside the signal. The mixer
+  keeps up headless at release speed. (A debug build is too slow: lead dips to -42 ms.)
+- **Music** (MCI cdaudio track 7, from ~16 s when the game starts): -31 dBFS RMS L / -28 R, peaks ~8000, no
+  clipping, continuous. The menu is silent: S3 plays no music there (same under wine: only Track07 at game start).
+- **Effects** (music muted): first sounds 1-2 s after the map appears; ambient/worker sounds -35..-55 dBFS. The
+  game creates 11 mono 22050 Hz 16-bit buffers (33939..251792 bytes) + `DuplicateSoundBuffer` per overlapping play,
+  and plays them with `SetVolume(-2000)` `SetPan(+-...)` `Play(0)` (no looping, no `GetCurrentPosition`/streaming
+  buffers: the play cursor is only relevant for `GetStatus` end detection). Pan 820 -> left 8 dB lower, visible in
+  the per-channel RMS. Mixed peak with music < 8100: no clipping headroom issue.
+- **Bug fixed**: winmm's music service queued music to `Host::queue_audio` *itself* while the DirectSound mixer
+  also queued (two producers: music blocks were appended between mixer blocks, i.e. twice the audio per wall
+  second, music and effects not overlapped, sink queues growing). Music now goes through
+  `AudioStreams[MUSIC_STREAM_ID]` (see [user32-gdi32.md](user32-gdi32.md)); the mixer is the only producer.
+- Quality checks (unit tests `mixer_resamples_22k_voice_smoothly_with_pan`,
+  `mixer_passes_stream_music_through_unchanged_and_gapless`, `mixer_drift_guard_caps_host_queue`): 22050 -> 44100
+  linear upsampling of a 441 Hz sine stays within 25 LSB of the ideal; 44100 Hz streams pass bit-exact; dB curve
+  `10^(v/2000)` and pan law (opposite side attenuated by |pan|/100 dB) match DirectSound.
 
 ## DirectInput behaviour
 

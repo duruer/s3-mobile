@@ -157,6 +157,57 @@ pub fn status_screen(title: &str, body: &str) -> FrameBuffer {
     fb
 }
 
+pub const CYAN: u16 = rgb(120, 230, 255);
+
+/// First-run screen ("game files needed"): plain dark background, big title, `body` lines wrapped; lines that
+/// start with "> " (the folder to copy to) are drawn highlighted and never wrapped mid-path if they fit.
+pub fn first_run_screen(title: &str, body: &str) -> FrameBuffer {
+    let (w, h) = (STATUS_W, STATUS_H);
+    let mut fb = FrameBuffer::new(w, h);
+    fb.pixels.fill(rgb(10, 14, 30));
+    fill_rect(&mut fb, 0, 0, w, 56, rgb(30, 50, 90));
+    draw_text(&mut fb, 16, 12, "Settlers 3 Port", 4, WHITE);
+    let margin = 16u32;
+    let mut y = 72i32;
+    draw_text(&mut fb, margin as i32, y, title, 3, YELLOW);
+    y += 36;
+    // Scale 2 if the whole text fits, else scale 1.
+    let layout = |scale: u32| {
+        let cols = ((w - 2 * margin) / (8 * scale)) as usize;
+        let mut lines: Vec<(String, bool)> = Vec::new();
+        for l in body.split('\n') {
+            if let Some(path) = l.strip_prefix("> ") {
+                // The path: its own line(s), larger font when possible.
+                for p in wrap(path, cols) {
+                    lines.push((p, true));
+                }
+            } else {
+                for p in wrap(l, cols) {
+                    lines.push((p, false));
+                }
+            }
+        }
+        lines
+    };
+    let mut scale = 2;
+    let mut lines = layout(2);
+    if y as u32 + lines.len() as u32 * 10 * 2 > h - 8 {
+        scale = 1;
+        lines = layout(1);
+    }
+    for (l, hl) in lines {
+        if hl {
+            fill_rect(&mut fb, margin - 4, (y - 3).max(0) as u32, w - 2 * margin + 8, 8 * scale + 6, rgb(20, 60, 70));
+        }
+        draw_text(&mut fb, margin as i32, y, &l, scale, if hl { CYAN } else { WHITE });
+        y += (10 * scale + if hl { 4 } else { 0 }) as i32;
+        if y as u32 >= h {
+            break;
+        }
+    }
+    fb
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +225,13 @@ mod tests {
         let end = draw_text(&mut fb, 0, 0, "A", 1, WHITE);
         assert_eq!(end, 8);
         assert!(fb.pixels.iter().any(|&p| p == WHITE));
+    }
+
+    #[test]
+    fn first_run_screen_draws() {
+        let fb = first_run_screen("Game files needed", "Copy here:\n> Android/data/x/files/game/\nmore text");
+        assert_eq!(fb.pixels.len(), 480000);
+        assert!(fb.pixels.iter().any(|&p| p == CYAN));
     }
 
     #[test]

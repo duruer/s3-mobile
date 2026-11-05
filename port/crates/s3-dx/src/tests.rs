@@ -475,3 +475,113 @@ fn dplay_factories_and_stubs() {
     assert_eq!(call(&mut m, dp, IDIRECTPLAY4A, "Release", &[]), 0);
     assert_eq!(call(&mut m, lobby, IDIRECTPLAYLOBBY3A, "Release", &[]), 0);
 }
+
+// ------------------------------------------------------------------------------------------ audio sink (audio-verify)
+
+/// Host that records `queue_audio` and reports a settable device queue.
+struct RecHost {
+    inner: NullHost,
+    audio: std::sync::Arc<std::sync::Mutex<Vec<i16>>>,
+    queued: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl s3_runtime::Host for RecHost {
+    fn present(&mut self, fb: &s3_runtime::FrameBuffer) {
+        self.inner.present(fb)
+    }
+    fn poll_events(&mut self) -> Vec<HostEvent> {
+        self.inner.poll_events()
+    }
+    fn queue_audio(&mut self, samples: &[i16], rate: u32, channels: u16) {
+        assert_eq!((rate, channels), (mixer::OUT_RATE, 2));
+        self.audio.lock().unwrap().extend_from_slice(samples);
+    }
+    fn audio_queued_frames(&self) -> usize {
+        self.queued.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn now_ms(&self) -> u64 {
+        self.inner.now_ms()
+    }
+    fn game_dir(&self) -> std::path::PathBuf {
+        self.inner.game_dir()
+    }
+    fn data_dir(&self) -> std::path::PathBuf {
+        self.inner.data_dir()
+    }
+}
+
+type RecHandles = (std::sync::Arc<std::sync::Mutex<Vec<i16>>>, std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+fn rec_machine() -> (Machine, RecHandles) {
+    let d = std::env::temp_dir().join(format!("s3dx-rec-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let _ = std::fs::create_dir_all(&d);
+    let mut inner = NullHost::new(d.join("game"), d.join("data"));
+    inner.quiet = true;
+    let audio = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let queued = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let host = RecHost { inner, audio: audio.clone(), queued: queued.clone() };
+    let m = Machine::new(Box::new(host)).unwrap();
+    (m, (audio, queued))
+}
+
+#[test]
+fn mixer_passes_stream_music_through_unchanged_and_gapless() {
+    use s3_runtime::audio::{AudioStream, AudioStreams};
+    let (mut m, (audio, _)) = rec_machine();
+    // 1 s of a 44100 Hz stereo ramp (L = i, R = -i): exact passthrough at step 1.0 keeps every sample.
+    let mut st = AudioStream { rate: 44_100, channels: 2, gain: 1.0, gain_set: true, ..Default::default() };
+    for i in 0..44_100i32 {
+        st.samples.push_back((i % 30000) as i16);
+        st.samples.push_back(-((i % 30000) as i16));
+    }
+    m.state::<AudioStreams>().borrow_mut().streams.insert(7, st);
+    for _ in 0..4 {
+        dsound::mixer_service(&mut m);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let a = audio.lock().unwrap().clone();
+    assert!(a.len() / 2 >= 44_100 * 80 / 1000, "mixed {} frames", a.len() / 2);
+    for (i, f) in a.chunks_exact(2).enumerate() {
+        assert_eq!(f[0], (i % 30000) as i16, "frame {i}");
+        assert_eq!(f[1], -f[0]);
+    }
+}
+
+#[test]
+fn mixer_resamples_22k_voice_smoothly_with_pan() {
+    use crate::mixer::*;
+    // 22050 Hz mono sine at 441 Hz upsampled x2: no sample may deviate from the ideal sine by more than the
+    // linear-interpolation error bound (~0.06 % of full scale at this frequency ratio).
+    let n = 2205;
+    let data: Vec<u8> = (0..n)
+        .flat_map(|i| ((10000.0 * (2.0 * std::f64::consts::PI * 441.0 * i as f64 / 22050.0).sin()) as i16).to_le_bytes())
+        .collect();
+    let fmt = PcmFormat { rate: 22_050, channels: 1, bits: 16 };
+    let mut pos = 0.0;
+    let mut out = vec![0i32; 2 * 4000];
+    let (l, r) = pan_gains(-600); // right attenuated by 6 dB
+    assert!(mix_voice(&data, &fmt, &mut pos, 22_050.0 / OUT_RATE as f64, (l, r), false, &mut out));
+    for (k, f) in out.chunks_exact(2).enumerate() {
+        let ideal = 10000.0 * (2.0 * std::f64::consts::PI * 441.0 * k as f64 / 44100.0).sin();
+        assert!((f[0] as f64 - ideal).abs() < 25.0, "frame {k}: {} vs {ideal}", f[0]);
+        assert!((f[1] as f64 - ideal * 0.501).abs() < 25.0, "frame {k}: R {}", f[1]);
+    }
+}
+
+#[test]
+fn mixer_drift_guard_caps_host_queue() {
+    let (mut m, (audio, queued)) = rec_machine();
+    dsound::mixer_service(&mut m);
+    let first = audio.lock().unwrap().len() / 2;
+    assert!(first >= (dsound::LATENCY_MS as usize - 1) * 441 / 10, "initial latency block: {first}");
+    // Device reports a full queue: nothing more is produced.
+    queued.store(dsound::MAX_HOST_QUEUE_MS as usize * 441 / 10, std::sync::atomic::Ordering::Relaxed);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    dsound::mixer_service(&mut m);
+    assert_eq!(audio.lock().unwrap().len() / 2, first);
+    // Queue drains: production resumes at wall-clock pace.
+    queued.store(0, std::sync::atomic::Ordering::Relaxed);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    dsound::mixer_service(&mut m);
+    assert!(audio.lock().unwrap().len() / 2 > first);
+}

@@ -53,6 +53,8 @@ pub const DSBSTATUS_LOOPING: u32 = 0x4;
 pub const LATENCY_MS: u64 = 60;
 /// Maximum audio produced in one service call (catch-up after a long slice is dropped).
 const MAX_CHUNK_MS: u64 = 250;
+/// Upper bound for audio waiting in the host device queue (see the drift guard in [`mixer_service`]).
+pub const MAX_HOST_QUEUE_MS: u64 = 250;
 /// Distance of the reported write cursor ahead of the play cursor.
 const WRITE_AHEAD_MS: u32 = 15;
 
@@ -104,6 +106,10 @@ pub struct DsState {
     enum_strings: Option<(u32, u32)>,
     /// Total frames handed to the host (stats/tests).
     pub frames_out: u64,
+    /// Frames not produced because the host queue was above MAX_HOST_QUEUE_MS (stats).
+    pub drift_cut_frames: u64,
+    /// Number of secondary-buffer Play calls (stats).
+    pub voices_started: u64,
 }
 
 fn state(m: &mut Machine) -> s3_runtime::Shared<DsState> {
@@ -485,7 +491,15 @@ fn buf_play(m: &mut Machine) -> ThunkResult {
             b.playing = true;
             b.looping = flags & DSBPLAY_LOOPING != 0;
         }
+        (b.primary, b.volume, b.pan, b.rate(), b.size, b.fmt)
     });
+    if let Some((false, vol, pan, rate, size, fmt)) = r {
+        state(m).borrow_mut().voices_started += 1;
+        m.log(LogLevel::Debug, &format!(
+            "dsound: Play {this:#x} vol {vol} pan {pan} rate {rate} {}ch/{}bit {size} bytes flags {flags:#x}",
+            fmt.channels, fmt.bits
+        ));
+    }
     ret(if r.is_some() { DS_OK } else { DSERR_INVALIDPARAM }, 4)
 }
 
@@ -575,6 +589,19 @@ pub fn mixer_service(m: &mut Machine) {
         n = max;
     }
     s.mixed_frames = target;
+    // Device-clock drift guard: a host with a real device reports its queue. If the device consumes slower than
+    // the wall clock (or stalled), the queue grows; produce less so it never exceeds MAX_HOST_QUEUE_MS (voices
+    // are delayed, not skipped). Hosts without a device report 0 and are paced by the wall clock alone.
+    let queued = m.host.audio_queued_frames() as u64;
+    let max_q = MAX_HOST_QUEUE_MS * OUT_RATE as u64 / 1000;
+    if queued + n > max_q {
+        let cut = (queued + n - max_q).min(n);
+        n -= cut;
+        s.drift_cut_frames += cut;
+        if n == 0 {
+            return;
+        }
+    }
     let frames = n as usize;
     let mut acc = std::mem::take(&mut s.acc);
     acc.clear();

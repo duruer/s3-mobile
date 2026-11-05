@@ -162,7 +162,8 @@ impl Pixels {
         Rect::new(0, 0, self.width, self.height)
     }
     fn at(&self, x: i32, y: i32) -> u32 {
-        (self.addr as i64 + y as i64 * self.pitch as i64 + x as i64 * (self.bpp as i64 / 8)) as u32
+        // bpp < 8 (monochrome / 4-bit DIBs): the byte holding pixel x (bit position from `sub_shift`).
+        (self.addr as i64 + y as i64 * self.pitch as i64 + x as i64 * self.bpp as i64 / 8) as u32
     }
     /// Encode a COLORREF (0x00BBGGRR).
     pub fn encode(&self, c: u32) -> u32 {
@@ -171,6 +172,9 @@ impl Pixels {
             16 if self.rgb565 => ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3),
             16 => ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3),
             24 | 32 => (r << 16) | (g << 8) | b,
+            // Monochrome DIB (S3's text mask, 640x480x1): colour table assumed {black, white}.
+            1 => ((r * 30 + g * 59 + b * 11) / 100 >= 128) as u32,
+            4 => (r * 30 + g * 59 + b * 11) / 100 >> 4,
             _ => (r * 30 + g * 59 + b * 11) / 100, // 8-bit: grey index (palettes unused by S3)
         }
     }
@@ -186,6 +190,11 @@ impl Pixels {
                 ((r << 3) | (r >> 2), (g << 3) | (g >> 2), (b << 3) | (b >> 2))
             }
             24 | 32 => ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF),
+            1 => {
+                let v = if p & 1 != 0 { 0xFF } else { 0 };
+                (v, v, v)
+            }
+            4 => ((p & 15) * 17, (p & 15) * 17, (p & 15) * 17),
             _ => (p & 0xFF, p & 0xFF, p & 0xFF),
         };
         r | (g << 8) | (b << 16)
@@ -196,8 +205,14 @@ impl Pixels {
             16 => m.mem.read_u16(a) as u32,
             24 => m.mem.read_u16(a) as u32 | (m.mem.read_u8(a + 2) as u32) << 16,
             32 => m.mem.read_u32(a),
+            1 | 4 => (m.mem.read_u8(a) as u32 >> self.sub_shift(x)) & ((1 << self.bpp) - 1),
             _ => m.mem.read_u8(a) as u32,
         }
+    }
+    /// Bit shift of pixel x inside its byte for bpp 1/4 (leftmost pixel = most significant bits).
+    fn sub_shift(&self, x: i32) -> u32 {
+        let per = 8 / self.bpp;
+        (per - 1 - (x as u32 % per)) * self.bpp
     }
     fn write_raw(&self, m: &mut Machine, x: i32, y: i32, v: u32) {
         let a = self.at(x, y);
@@ -208,6 +223,11 @@ impl Pixels {
                 m.mem.write_u8(a + 2, (v >> 16) as u8);
             }
             32 => m.mem.write_u32(a, v),
+            1 | 4 => {
+                let (sh, mask) = (self.sub_shift(x), (1u32 << self.bpp) - 1);
+                let b = (m.mem.read_u8(a) as u32 & !(mask << sh)) | ((v & mask) << sh);
+                m.mem.write_u8(a, b as u8);
+            }
             _ => m.mem.write_u8(a, v as u8),
         }
     }
@@ -231,7 +251,7 @@ impl Pixels {
     }
     /// Blend `color` with coverage `a` (0..255) into pixel (x, y).
     fn blend(&self, m: &mut Machine, x: i32, y: i32, color: u32, a: u8) {
-        if a >= 250 || self.bpp == 8 {
+        if a >= 250 || self.bpp <= 8 {
             if a >= 128 {
                 let v = self.encode(color);
                 self.write_raw(m, x, y, v);

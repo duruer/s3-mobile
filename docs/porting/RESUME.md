@@ -35,3 +35,10 @@ The workflow cache does not carry over to a new session. Do this instead:
    Remove finished phases, and pass a short summary of earlier results in the prompts.
    Then run it with the Workflow tool (the user has opted in to workflows).
 4. Restart the autosave job (see above). Check that the Android emulator `s3_api35` (port 5610) is not left in a bad state.
+
+## Polish workflow (started 2026-11-06 ~03:05)
+
+- First workflow `wf_4e45ee56-35e` **finished**: the game runs in game on desktop and on Android. Commits `b2d6707`, `15bf17a`, `39f0731`.
+- Second workflow `wf_3257fcea-201` (polish): cursor, save/load, soft keyboard, players-screen OK bug, audio verification, Android UX.
+  Script copy: `tools/workflows/s3-port-polish-night.js`. Same resume rules as above.
+  If it is interrupted, the last good state is commit `39f0731` (working APK build).

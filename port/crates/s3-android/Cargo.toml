@@ -26,3 +26,4 @@ engine = ["dep:s3-engine"]
 android-activity = { version = "0.6", features = ["native-activity"] }
 ndk = { version = "0.9", features = ["audio", "nativewindow", "api-level-26"] }
 android_logger = "0.14"
+jni = "0.22"

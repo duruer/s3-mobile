@@ -29,13 +29,25 @@ General HLE rules: [architecture.md](architecture.md).
 | Blocking | `GetMessageA` and `WaitMessage` return `ThunkResult::Block` when nothing is queued. `MsgWaitForMultipleObjects` takes a signaled handle first, then returns `WAIT_OBJECT_0+n` if any message is queued (no "new since last check" rule), and honours its timeout. Host quit makes `GetMessage` return `WM_QUIT` |
 | Sent messages | `SendMessageA/TimeoutA` call the WndProc directly on the calling thread, also for windows owned by other threads (HYPOTHESIS: good enough for S3). No WndProc means our `DefWindowProc` |
 | DefWindowProc | `WM_NCCREATE`→1, `WM_ERASEBKGND`→1, `WM_NCACTIVATE`→1, `WM_NCHITTEST`→HTCLIENT, `WM_PAINT` validates, `WM_CLOSE`→DestroyWindow, Alt+F4 posts `WM_CLOSE`, everything else 0 |
-| Input | Service `user32-input`, also run at every message call. New `HostEvent`s from `m.input` become `WM_MOUSEMOVE` (coalesced), `WM_L/R/MBUTTONDOWN/UP` (plus `DBLCLK` when the class has `CS_DBLCLKS`, within 500 ms and 4 px), `WM_KEYDOWN/UP` (`WM_SYSKEY*` while Alt is held or for F10) and `WM_CHAR`. They go to the capture window, else the active window. Mouse wParam = MK_* flags, lParam = client coordinates. Key lParam = repeat 1, set-1 scan code from a VK table, extended bit, bit 29 for Alt, bits 30/31 on key-up. Events from before the first window are dropped |
+| Input | Service `user32-input`, also run at every message call. New `HostEvent`s from `m.input` become `WM_MOUSEMOVE` (coalesced), `WM_L/R/MBUTTONDOWN/UP` (plus `DBLCLK` when the class has `CS_DBLCLKS`, within 500 ms and 4 px), `WM_KEYDOWN/UP` (`WM_SYSKEY*` while Alt is held or for F10) and `WM_CHAR`. They go to the capture window, else the active window. Mouse wParam = MK_* flags, lParam = client coordinates. Key lParam = repeat 1, set-1 scan code from a VK table, extended bit, bit 29 for Alt, bits 30/31 on key-up. Events from before the first window are dropped. A tap (move + down + up in one batch, as from `--inject click` and Android touch) gives exactly MOUSEMOVE, LBUTTONDOWN, LBUTTONUP at the tap position (test `tap_gives_one_press_per_tap`) |
 | Chars | `TranslateMessage` builds `WM_CHAR` from `WM_KEYDOWN` with a US layout (Shift, Caps Lock, Ctrl+letter). It stops doing this once the host has sent a `HostEvent::Char`, to avoid duplicate characters |
 | Key state | `GetAsyncKeyState` and `GetKeyState` read `m.input` (0xFFFF8000 when down; toggle bit for Caps, Num and Scroll Lock). `GetKeyboardState`, `MapVirtualKeyA` |
-| Cursor | `SetCursor` and `ShowCursor` only keep state (frontends may read `UserState::cursor/cursor_count` later). `GetCursorPos` is the host mouse position clamped to `ClipCursor`. `SetCursorPos` moves only the emulated position. `LoadCursorA/LoadIconA/LoadImageA` return fake handles `0xCC0000+id` |
+| Cursor | Drawn (2026-11-05, see [Cursor](#cursor-drawing)). `LoadCursorA/LoadImageA(IMAGE_CURSOR)` return fake handles `0xCC0000+id` (`LoadImageA` +0x40000, `LoadIconA` +0x20000, icons not decoded) and decode the image into `s3_runtime::cursor::CursorState`. `SetCursor`/`ShowCursor`/`ClipCursor` update it. `GetCursorPos` is the host mouse position clamped to `ClipCursor`. `SetCursorPos` moves only the emulated position (the drawn cursor follows it) |
 | Painting | `BeginPaint/EndPaint/GetDC/ReleaseDC` give **pixel-less** window DCs (drawing on them is a no-op; S3 draws on DirectDraw surface DCs). `InvalidateRect/ValidateRect/UpdateWindow` |
 | Text | `DrawTextA`: `DT_LEFT/CENTER/RIGHT`, `DT_VCENTER/BOTTOM` (single line), `DT_WORDBREAK` (also splits words longer than the line), `DT_SINGLELINE`, `DT_CALCRECT`, `DT_NOCLIP`, `&` prefixes (`DT_NOPREFIX`). Returns the text height |
 | Misc | Rect helpers (`SetRect`, `IntersectRect`, `PtInRect` with POINT by value = 3 stack args, …), `wsprintfA` (cdecl) and `wvsprintfA` (flags `-0#`, width, precision, `h/l`, `d i u x X c C s S %`, 1023-char limit). `MessageBoxA` logs at Warn level and answers IDOK/IDYES/IDIGNORE, or IDCANCEL for retry/cancel boxes. `GetSysColor`, `SystemParametersInfoA(SPI_GETWORKAREA)`, `CharUpper/LowerA` |
+
+How S3 reads clicks (input-ok-bug, 2026-11): the main thread (t0) runs a `GetMessageA` loop; its WndProc handles
+`WM_MOUSEMOVE` (0x45bec5), `WM_LBUTTONDOWN` (0x45b698) and `WM_LBUTTONUP` (0x45b89e), converts with `ClientToScreen`
+and wakes the GUI thread (t2) with `SetEvent` (handle of the UI event, from 0x430b64). After every message it calls
+`IDirectInputDevice::GetDeviceData(cb=16, rgdod=NULL, ...)`, i.e. it only **flushes** the DirectInput buffer in menus,
+so menu clicks come from window messages only. The UI button (0x41ab10 on button-up) fires its listener at
+`[this+0x38]` (0x41a9b0) and a second one at `[this-0x10]`. Single Player has **three** OK screens: the map-selection
+popup over Game Setup (OK at 630,467), Game Setup (OK at 730,567; handler 0x488300 builds the game parameters,
+`CoCreateGuid` in 0x431ab0, then shows the players screen) and the players screen (OK at the same 730,567; handler
+0x4955b0 message 10 -> 0x496c90 -> `PostThreadMessageA(t0, 0x801)` starts loading). The old report "first OK on the
+players screen is ignored" was this miscount: the "first OK" was the Game Setup OK. Verified headless: one click per
+OK, 1 s apart, reaches in game.
 
 Exposed for other crates: `user32::screen_size`, `set_screen_size`, `post_message`, `send`, `pump_input`, `def_window_proc`.
 
@@ -66,7 +78,11 @@ Exposed for other crates: `user32::screen_size`, `set_screen_size`, `post_messag
   (filled bounding box, HYPOTHESIS: unused).
 - **DIBs.** `CreateDIBSection` allocates the bits on the guest process heap. Bottom-up DIBs use a negative pitch.
   `BI_BITFIELDS` with green mask 0x7E0 means RGB565. `CreateCompatibleDC` + `SelectObject(bitmap)` draws into the
-  bitmap.
+  bitmap. **1 bpp and 4 bpp** DIBs are packed MSB first (colour table assumed black/white resp. grey ramp; 1 bpp:
+  luminance >= 128 -> 1). S3.EXE draws all in-game panel text and tooltips ("Save Game", "Quit Game", "Buildings",
+  the save slot list) with `DrawTextA` into one 640x480x1 top-down DIB (white on black, OPAQUE) and uses the bits
+  as a mask (`0x4a8100..0x4a8bfd`); before 2026-11-05 1 bpp was written as bytes and that text was invisible.
+  Test `user_gdi_tests::draw_text_into_monochrome_dib`.
 - `GetDeviceCaps`: 16 bpp, 96 dpi, `NUMCOLORS` -1, no `RC_PALETTE`, HORZRES/VERTRES = target or screen size.
 
 ### Fonts (`font.rs`)
@@ -152,11 +168,20 @@ never loaded.
     Intel Indeo video codec 5.06 or above (Error code 266)"* over the main menu.
 - **Music output.** `audio_music::MusicPlayer::mix` adds music into any interleaved i16 buffer with linear
   resampling and a volume (default 0.6, HYPOTHESIS).
-  - By default the service `winmm-music` queues 44100 Hz stereo through `Host::queue_audio`, paced by the wall
-    clock with about 150 ms lead.
-  - **If DirectSound (s3-dx) owns the host audio stream**, it must call
-    `s3_win32::winmm::set_external_music_mixer(m, true)` once and `s3_win32::winmm::mix_music(m, &mut buf, rate,
-    channels)` for every block it mixes. Otherwise there are two producers with different rates.
+  - The service `winmm-music` decodes ahead into the shared mixer stream
+    `m.state::<s3_runtime::audio::AudioStreams>().streams[winmm::MUSIC_STREAM_ID]` (44100 Hz stereo), keeping
+    `LEAD_MS` = 300 ms queued (more than the DirectSound mixer's 250 ms max catch-up chunk, so music never runs dry
+    after a slow slice). The s3-dx DirectSound mixer mixes it with the effects and is the **only** caller of
+    `Host::queue_audio` (it runs as a service even if the game never creates DirectSound). `MCI stop`, `close`
+    and a new `play` flush the queued music, so an old track does not linger. Because of the decode-ahead, the
+    end-of-range `MM_MCINOTIFY` is posted up to ~300 ms before the last sample is heard (harmless).
+  - Fixed 2026-11-05 (audio-verify): before, `winmm-music` called `Host::queue_audio` itself while the DirectSound
+    mixer also did -> two producers, music blocks interleaved between effect blocks (2x audio per wall second).
+  - `set_external_music_mixer(m, true)` + `mix_music(m, buf, rate, channels)` remain for a mixer that wants to
+    pull music directly (then `winmm-music` produces nothing).
+  - `S3_MUSIC_VOLUME=0..1` (env) overrides the default volume (debug/test knob; 0 isolates effects in a WAV).
+  - Verified with `s3run --audio-wav` in game: track 7 continuous, -31/-28 dBFS RMS L/R, no clipping, no gaps
+    (details in [directx-hle.md](directx-hle.md#audio-verification-s3run---audio-wav-2026-11-05)).
   - `auxSetVolume` sets the music volume.
 - Other: `waveOutGetNumDevs`=1, `auxGetNumDevs`/`joyGetNumDevs`=0, `joyGetPosEx`=JOYERR_UNPLUGGED,
   `PlaySoundA`/`sndPlaySoundA` do nothing and return TRUE.
@@ -196,7 +221,36 @@ never loaded.
 - Cross-thread `SendMessage` runs on the sender's thread.
 - `MsgWaitForMultipleObjects` wakes for any queued message (not only new ones).
 - No non-client area.
-- Cursor shape is not shown by frontends yet. `GDIMouse=1` means the game expects an OS cursor; set `GDIMouse=0` in
-  `registry.json` to get the game's software cursor (HYPOTHESIS).
-- Music output has only been exercised headless (`NullHost` discards audio). The MCI play path is OBSERVED in game;
-  whether it is audible depends on the frontend's `queue_audio` and on the DirectSound mixer integration.
+- `WM_SETCURSOR` is never sent (DefWindowProc returns 0). Real Windows would send it on every mouse move and
+  DefWindowProc would restore the class cursor (IDC_ARROW); the game sets its cursor explicitly instead, so
+  not sending it keeps the game's cursor. HYPOTHESIS: harmless for S3.
+- Music output verified on desktop via `s3run --audio-wav` (2026-11-05); audible on Android through the same
+  DirectSound mixer -> `queue_audio` path.
+
+## Cursor drawing
+
+Code: `port/crates/s3-runtime/src/cursor.rs` (decoder, built-in arrow, `CursorState`, compose), user32
+`load_cursor_a`/`register_cursor_image`/`set_cursor`/`show_cursor`/`clip_cursor`, `Machine::present` and
+`Machine::refresh_cursor`.
+
+- The game runs with `GDIMouse`=1 and uses the Windows cursor. `FUN_0045c3a0` (OBSERVED, decompiled) is its
+  "set cursor" method: `SetCursor(LoadCursorA(NULL, IDC_ARROW))` first, then for id `-1` `ShowCursor(FALSE)`
+  (hide), else `LoadCursorA(hinst 0x400000, id)` (cached by the game) and `SetCursor`. Ids seen: `0x73` (115,
+  normal arrow, `RT_CURSOR` 3, hot spot 0,0) and `0x8B` (139, `RT_CURSOR` 8, hot spot 15,10, a "busy" shape).
+- S3.EXE `.rsrc`: 9 `RT_GROUP_CURSOR` (112, 113, 115, 136-141), each with one 32x32 monochrome `RT_CURSOR` (308
+  bytes: hot spot + 1 bpp DIB, XOR then AND mask).
+- `LoadCursorA(hinst != 0, name)`: `RT_GROUP_CURSOR` -> entry closest to 32 px (ties: more bits) -> `RT_CURSOR`
+  -> `decode_cursor_resource` (1/4/8/24/32 bpp DIBs, AND/XOR semantics: AND 0 = colour, AND 1 + XOR 0 = clear,
+  AND 1 + XOR colour = screen XOR colour (white = invert), 32 bpp with alpha = blend). Not found -> warning, the
+  handle is still returned (the game shows an error box for NULL) and nothing is drawn.
+  `LoadCursorA(NULL, IDC_*)`: our own 12x19 arrow drawn from code (`builtin_arrow`, same for all IDC_* ids).
+- Visible when `ShowCursor` count >= 0 and `SetCursor` handle != 0 and its image is known.
+- Present: `Machine::present` copies the guest frame (host copy, guest memory untouched) and draws the cursor
+  with its hot spot at `m.input.mouse_x/y` (clamped to `ClipCursor`), so every frontend gets it. The game does
+  not re-present when only the mouse moves (menus are idle), so a "cursor" service (added at the first
+  `SetCursor`) calls `Machine::refresh_cursor` once per `run_slice`: when position/shape/visibility changed it
+  re-presents the last guest frame with the new cursor (not counted in `stats.presents`). Frontends can set
+  `CursorState::disabled` to turn drawing off. The desktop minifb window hides the OS pointer.
+- Verified 2026-11-05 headless (`scratch/cursor/*.png`, local): menu cursor at an injected (300,300) while the
+  menu is idle; in game at (320,240) the drawn pixels match `RT_CURSOR` 3 exactly; over the build-menu icon at
+  (25,167).

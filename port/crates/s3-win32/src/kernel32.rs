@@ -88,6 +88,7 @@ pub fn register(reg: &mut Registry) {
     kernel32_locale::register(reg);
     // process / modules
     reg.register(DLL, "GetVersion", get_version);
+    reg.register(DLL, "IsProcessorFeaturePresent", is_processor_feature_present);
     reg.register(DLL, "GetVersionExA", get_version_ex_a);
     reg.register(DLL, "GetCurrentProcess", get_current_process);
     reg.register(DLL, "GetCurrentProcessId", |_m| ThunkResult::stdcall(s3_runtime::machine::PROCESS_ID, 0));
@@ -249,6 +250,18 @@ fn get_proc_address(m: &mut Machine) -> ThunkResult {
         m.set_last_error(ERROR_PROC_NOT_FOUND);
     }
     ThunkResult::stdcall(r.unwrap_or(0), 2)
+}
+
+/// `IsProcessorFeaturePresent(feature)` (looked up by the CRT via GetProcAddress). Matches what our CPUID reports
+/// (Pentium P54C: FPU, TSC, CMPXCHG8B; no MMX/SSE/3DNow, no FDIV errata, FPU not emulated).
+pub fn processor_feature_present(feature: u32) -> bool {
+    const PF_COMPARE_EXCHANGE_DOUBLE: u32 = 2;
+    const PF_RDTSC_INSTRUCTION_AVAILABLE: u32 = 8;
+    matches!(feature, PF_COMPARE_EXCHANGE_DOUBLE | PF_RDTSC_INSTRUCTION_AVAILABLE)
+}
+
+fn is_processor_feature_present(m: &mut Machine) -> ThunkResult {
+    ThunkResult::stdcall(processor_feature_present(m.arg_u32(0)) as u32, 1)
 }
 
 fn free_library(_m: &mut Machine) -> ThunkResult {

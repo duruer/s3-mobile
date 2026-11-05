@@ -1,8 +1,11 @@
 # Progress: wrap-up
 
-Goal: docs consistent with code, docs/porting/status.md, legal check, journal section, commit.
+## Round 2 (polish night, 2026-11-05/06)
+Goal: AGENTS.md map complete, docs match code, status.md, journal section '2026-11-06 — polish night (workflow)',
+legal check, commit 'feat(port): cursor, save/load, keyboard and Android UX polish', leave app in main menu on emulator-5610.
+- Done: docs, status, journal, tests 159/1 ignored, legal check, app left in main menu on emulator-5610. Next: commit.
 
-## Done (2026-11-06 ~03:05)
+## Round 1 (2026-11-06 ~03:05)
 - status.md written; strategy/architecture/directx-hle/x87-fpu stale notes fixed; AGENTS.md map row + LICENSE.
 - Legal: git ls-files clean (no game bytes); fonts OFL with license file; deps permissive; GPL-3.0 LICENSE added.
 - Journal section "2026-11-05/06 — overnight Android port (workflow)" added.

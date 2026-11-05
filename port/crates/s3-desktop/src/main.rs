@@ -3,14 +3,19 @@
 //! ```text
 //! s3run --game-dir <dir> --data-dir <dir> [--exe <S3.EXE>] [--headless] [--max-seconds N]
 //!       [--screenshot-every-present <dir>] [--screenshot <file.png>] [--inject "t_ms:cmd args;..."]
+//!       [--audio-wav <file.wav> [--audio-wav-seconds N]] [--audio-play]   (audio sink: see audio.rs)
 //! ```
 //! Inject commands (times in ms since start): `click x y`, `rclick x y`, `move x y`, `down x y`, `up x y`,
-//! `key VK` (press+release, VK decimal or 0x..), `quit`.
+//! `key VK` (press+release, VK decimal or 0x..), `text abc` (one key press per character, 120 ms apart; letters,
+//! digits, space, `-`, `_` as VK codes so the guest's TranslateMessage makes WM_CHAR), `shot file.png` (write the
+//! current frame), `quit`.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+mod audio;
 
 use s3_engine::Engine;
 use s3_runtime::{FrameBuffer, Host, HostEvent, LogLevel, MouseButton, SliceResult};
@@ -27,13 +32,19 @@ struct Args {
     shots_dir: Option<PathBuf>,
     screenshot: Option<PathBuf>,
     inject: Vec<(u64, HostEvent)>,
+    /// `shot` inject commands: (time ms, png path).
+    inject_shots: Vec<(u64, PathBuf)>,
     verbose: bool,
+    audio_wav: Option<PathBuf>,
+    audio_wav_seconds: f64,
+    audio_play: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: s3run --game-dir <dir> --data-dir <dir> [--exe <path>] [--headless] [--max-seconds N]\n\
-         \x20            [--screenshot-every-present <dir>] [--screenshot <file.png>] [--inject \"t:cmd x y;...\"] [-v]"
+         \x20            [--screenshot-every-present <dir>] [--screenshot <file.png>] [--inject \"t:cmd x y;...\"] [-v]\n\
+         \x20            [--audio-wav <file.wav> [--audio-wav-seconds N (300)]] [--audio-play (feature audio-cpal)]"
     );
     std::process::exit(2)
 }
@@ -46,8 +57,25 @@ fn parse_num(s: &str) -> Option<i64> {
     }
 }
 
+#[cfg(test)]
 fn parse_inject(spec: &str) -> Result<Vec<(u64, HostEvent)>, String> {
+    parse_inject_all(spec).map(|(v, _)| v)
+}
+
+/// VK code for a `text` character (US layout, unshifted keys only).
+fn text_vk(c: char) -> Option<u32> {
+    match c {
+        'a'..='z' => Some(c.to_ascii_uppercase() as u32),
+        'A'..='Z' | '0'..='9' | ' ' => Some(c as u32),
+        '-' | '_' => Some(0xBD),
+        _ => None,
+    }
+}
+
+/// Parse inject events plus `shot` commands.
+fn parse_inject_all(spec: &str) -> Result<(Vec<(u64, HostEvent)>, Vec<(u64, PathBuf)>), String> {
     let mut out = Vec::new();
+    let mut shots = Vec::new();
     for item in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
         let (t, cmd) = item.split_once(':').ok_or(format!("bad inject item '{item}'"))?;
         let t: u64 = t.trim().parse().map_err(|_| format!("bad time in '{item}'"))?;
@@ -78,12 +106,33 @@ fn parse_inject(spec: &str) -> Result<Vec<(u64, HostEvent)>, String> {
                 out.push((t, HostEvent::Key { vk, down: true }));
                 out.push((t + 50, HostEvent::Key { vk, down: false }));
             }
+            Some("text") => {
+                let txt = cmd.trim_start()["text".len()..].trim();
+                for (i, c) in txt.chars().enumerate() {
+                    let vk = text_vk(c).ok_or(format!("unsupported text char '{c}' in '{item}'"))?;
+                    let at = t + 120 * i as u64;
+                    let shift = c.is_ascii_uppercase() || c == '_';
+                    if shift {
+                        out.push((at, HostEvent::Key { vk: 0x10, down: true }));
+                    }
+                    out.push((at + 10, HostEvent::Key { vk, down: true }));
+                    out.push((at + 60, HostEvent::Key { vk, down: false }));
+                    if shift {
+                        out.push((at + 70, HostEvent::Key { vk: 0x10, down: false }));
+                    }
+                }
+            }
+            Some("shot") => {
+                let f = w.get(1).ok_or(format!("missing file in '{item}'"))?;
+                shots.push((t, PathBuf::from(f)));
+            }
             Some("quit") => out.push((t, HostEvent::Quit)),
             _ => return Err(format!("unknown inject command '{cmd}'")),
         }
     }
     out.sort_by_key(|(t, _)| *t);
-    Ok(out)
+    shots.sort_by_key(|(t, _)| *t);
+    Ok((out, shots))
 }
 
 fn parse_args() -> Args {
@@ -96,7 +145,11 @@ fn parse_args() -> Args {
         shots_dir: None,
         screenshot: None,
         inject: Vec::new(),
+        inject_shots: Vec::new(),
         verbose: false,
+        audio_wav: None,
+        audio_wav_seconds: 300.0,
+        audio_play: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -110,12 +163,15 @@ fn parse_args() -> Args {
             "--screenshot-every-present" => a.shots_dir = Some(val().into()),
             "--screenshot" => a.screenshot = Some(val().into()),
             "--inject" => {
-                a.inject = parse_inject(&val()).unwrap_or_else(|e| {
+                (a.inject, a.inject_shots) = parse_inject_all(&val()).unwrap_or_else(|e| {
                     eprintln!("{e}");
                     usage()
                 })
             }
             "-v" | "--verbose" => a.verbose = true,
+            "--audio-wav" => a.audio_wav = Some(val().into()),
+            "--audio-wav-seconds" => a.audio_wav_seconds = val().parse().unwrap_or_else(|_| usage()),
+            "--audio-play" => a.audio_play = true,
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -143,6 +199,7 @@ struct DesktopHost {
     shots_dir: Option<PathBuf>,
     shots: u64,
     verbose: bool,
+    audio: Option<audio::SharedSink>,
 }
 
 impl Host for DesktopHost {
@@ -172,6 +229,16 @@ impl Host for DesktopHost {
         }
         out.extend(self.shared.lock().unwrap().events.drain(..));
         out
+    }
+
+    fn queue_audio(&mut self, samples: &[i16], rate: u32, channels: u16) {
+        if let Some(a) = &self.audio {
+            a.lock().unwrap().queue(samples, rate, channels);
+        }
+    }
+
+    fn audio_queued_frames(&self) -> usize {
+        self.audio.as_ref().map_or(0, |a| a.lock().unwrap().queued_frames())
     }
 
     fn now_ms(&self) -> u64 {
@@ -252,6 +319,8 @@ mod window {
                 match Window::new("Settlers 3 Port (s3run)", size.0, size.1, opts) {
                     Ok(mut w) => {
                         w.set_target_fps(0);
+                        // The game's cursor is composed into the frame (s3_runtime::cursor).
+                        w.set_cursor_visibility(false);
                         self.win = Some(w);
                         self.size = size;
                     }
@@ -329,6 +398,16 @@ fn main() {
         std::fs::create_dir_all(d).ok();
     }
     let shared = Arc::new(Mutex::new(Shared::default()));
+    let audio_sink: Option<audio::SharedSink> = if args.audio_wav.is_some() || args.audio_play {
+        let wav = args.audio_wav.as_ref().and_then(|p| {
+            audio::WavWriter::create(p, audio::SINK_RATE, 2, args.audio_wav_seconds)
+                .map_err(|e| eprintln!("s3run: --audio-wav {}: {e}", p.display()))
+                .ok()
+        });
+        Some(Arc::new(Mutex::new(audio::AudioSink::new(wav, args.audio_play))))
+    } else {
+        None
+    };
     let host = DesktopHost {
         game_dir: args.game_dir.clone(),
         data_dir: args.data_dir.clone(),
@@ -338,6 +417,7 @@ fn main() {
         shots_dir: args.shots_dir.clone(),
         shots: 0,
         verbose: args.verbose,
+        audio: audio_sink.clone(),
     };
     let mut engine = match Engine::new(Box::new(host), args.exe.as_deref()) {
         Ok(e) => e,
@@ -352,7 +432,17 @@ fn main() {
     let sample = std::env::var_os("S3_SAMPLE").is_some();
     let mut last_sample = Instant::now();
     let mut sample_prev: Vec<u64> = Vec::new();
+    let mut inject_shots: VecDeque<(u64, PathBuf)> = args.inject_shots.iter().cloned().collect();
     loop {
+        while inject_shots.front().map(|(t, _)| *t <= start.elapsed().as_millis() as u64).unwrap_or(false) {
+            let (_, p) = inject_shots.pop_front().unwrap();
+            let f = shared.lock().unwrap().frame.clone();
+            match f.map(|f| write_png(&p, &f)) {
+                Some(Ok(())) => eprintln!("s3run: shot {} at {} ms", p.display(), start.elapsed().as_millis()),
+                Some(Err(e)) => eprintln!("s3run: shot {} failed: {e}", p.display()),
+                None => eprintln!("s3run: shot {}: no frame yet", p.display()),
+            }
+        }
         if let Some(max) = args.max_seconds {
             if start.elapsed().as_secs_f64() >= max {
                 eprintln!("s3run: --max-seconds reached");
@@ -408,6 +498,11 @@ fn main() {
             None => eprintln!("s3run: no frame was presented, no screenshot"),
         }
     }
+    if let Some(a) = &audio_sink {
+        for line in a.lock().unwrap().finish() {
+            eprintln!("{line}");
+        }
+    }
     println!("{}", engine.summary());
     let code = match engine.machine.stop_reason() {
         Some(s3_runtime::StopReason::Exited(c)) => *c as i32,
@@ -429,5 +524,11 @@ mod tests {
         assert!(v.contains(&(150, HostEvent::MouseButton { button: MouseButton::Left, down: false })));
         assert_eq!(v.last(), Some(&(300, HostEvent::Quit)));
         assert!(parse_inject("x:click").is_err());
+        let (v, shots) = parse_inject_all("1000:text Ab1;2000:shot /tmp/x.png").unwrap();
+        assert_eq!(shots, vec![(2000, PathBuf::from("/tmp/x.png"))]);
+        assert!(v.contains(&(1010, HostEvent::Key { vk: 0x41, down: true })));
+        assert!(v.contains(&(1130, HostEvent::Key { vk: 0x42, down: true })));
+        assert!(v.contains(&(1250, HostEvent::Key { vk: 0x31, down: true })));
+        assert!(parse_inject("1:text a!").is_err());
     }
 }

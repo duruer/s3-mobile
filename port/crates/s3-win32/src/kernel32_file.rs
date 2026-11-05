@@ -114,6 +114,18 @@ pub(crate) fn register(reg: &mut Registry) {
     reg.register(DLL, "FlushViewOfFile", |_m| ThunkResult::stdcall(1, 2));
 }
 
+/// `S3_FILES=1`: log every file-system call with its guest path and result at Info (save/load debugging).
+fn files_log_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("S3_FILES").is_some())
+}
+
+fn flog(m: &Machine, msg: impl FnOnce() -> String) {
+    if files_log_on() {
+        m.log(LogLevel::Info, &format!("[files] {}", msg()));
+    }
+}
+
 fn fail(m: &mut Machine, err: u32, value: u32, nargs: u32) -> ThunkResult {
     m.set_last_error(err);
     ThunkResult::stdcall(value, nargs)
@@ -138,6 +150,21 @@ fn not_found_err(vfs: &Vfs, guest: &str) -> u32 {
 
 /// `CreateFileA(name, access, share, sa, disposition, flags, template)`.
 fn create_file_a(m: &mut Machine) -> ThunkResult {
+    let r = create_file_a_inner(m);
+    if files_log_on() {
+        let name = m.arg_str(0).unwrap_or_default();
+        let (access, disp) = (m.arg_u32(1), m.arg_u32(4));
+        let ret = match &r {
+            ThunkResult::Return { eax, .. } => *eax,
+            _ => 0,
+        };
+        let err = m.last_error();
+        flog(m, || format!("CreateFileA({name:?}, access {access:#x}, disp {disp}) -> {ret:#x} err {err}"));
+    }
+    r
+}
+
+fn create_file_a_inner(m: &mut Machine) -> ThunkResult {
     let Some(name) = m.arg_str(0) else { return fail(m, ERROR_PATH_NOT_FOUND, INVALID_HANDLE_VALUE, 7) };
     let (access, disp, flags) = (m.arg_u32(1), m.arg_u32(4), m.arg_u32(5));
     if name.is_empty() {
@@ -394,7 +421,13 @@ fn write_find_data(m: &mut Machine, p: u32, name: &str, is_dir: bool, size: u64,
 fn find_first_file_a(m: &mut Machine) -> ThunkResult {
     let (pp, data) = (m.arg_u32(0), m.arg_u32(1));
     let pattern_full = m.mem.read_cstr(pp);
-    let (dir, pat) = split_dir(&pattern_full);
+    let r = find_first_inner(m, &pattern_full, data);
+    flog(m, || format!("FindFirstFileA({pattern_full:?}) -> {:?}", match &r { ThunkResult::Return { eax, .. } => *eax, _ => 0 }));
+    r
+}
+
+fn find_first_inner(m: &mut Machine, pattern_full: &str, data: u32) -> ThunkResult {
+    let (dir, pat) = split_dir(pattern_full);
     if pat.is_empty() || !m.vfs.is_dir(&dir) && !m.vfs.components(&dir).is_empty() {
         return fail(m, if pat.is_empty() { ERROR_FILE_NOT_FOUND } else { ERROR_PATH_NOT_FOUND }, INVALID_HANDLE_VALUE, 2);
     }
@@ -439,7 +472,11 @@ fn find_close(m: &mut Machine) -> ThunkResult {
 
 // ---------------------------------------------------------------------------------------------- file system ops
 
-fn vfs_result(m: &mut Machine, r: Result<(), u32>, nargs: u32) -> ThunkResult {
+fn vfs_result(m: &mut Machine, api: &str, r: Result<(), u32>, nargs: u32) -> ThunkResult {
+    flog(m, || {
+        let args: Vec<String> = (0..nargs.min(2)).map(|i| m.arg_str(i).unwrap_or_default()).collect();
+        format!("{} {:?} -> {:?}", api, args, r)
+    });
     match r {
         Ok(()) => ThunkResult::stdcall(1, nargs),
         Err(e) => fail(m, e, 0, nargs),
@@ -449,31 +486,31 @@ fn vfs_result(m: &mut Machine, r: Result<(), u32>, nargs: u32) -> ThunkResult {
 fn delete_file_a(m: &mut Machine) -> ThunkResult {
     let name = m.arg_str(0).unwrap_or_default();
     let r = m.vfs.remove_file(&name);
-    vfs_result(m, r, 1)
+    vfs_result(m, "DeleteFileA", r, 1)
 }
 
 fn move_file_a(m: &mut Machine) -> ThunkResult {
     let (a, b) = (m.arg_str(0).unwrap_or_default(), m.arg_str(1).unwrap_or_default());
     let r = m.vfs.rename(&a, &b);
-    vfs_result(m, r, 2)
+    vfs_result(m, "MoveFileA", r, 2)
 }
 
 fn copy_file_a(m: &mut Machine) -> ThunkResult {
     let (a, b, fx) = (m.arg_str(0).unwrap_or_default(), m.arg_str(1).unwrap_or_default(), m.arg_u32(2) != 0);
     let r = m.vfs.copy(&a, &b, fx);
-    vfs_result(m, r, 3)
+    vfs_result(m, "CopyFileA", r, 3)
 }
 
 fn create_directory_a(m: &mut Machine) -> ThunkResult {
     let a = m.arg_str(0).unwrap_or_default();
     let r = m.vfs.create_dir(&a);
-    vfs_result(m, r, 2)
+    vfs_result(m, "CreateDirectoryA", r, 2)
 }
 
 fn remove_directory_a(m: &mut Machine) -> ThunkResult {
     let a = m.arg_str(0).unwrap_or_default();
     let r = m.vfs.remove_dir(&a);
-    vfs_result(m, r, 1)
+    vfs_result(m, "RemoveDirectoryA", r, 1)
 }
 
 fn get_file_attributes_a(m: &mut Machine) -> ThunkResult {

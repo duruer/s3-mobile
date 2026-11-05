@@ -3,7 +3,10 @@
 //! - tap (down + up, little movement, < 500 ms): left click at the finger;
 //! - long press (>= 500 ms without moving): right click at the finger;
 //! - one-finger drag (moved beyond the slop): mouse moves with the left button held, released on lift;
-//! - two-finger tap (second finger lands while the first has not started dragging): right click at the first finger.
+//! - two-finger tap (second finger lands while the first has not started dragging): right click at the first finger,
+//!   sent when a finger lifts;
+//! - three-finger tap: no mouse event; requests the on-screen keyboard ([`TouchMapper::take_keyboard_request`]);
+//! - "right-click next" mode ([`TouchMapper::set_right_next`], letterbox button): the next tap is a right click.
 //!
 //! Button-up events are delayed by [`CLICK_MS`] so games that poll the button state (GetAsyncKeyState,
 //! DirectInput GetDeviceState) see the press. All events carry a due time; call [`TouchMapper::drain_due`].
@@ -32,6 +35,8 @@ enum State {
     Pending { id: i32, win: (f32, f32), game: (i32, i32), t0: u64, drag: MouseButton },
     /// `drag` button held, following the finger.
     Dragging { id: i32, drag: MouseButton, origin: (i32, i32) },
+    /// Two fingers down without dragging: right click at `game` when one lifts, unless a third finger lands.
+    TwoFinger { game: (i32, i32) },
     /// Gesture finished (long press / two-finger tap fired); ignore until all fingers are up.
     Consumed,
 }
@@ -55,15 +60,41 @@ pub struct TouchMapper {
     queue: Vec<(u64, HostEvent)>,
     /// Last time an event was scheduled (keeps output ordered when delays overlap).
     last_due: u64,
+    /// The next tap is a right click (letterbox button).
+    right_next: bool,
+    /// A three-finger tap asked for the on-screen keyboard.
+    keyboard_request: bool,
 }
 
 impl TouchMapper {
     pub fn new(slop_px: f32) -> Self {
-        TouchMapper { state: State::Idle, slop: slop_px, fingers: 0, queue: Vec::new(), last_due: 0 }
+        TouchMapper {
+            state: State::Idle,
+            slop: slop_px,
+            fingers: 0,
+            queue: Vec::new(),
+            last_due: 0,
+            right_next: false,
+            keyboard_request: false,
+        }
     }
 
     pub fn set_slop(&mut self, slop_px: f32) {
         self.slop = slop_px;
+    }
+
+    /// Arm (or disarm) "the next tap is a right click".
+    pub fn set_right_next(&mut self, on: bool) {
+        self.right_next = on;
+    }
+
+    pub fn right_next(&self) -> bool {
+        self.right_next
+    }
+
+    /// True once after a three-finger tap.
+    pub fn take_keyboard_request(&mut self) -> bool {
+        std::mem::take(&mut self.keyboard_request)
     }
 
     fn push(&mut self, t: u64, ev: HostEvent) {
@@ -94,20 +125,30 @@ impl TouchMapper {
     /// Additional finger (ACTION_POINTER_DOWN).
     pub fn pointer_down(&mut self, t: u64) {
         self.fingers += 1;
-        if let State::Pending { game, .. } = self.state {
-            self.click(t, game, MouseButton::Right);
-            self.state = State::Consumed;
+        let _ = t;
+        match self.state {
+            State::Pending { game, .. } => self.state = State::TwoFinger { game },
+            State::TwoFinger { .. } => {
+                self.keyboard_request = true;
+                self.state = State::Consumed;
+            }
+            _ => {}
         }
     }
 
     /// A finger other than the last one lifted (ACTION_POINTER_UP).
     pub fn pointer_up(&mut self, id: i32, t: u64) {
         self.fingers = self.fingers.saturating_sub(1);
-        if let State::Dragging { id: d, drag, .. } = self.state {
-            if d == id {
+        match self.state {
+            State::Dragging { id: d, drag, .. } if d == id => {
                 self.push(t, HostEvent::MouseButton { button: drag, down: false });
                 self.state = State::Consumed;
             }
+            State::TwoFinger { game } => {
+                self.click(t, game, MouseButton::Right);
+                self.state = State::Consumed;
+            }
+            _ => {}
         }
     }
 
@@ -135,7 +176,12 @@ impl TouchMapper {
     /// Last finger lifted (ACTION_UP).
     pub fn up(&mut self, t: u64) {
         match self.state {
-            State::Pending { game, .. } => self.click(t, game, MouseButton::Left),
+            State::Pending { game, .. } => {
+                let b = if self.right_next { MouseButton::Right } else { MouseButton::Left };
+                self.right_next = false;
+                self.click(t, game, b)
+            }
+            State::TwoFinger { game } => self.click(t, game, MouseButton::Right),
             State::Dragging { drag, .. } => self.push(t, HostEvent::MouseButton { button: drag, down: false }),
             _ => {}
         }
@@ -274,5 +320,36 @@ mod tests {
         assert!(ev.contains(&HostEvent::MouseButton { button: R, down: true }));
         assert!(ev.contains(&HostEvent::MouseButton { button: R, down: false }));
         assert!(!ev.iter().any(|e| matches!(e, HostEvent::MouseButton { button: MouseButton::Left, .. })));
+        assert!(!t.take_keyboard_request());
+    }
+
+    #[test]
+    fn three_finger_tap_requests_keyboard_without_clicks() {
+        let mut t = TouchMapper::new(20.0);
+        t.down(0, (100.0, 100.0), (50, 50), 0);
+        t.pointer_down(20);
+        t.pointer_down(40);
+        t.pointer_up(2, 90);
+        t.pointer_up(1, 95);
+        t.up(100);
+        let ev = t.drain_due(2000);
+        assert!(!ev.iter().any(|e| matches!(e, HostEvent::MouseButton { .. })), "{ev:?}");
+        assert!(t.take_keyboard_request());
+        assert!(!t.take_keyboard_request());
+    }
+
+    #[test]
+    fn right_next_turns_one_tap_into_right_click() {
+        let mut t = TouchMapper::new(20.0);
+        t.set_right_next(true);
+        t.down(0, (100.0, 100.0), (50, 50), 0);
+        t.up(50);
+        let ev = t.drain_due(1000);
+        assert!(ev.contains(&HostEvent::MouseButton { button: R, down: true }));
+        assert!(!t.right_next());
+        t.down(0, (100.0, 100.0), (50, 50), 2000);
+        t.up(2050);
+        let ev = t.drain_due(3000);
+        assert!(ev.contains(&HostEvent::MouseButton { button: L, down: true }));
     }
 }

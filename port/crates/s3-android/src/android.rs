@@ -2,10 +2,10 @@
 //! Platform-independent logic lives in `frontend`, `touch`, `layout`, `screen`, `audio`, `keys`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use android_activity::input::{InputEvent, KeyAction, MotionAction, ToolType};
+use android_activity::input::{InputEvent, KeyAction, KeyMapChar, MotionAction, ToolType};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent, WindowManagerFlags};
 use ndk::audio::{
     AudioCallbackResult, AudioDirection, AudioFormat, AudioPerformanceMode, AudioSharingMode, AudioStream,
@@ -18,8 +18,10 @@ use s3_runtime::{FrameBuffer, HostEvent, MouseButton};
 use crate::audio::{AudioRing, OUT_CHANNELS, OUT_RATE};
 use crate::frontend::{run_engine, Phase, Shared};
 use crate::layout::{blit_letterboxed, Letterbox};
+use crate::overlay::{self, Button, OverlayState};
 use crate::screen;
 use crate::touch::TouchMapper;
+use crate::uithread::UiThread;
 
 struct Ui {
     window: Option<NativeWindow>,
@@ -31,6 +33,9 @@ struct Ui {
     shown: (u64, u64),
     status_cache: Option<(u64, FrameBuffer)>,
     dirty: bool,
+    /// Letterbox buttons (drawn only over game frames).
+    overlay: OverlayState,
+    buttons_shown: bool,
 }
 
 impl Ui {
@@ -66,11 +71,17 @@ impl Ui {
             Some(fb) => fb,
             None => {
                 if self.status_cache.as_ref().map(|c| c.0) != Some(status.seq) {
-                    self.status_cache = Some((status.seq, screen::status_screen(&status.title, &status.body)));
+                    let img = if status.phase == Phase::MissingExe {
+                        screen::first_run_screen(&status.title, &status.body)
+                    } else {
+                        screen::status_screen(&status.title, &status.body)
+                    };
+                    self.status_cache = Some((status.seq, img));
                 }
                 &self.status_cache.as_ref().unwrap().1
             }
         };
+        let game_frame = slot.fb.is_some();
         let lb = Letterbox::new(fb.width, fb.height, self.win_size.0, self.win_size.1);
         if self.geometry != Some((lb.buf_w, lb.buf_h)) {
             match window.set_buffers_geometry(lb.buf_w as i32, lb.buf_h as i32, Some(HardwareBufferFormat::R5G6B5_UNORM)) {
@@ -95,10 +106,17 @@ impl Ui {
                 l.off_y = (bh as u32).saturating_sub(lb.game_h) / 2;
                 let dst = unsafe { std::slice::from_raw_parts_mut(guard.bits() as *mut u16, stride * bh) };
                 blit_letterboxed(&l, &fb.pixels, dst, stride, bh);
+                if game_frame {
+                    let mut lo = l;
+                    lo.buf_w = bw as u32;
+                    lo.buf_h = bh as u32;
+                    overlay::draw(&lo, &self.overlay, dst, stride, bh);
+                }
             }
             Err(e) => log::error!("ANativeWindow_lock: {e}"),
         }
         drop(owned);
+        self.buttons_shown = game_frame;
         self.shown = (frame_seq, status.seq);
         self.dirty = false;
     }
@@ -160,6 +178,11 @@ fn android_main(app: AndroidApp) {
     }));
     log::info!("Settlers 3 Port {} starting", env!("CARGO_PKG_VERSION"));
     app.set_window_flags(WindowManagerFlags::FULLSCREEN | WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
+    let ui_thread = UiThread::new(&app);
+    if let Some(u) = &ui_thread {
+        u.immersive();
+    }
+    let kb_visible = Arc::new(Mutex::new(false));
 
     let base = app
         .external_data_path()
@@ -184,17 +207,42 @@ fn android_main(app: AndroidApp) {
     let mut audio = open_audio(shared.audio.clone(), audio_dead.clone());
 
     let t0 = Instant::now();
-    let mut ui = Ui { window: None, win_size: (1, 1), geometry: None, lb: None, shown: (0, 0), status_cache: None, dirty: true };
+    let mut ui = Ui {
+        window: None,
+        win_size: (1, 1),
+        geometry: None,
+        lb: None,
+        shown: (0, 0),
+        status_cache: None,
+        dirty: true,
+        overlay: OverlayState::default(),
+        buttons_shown: false,
+    };
+    // Letterbox button under the current finger (the gesture is not passed to the game).
+    let mut button_touch: Option<Button> = None;
+    // Delayed key-ups of synthetic key presses (Esc button), like CLICK_MS for the mouse.
+    let mut pending_keys: Vec<(u64, HostEvent)> = Vec::new();
+    let mut kb_checked = 0u64;
+    let mut finishing = false;
     let mut touch = TouchMapper::new(24.0);
     let mut quit = false;
     let mut paused = false;
     let mut touches_logged = 0u32;
 
     while !quit {
-        let wait = touch.next_deadline(now_ms(t0)).map(|d| d.clamp(1, 250)).unwrap_or(250);
+        let mut wait = touch.next_deadline(now_ms(t0)).map(|d| d.clamp(1, 250)).unwrap_or(250);
+        if !pending_keys.is_empty() {
+            wait = wait.min(30);
+        }
+        if ui.overlay.keyboard {
+            wait = wait.min(1000);
+        }
         app.poll_events(Some(Duration::from_millis(wait)), |event| match event {
             PollEvent::Main(main) => match main {
                 MainEvent::InitWindow { .. } => {
+                    if let Some(u) = &ui_thread {
+                        u.immersive();
+                    }
                     ui.attach(app.native_window());
                     let m = ui.win_size.0.min(ui.win_size.1) as f32;
                     touch.set_slop((m * 0.03).max(8.0));
@@ -220,7 +268,13 @@ fn android_main(app: AndroidApp) {
                     ui.dirty = true;
                 }
                 MainEvent::LostFocus => log::info!("lifecycle: lost focus"),
-                MainEvent::GainedFocus => log::info!("lifecycle: gained focus"),
+                MainEvent::GainedFocus => {
+                    log::info!("lifecycle: gained focus");
+                    // The system shows the bars again after dialogs / app switches.
+                    if let Some(u) = &ui_thread {
+                        u.immersive();
+                    }
+                }
                 MainEvent::LowMemory => log::warn!("lifecycle: low memory"),
                 MainEvent::Destroy => {
                     log::info!("lifecycle: destroy");
@@ -261,6 +315,44 @@ fn android_main(app: AndroidApp) {
                             let _ = b;
                             return InputStatus::Handled;
                         }
+                        // Letterbox buttons: a gesture that starts on a button belongs to it.
+                        if me.action() == MotionAction::Down && ui.buttons_shown {
+                            button_touch = overlay::hit(&lb, win.0, win.1);
+                            if let Some(b) = button_touch {
+                                log::info!("button {b:?} down");
+                                ui.overlay.pressed = Some(b);
+                                ui.dirty = true;
+                                return InputStatus::Handled;
+                            }
+                        }
+                        if let Some(b) = button_touch {
+                            match me.action() {
+                                MotionAction::Up | MotionAction::Cancel => {
+                                    button_touch = None;
+                                    ui.overlay.pressed = None;
+                                    ui.dirty = true;
+                                    let still = overlay::hit(&lb, win.0, win.1) == Some(b);
+                                    if me.action() == MotionAction::Up && still {
+                                        log::info!("button {b:?} pressed");
+                                        match b {
+                                            Button::Esc => {
+                                                shared.push_event(HostEvent::Key { vk: 0x1B, down: true });
+                                                shared.push_event(HostEvent::Char(0x1B));
+                                                pending_keys.push((t + 60, HostEvent::Key { vk: 0x1B, down: false }));
+                                            }
+                                            Button::Keyboard => {
+                                                if let Some(u) = &ui_thread {
+                                                    u.soft_keyboard(None, kb_visible.clone());
+                                                }
+                                            }
+                                            Button::RightClick => touch.set_right_next(!touch.right_next()),
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            return InputStatus::Handled;
+                        }
                         match me.action() {
                             MotionAction::Down => {
                                 if touches_logged < 1000 {
@@ -286,27 +378,71 @@ fn android_main(app: AndroidApp) {
                     }
                     InputEvent::KeyEvent(ke) => {
                         let code: u32 = ke.key_code().into();
-                        match crate::keys::android_to_vk(code) {
-                            Some(vk) => {
-                                let down = match ke.action() {
-                                    KeyAction::Down => true,
-                                    KeyAction::Up => false,
-                                    _ => return InputStatus::Handled,
-                                };
-                                if ke.repeat_count() == 0 || !down {
-                                    log::info!("key {code} -> vk {vk:#x} {}", if down { "down" } else { "up" });
-                                }
-                                shared.push_event(HostEvent::Key { vk, down });
-                                InputStatus::Handled
+                        let down = match ke.action() {
+                            KeyAction::Down => true,
+                            KeyAction::Up => false,
+                            _ => return InputStatus::Unhandled,
+                        };
+                        let mapped = crate::keys::android_to_vk(code);
+                        // Text: the character the key produces with its meta state (soft keyboard, adb input text).
+                        let uni = if down {
+                            match app.device_key_character_map(ke.device_id()).and_then(|m| m.get(ke.key_code(), ke.meta_state())) {
+                                Ok(KeyMapChar::Unicode(c)) => Some(c),
+                                _ => None,
                             }
-                            None => InputStatus::Unhandled,
+                        } else {
+                            None
+                        };
+                        let ch = if down { crate::keys::char_for_key(mapped, uni) } else { None };
+                        let vk = mapped.or_else(|| uni.and_then(crate::keys::vk_for_char));
+                        if vk.is_none() && ch.is_none() {
+                            return InputStatus::Unhandled;
                         }
+                        if ke.repeat_count() == 0 || !down {
+                            log::info!("key {code} -> vk {vk:x?} char {ch:x?} {}", if down { "down" } else { "up" });
+                        }
+                        if let Some(vk) = vk {
+                            shared.push_event(HostEvent::Key { vk, down });
+                        }
+                        if let Some(c) = ch {
+                            shared.push_event(HostEvent::Char(c));
+                        }
+                        InputStatus::Handled
                     }
                     _ => InputStatus::Unhandled,
                 });
                 if !read {
                     break;
                 }
+            }
+        }
+        if touch.take_keyboard_request() {
+            log::info!("three-finger tap: toggle soft keyboard");
+            if let Some(u) = &ui_thread {
+                u.soft_keyboard(None, kb_visible.clone());
+            }
+        }
+        {
+            let t = now_ms(t0);
+            pending_keys.retain(|(due, ev)| {
+                if *due <= t {
+                    shared.push_event(ev.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            // While the keyboard is believed open, check once a second whether the user closed it.
+            if *kb_visible.lock().unwrap() && t >= kb_checked + 1000 {
+                kb_checked = t;
+                if let Some(u) = &ui_thread {
+                    u.refresh_keyboard(kb_visible.clone());
+                }
+            }
+            let st = OverlayState { pressed: ui.overlay.pressed, right_armed: touch.right_next(), keyboard: *kb_visible.lock().unwrap() };
+            if st != ui.overlay {
+                ui.overlay = st;
+                ui.dirty = true;
             }
         }
         for mut ev in touch.drain_due(now_ms(t0)) {
@@ -334,6 +470,13 @@ fn android_main(app: AndroidApp) {
         if !paused {
             ui.render(&shared);
         }
+        if shared.guest_exited.load(Ordering::Acquire) && !finishing {
+            finishing = true;
+            match &ui_thread {
+                Some(u) => u.finish(),
+                None => quit = true,
+            }
+        }
     }
 
     log::info!("shutting down");
@@ -343,4 +486,8 @@ fn android_main(app: AndroidApp) {
     }
     let _ = engine_thread.join();
     log::info!("bye");
+    if finishing {
+        // The game ended: end the process too, so the next launch starts from a clean state.
+        std::process::exit(0);
+    }
 }

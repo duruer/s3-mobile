@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use s3_runtime::{KernelObject, LogLevel, Machine, Registry, ThunkResult};
 
 use crate::audio_music::{ogg_duration_ms, MusicEvent, MusicPlayer};
+use s3_runtime::audio::AudioStreams;
 
 /// DLL name as registered.
 pub const DLL: &str = "winmm.dll";
@@ -264,8 +265,6 @@ struct MciState {
     num_tracks: Option<u32>,
     external_mixer: bool,
     service_added: bool,
-    produced_frames: u64,
-    clock_start: Option<u64>,
     resolver_set: bool,
 }
 
@@ -293,6 +292,10 @@ fn ensure_music(m: &mut Machine) {
         let mut s = st.borrow_mut();
         s.player.set_resolver(Box::new(resolver));
         s.resolver_set = true;
+        // Debug/test knob: S3_MUSIC_VOLUME=0..1 overrides the default CD music volume (0 isolates effects).
+        if let Some(v) = std::env::var("S3_MUSIC_VOLUME").ok().and_then(|v| v.parse::<f32>().ok()) {
+            s.player.volume = v.clamp(0.0, 1.0);
+        }
         if s.num_tracks.is_none() {
             let mut max = 1;
             for n in 2..100 {
@@ -332,36 +335,44 @@ pub fn set_music_volume(m: &mut Machine, v: f32) {
 }
 
 const OUT_RATE: u32 = 44100;
-const LEAD_MS: u64 = 150;
+/// Music kept queued ahead in the shared mixer stream (more than the mixer's 250 ms max catch-up chunk).
+const LEAD_MS: u64 = 300;
+/// Id of the CD music stream in `s3_runtime::audio::AudioStreams` ("CDDA").
+pub const MUSIC_STREAM_ID: u32 = 0x4344_4441;
 
-/// Standalone music output, paced by the wall clock (keeps ~150 ms queued).
+/// Drop music that is queued but not yet mixed (stop / new play), so the old track does not linger.
+fn flush_music_stream(m: &mut Machine) {
+    m.state::<AudioStreams>().borrow_mut().streams.remove(&MUSIC_STREAM_ID);
+}
+
+/// Music producer: decodes ahead into the `AudioStreams` entry [`MUSIC_STREAM_ID`] (44100 Hz stereo, ~LEAD_MS
+/// queued); the DirectSound mixer (s3-dx, the only `Host::queue_audio` producer) mixes it with the effects.
+/// Earlier versions queued to `Host::queue_audio` directly, which interleaved music blocks *between* the
+/// mixer's blocks (two producers -> twice as much audio as wall time, effects and music not overlapped).
 fn music_service(m: &mut Machine) {
-    let now = m.now_ms();
     let st = mci(m);
-    let frames = {
-        let mut s = st.borrow_mut();
+    {
+        let s = st.borrow_mut();
         if s.external_mixer || !s.player.is_playing() {
-            s.clock_start = None;
             return;
         }
-        if s.clock_start.is_none() {
-            s.clock_start = Some(now);
-            s.produced_frames = 0;
-        }
-        let start = s.clock_start.unwrap();
-        let target = (now - start + LEAD_MS) * OUT_RATE as u64 / 1000;
-        let n = target.saturating_sub(s.produced_frames).min(OUT_RATE as u64 / 2);
-        s.produced_frames += n;
-        n as usize
-    };
-    if frames < 256 {
-        // Give back the frames we did not produce this time.
-        st.borrow_mut().produced_frames -= frames as u64;
+    }
+    let streams = m.state::<AudioStreams>();
+    let queued = streams.borrow_mut().streams.get(&MUSIC_STREAM_ID).map_or(0, |s| s.queued_frames());
+    let want = (LEAD_MS * OUT_RATE as u64 / 1000) as usize;
+    if queued + 512 > want {
         return;
     }
+    let frames = want - queued;
     let mut buf = vec![0i16; frames * 2];
     mix_music(m, &mut buf, OUT_RATE, 2);
-    m.host.queue_audio(&buf, OUT_RATE, 2);
+    let mut ex = streams.borrow_mut();
+    let e = ex.streams.entry(MUSIC_STREAM_ID).or_default();
+    e.rate = OUT_RATE;
+    e.channels = 2;
+    e.gain = 1.0;
+    e.gain_set = true;
+    e.samples.extend(buf);
 }
 
 /// End the current play: post MM_MCINOTIFY(code) if the play asked for notification.
@@ -402,6 +413,7 @@ fn close_device(m: &mut Machine, id: u32) -> u32 {
     let playing = mci(m).borrow_mut().playing_dev == Some(id);
     if playing {
         mci(m).borrow_mut().player.stop();
+        flush_music_stream(m);
         finish_play(m, MCI_NOTIFY_ABORTED);
     }
     if mci(m).borrow_mut().devices.remove(&id).is_some() {
@@ -446,6 +458,7 @@ fn play(m: &mut Machine, dev: u32, from: Option<u32>, to: Option<u32>, notify: O
         return MCIERR_OUTOFRANGE;
     }
     let now = m.now_ms();
+    flush_music_stream(m);
     let r = mci(m).borrow_mut().player.play(from_t, to_t, now);
     match r {
         Ok(()) => {
@@ -453,7 +466,6 @@ fn play(m: &mut Machine, dev: u32, from: Option<u32>, to: Option<u32>, notify: O
             let st = mci(m);
             let mut s = st.borrow_mut();
             s.playing_dev = Some(dev);
-            s.clock_start = None;
             if let Some(d) = s.devices.get_mut(&dev) {
                 d.notify = notify;
             }
@@ -475,6 +487,7 @@ fn stop(m: &mut Machine, dev: u32) -> u32 {
     let playing = mci(m).borrow_mut().playing_dev == Some(dev);
     if playing {
         mci(m).borrow_mut().player.stop();
+        flush_music_stream(m);
         finish_play(m, MCI_NOTIFY_ABORTED);
     }
     0

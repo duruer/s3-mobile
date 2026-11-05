@@ -464,3 +464,79 @@ fn select_bitmap_into_memory_dc_returns_previous() {
     assert_eq!(api(&mut m, "gdi32.dll", "SelectObject", &[mdc, old]), bmp);
     assert_eq!(api(&mut m, "gdi32.dll", "SelectObject", &[mdc, bmp]), old);
 }
+
+/// A tap (s3run `--inject click`, Android touch) arrives as MouseMove + down + up in one batch. S3's UI needs exactly
+/// WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP at the tap position, in that order, for every tap: one tap = one
+/// button press (the "first OK on the players screen is ignored" report was a miscount, see user32-gdi32.md).
+#[test]
+fn tap_gives_one_press_per_tap() {
+    let (mut m, _d) = direct("tap");
+    let hwnd = make_window(&mut m, 0);
+    let msg = m.mem.alloc(28);
+    while api(&mut m, "user32.dll", "PeekMessageA", &[msg, 0, 0, 0, 1]) != 0 {}
+    let lp = 567 << 16 | 730;
+    for round in 0..2 {
+        m.input.push(HostEvent::MouseMove { x: 730, y: 567 });
+        m.input.push(HostEvent::MouseButton { button: MouseButton::Left, down: true });
+        m.input.push(HostEvent::MouseButton { button: MouseButton::Left, down: false });
+        let mut got = Vec::new();
+        while api(&mut m, "user32.dll", "PeekMessageA", &[msg, 0, 0, 0, 1]) != 0 {
+            got.push((m.mem.read_u32(msg), m.mem.read_u32(msg + 4), m.mem.read_u32(msg + 8), m.mem.read_u32(msg + 12)));
+        }
+        // The second tap repeats at the same spot (as when OK buttons of consecutive screens share a position).
+        assert_eq!(got, vec![(hwnd, 0x200, 0, lp), (hwnd, 0x201, 1, lp), (hwnd, 0x202, 0, lp)], "tap {round}");
+    }
+    // CRT lookups through GetProcAddress (were missing: logged "not declared").
+    let un = cstr(&mut m, "USER32.dll");
+    let hu = api(&mut m, "kernel32.dll", "LoadLibraryA", &[un]);
+    let pn = cstr(&mut m, "GetLastActivePopup");
+    let p = api(&mut m, "kernel32.dll", "GetProcAddress", &[hu, pn]);
+    assert_ne!(p, 0);
+    assert_eq!(m.call_guest(p, &[hwnd]), hwnd);
+    let kn = cstr(&mut m, "KERNEL32.dll");
+    let hk = api(&mut m, "kernel32.dll", "LoadLibraryA", &[kn]);
+    let fname = cstr(&mut m, "IsProcessorFeaturePresent");
+    let ipf = api(&mut m, "kernel32.dll", "GetProcAddress", &[hk, fname]);
+    assert_ne!(ipf, 0);
+    assert_eq!(m.call_guest(ipf, &[0]), 0, "PF_FLOATING_POINT_PRECISION_ERRATA");
+    assert_eq!(m.call_guest(ipf, &[1]), 0, "PF_FLOATING_POINT_EMULATED");
+    assert_eq!(m.call_guest(ipf, &[2]), 1, "PF_COMPARE_EXCHANGE_DOUBLE (CPUID CX8)");
+    assert_eq!(m.call_guest(ipf, &[3]), 0, "no MMX (CPUID has no MMX bit)");
+    assert_eq!(m.call_guest(ipf, &[8]), 1, "PF_RDTSC_INSTRUCTION_AVAILABLE");
+}
+
+/// S3.EXE renders in-game panel text (Save Game / Quit Game, tooltips) with DrawTextA into a 640x480x1 top-down
+/// DIB section (white text on black, OPAQUE) and reads the bits as a mask. 1bpp pixels must be packed MSB first.
+#[test]
+fn draw_text_into_monochrome_dib() {
+    let (mut m, _d) = direct("gdi-1bpp");
+    let bmi = m.mem.alloc(48);
+    m.mem.write_u32(bmi, 40);
+    m.mem.write_u32(bmi + 4, 64);
+    m.mem.write_u32(bmi + 8, (-16i32) as u32);
+    m.mem.write_u16(bmi + 12, 1);
+    m.mem.write_u16(bmi + 14, 1);
+    m.mem.write_u32(bmi + 40, 0); // colour 0 black
+    m.mem.write_u32(bmi + 44, 0xFF_FFFF); // colour 1 white
+    let ppv = m.mem.alloc(4);
+    let hb = api(&mut m, "gdi32.dll", "CreateDIBSection", &[0, bmi, 0, ppv, 0, 0]);
+    assert_ne!(hb, 0);
+    let bits = m.mem.read_u32(ppv);
+    let mdc = api(&mut m, "gdi32.dll", "CreateCompatibleDC", &[0]);
+    api(&mut m, "gdi32.dll", "SelectObject", &[mdc, hb]);
+    api(&mut m, "gdi32.dll", "SetBkMode", &[mdc, 2]);
+    api(&mut m, "gdi32.dll", "SetBkColor", &[mdc, 0]);
+    api(&mut m, "gdi32.dll", "SetTextColor", &[mdc, 0xFF_FFFF]);
+    let rc = m.mem.alloc(16);
+    for (i, v) in [0u32, 0, 64, 16].iter().enumerate() {
+        m.mem.write_u32(rc + 4 * i as u32, *v);
+    }
+    let s = cstr(&mut m, "Save");
+    assert!(api(&mut m, "user32.dll", "DrawTextA", &[mdc, s, 4, rc, 0x15]) > 0);
+    // stride = 8 bytes; some bits set, nothing written past the 16 rows.
+    let set: u32 = (0..8 * 16).map(|i| m.mem.read_u8(bits + i).count_ones()).sum();
+    assert!(set > 20, "text pixels in the mask: {set}");
+    assert!(set < 64 * 16 / 2, "mostly background: {set}");
+    let last_row: u32 = (0..8).map(|i| m.mem.read_u8(bits + 15 * 8 + i).count_ones()).sum();
+    assert_eq!(last_row, 0);
+}

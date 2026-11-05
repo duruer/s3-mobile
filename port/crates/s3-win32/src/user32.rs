@@ -18,6 +18,9 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use s3_runtime::{LogLevel, Machine, MouseButton, Registry, ThunkResult};
+use s3_runtime::cursor::{self, CursorState};
+use s3_runtime::resources::ResId;
+use std::sync::Arc;
 
 use crate::gdi32::{self, Rect};
 
@@ -337,6 +340,7 @@ pub fn register(reg: &mut Registry) {
         ("GetClassNameA", get_class_name_a),
         ("EnumWindows", enum_windows),
         ("GetActiveWindow", get_active_window),
+        ("GetLastActivePopup", get_last_active_popup),
         ("GetForegroundWindow", get_active_window),
         ("SetActiveWindow", set_active_window),
         ("SetForegroundWindow", set_foreground_window),
@@ -1000,6 +1004,12 @@ fn enum_windows(m: &mut Machine) -> ThunkResult {
 fn get_active_window(m: &mut Machine) -> ThunkResult {
     let a = us(m).borrow_mut().active;
     ThunkResult::stdcall(a, 0)
+}
+
+/// `GetLastActivePopup(hwnd)`: we have no owned popups, so the window itself (the CRT's MessageBox helper looks
+/// this up via GetProcAddress).
+fn get_last_active_popup(m: &mut Machine) -> ThunkResult {
+    ThunkResult::stdcall(m.arg_u32(0), 1)
 }
 
 fn set_active_window(m: &mut Machine) -> ThunkResult {
@@ -1845,8 +1855,33 @@ fn res_handle(m: &Machine, name: u32) -> u32 {
     }
 }
 
+/// Decode the cursor image for `(hinst, name)` and remember it under handle `h` (for drawing at present time,
+/// `s3_runtime::cursor`). `hinst == 0` = system cursor (IDC_*): our built-in arrow. A resource that cannot be
+/// found/decoded keeps the handle (the game treats NULL as fatal) but draws nothing.
+fn register_cursor_image(m: &mut Machine, h: u32, hinst: u32, name: u32) {
+    let cs = m.state::<CursorState>();
+    if cs.borrow_mut().images.contains_key(&h) {
+        return;
+    }
+    let img = if hinst == 0 {
+        Some(cursor::builtin_arrow())
+    } else {
+        let id = ResId::from_guest_a(m, name);
+        let img = cursor::load_cursor_resource(m, hinst, &id);
+        if img.is_none() {
+            m.log(LogLevel::Warn, &format!("LoadCursor: cursor {id:?} not found/decodable in module {hinst:#x}"));
+        }
+        img
+    };
+    if let Some(img) = img {
+        cs.borrow_mut().images.insert(h, Arc::new(img));
+    }
+}
+
 fn load_cursor_a(m: &mut Machine) -> ThunkResult {
-    let h = res_handle(m, m.arg_u32(1));
+    let (hinst, name) = (m.arg_u32(0), m.arg_u32(1));
+    let h = res_handle(m, name);
+    register_cursor_image(m, h, hinst, name);
     ThunkResult::stdcall(h, 2)
 }
 
@@ -1857,13 +1892,20 @@ fn load_icon_a(m: &mut Machine) -> ThunkResult {
 
 /// LoadImageA(hinst, name, type, cx, cy, flags)
 fn load_image_a(m: &mut Machine) -> ThunkResult {
-    let h = res_handle(m, m.arg_u32(1)) + 0x4_0000;
+    let (hinst, name, ty, flags) = (m.arg_u32(0), m.arg_u32(1), m.arg_u32(2), m.arg_u32(5));
+    let h = res_handle(m, name) + 0x4_0000;
+    // IMAGE_CURSOR from a resource (LR_LOADFROMFILE = 0x10 not supported).
+    if ty == 2 && flags & 0x10 == 0 {
+        register_cursor_image(m, h, hinst, name);
+    }
     ThunkResult::stdcall(h, 6)
 }
 
 fn set_cursor(m: &mut Machine) -> ThunkResult {
     let h = m.arg_u32(0);
     let prev = std::mem::replace(&mut us(m).borrow_mut().cursor, h);
+    m.state::<CursorState>().borrow_mut().current = h;
+    m.add_service("cursor", Machine::refresh_cursor);
     ThunkResult::stdcall(prev, 1)
 }
 
@@ -1872,7 +1914,10 @@ fn show_cursor(m: &mut Machine) -> ThunkResult {
     let st = us(m);
     let mut s = st.borrow_mut();
     s.cursor_count += if show { 1 } else { -1 };
-    ThunkResult::stdcall(s.cursor_count as u32, 1)
+    let count = s.cursor_count;
+    drop(s);
+    m.state::<CursorState>().borrow_mut().show_count = count;
+    ThunkResult::stdcall(count as u32, 1)
 }
 
 fn get_cursor_pos(m: &mut Machine) -> ThunkResult {
@@ -1901,6 +1946,7 @@ fn clip_cursor(m: &mut Machine) -> ThunkResult {
     let p = m.arg_u32(0);
     let r = if p == 0 { None } else { Some(Rect::read(m, p)) };
     us(m).borrow_mut().clip = r;
+    m.state::<CursorState>().borrow_mut().clip = r.map(|c| (c.l, c.t, c.r, c.b));
     ThunkResult::stdcall(1, 1)
 }
 
