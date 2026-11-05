@@ -2,7 +2,7 @@
 //! `Off`, `Fps` (game frames per second) or `Detailed` (+ frame time avg / worst, guest MIPS, display rate).
 //!
 //! Counts real guest presents (`Machine::stats.presents`, overlay-only refreshes do not count) and guest
-//! instructions over a 500 ms window. Drawn small in the top-right corner of the *visible* game area
+//! instructions over a 500 ms window. Drawn small in the top-right corner (Mobile HUD: top centre) of the *visible* game area
 //! ([`crate::display::visible_game_rect`], so it stays on screen in `Fill` mode). Presentation only.
 
 use s3_runtime::Machine;
@@ -141,7 +141,9 @@ impl Mod for FpsMod {
         let lh = measure_text(px, Weight::Bold, "0").1.max(1);
         let w = lines.iter().map(|l| measure_text(px, Weight::Bold, l).0).max().unwrap_or(0) + 8;
         let h = lh * lines.len() as i32 + 4;
-        let x = (vx + vw - w - 2).max(vx);
+        // Top right; in the Mobile HUD top centre (its full-screen map "Close" and "Back to HUD" sit top right).
+        let hud = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode == crate::settings::UiMode::MobileHud;
+        let x = if hud { vx + (vw - w) / 2 } else { (vx + vw - w - 2).max(vx) };
         let y = vy + 2;
         c.fill_rect(x, y, w, h, Rgba::rgba(0, 0, 0, 150));
         let color = if !self.stats.have || self.stats.fps >= 55.0 {

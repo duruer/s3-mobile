@@ -19,6 +19,9 @@ pub mod fps; // FPS counter overlay
 pub mod fallback;
 pub mod fast; // native fast paths for hot guest loops (docs/porting/performance.md)
 pub mod fast_blit;
+pub mod fast_land;
+pub mod fast_obj;
+pub mod fast_snap;
 pub mod fast_sprite;
 pub mod gesture;
 pub mod hooks;

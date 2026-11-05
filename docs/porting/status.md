@@ -24,7 +24,7 @@ The **unmodified GOG `S3.EXE` + the user's data** runs in our own host: iced-x86
 | Save (in-game computer menu, slot 1) -> Quit -> Game Statistics -> main menu -> Load Game -> game continues | yes (inject) | yes (taps, verify1) |
 | Text input (Game Setup "Name of the Game") | hardware keys / `text` inject | soft keyboard via letterbox `ABC` button + adb text (verify1) |
 | Back / Esc | Esc in game: no effect (game behaviour) | Back hides the IME; in game harmless; in main menu = Exit Game, app closes |
-| Real arm64 phone | n/a | **not tested yet** (arm64-v8a library is in the APK) |
+| Real arm64 phone (Galaxy Z Fold4 cover screen, 2026-11-05 verify-fps1) | n/a | **works**: GLES presenter 2316x904 full width @120 Hz, in game Classic 1536x600 **60 fps** (cap), HUD 48-60 fps, full-screen map, FPS counter (details below) |
 
 **End-to-end verification 1 (2026-11-05)**, whole flow on both frontends in one session each: desktop
 `scratch/verify1/d1-menu.png` .. `d8-loaded.png` (+ `run3.log`; the WAV was analysed then deleted); Android (both-ABI release APK,
@@ -71,10 +71,11 @@ differential test of the integer ALU against the host CPU.
 | Desktop, loading | 130-165 M instr/s on one guest thread |
 | Desktop, in game | ~48 presents/s (WaitForVerticalBlank paced), render thread 70-85 M + AI ~20 M instr/s, ~60 % of one core |
 | Emulator x86_64, in game | ~30 presents/s at ~95 M instr/s, engine thread ~77-92 % of one core, RSS ~200 MB |
-| APK | 9.6 MB (arm64-v8a + x86_64, stripped, uncompressed .so) |
+| APK | 15 MB (arm64-v8a + x86_64, stripped, uncompressed .so) |
+| **Phone** (Samsung Galaxy Z Fold4 SM-F936B, Snapdragon 8+ Gen 1, cover screen 2316x904, verify-fps1 2026-11-05) | before this workflow ~26 fps at ~100 M instr/s. After perf-cpu only: Classic 1536x600 38-40 fps (250 MIPS). After the verify-fps1 fast paths (`snap_tiles`, `obj_empty`, `land_clean`): **Classic Touch default zoom (1536x600) 60/62/60 fps at the 60 cap**, zoom 1232x480 60 fps (~320 MIPS-equivalent, headroom), zoom 1848x720 42-46 fps; **Mobile HUD** default 48-58 fps (48 with much animated water on screen), 1232x480 60 fps, 1848x720 46-60 fps. Engine thread ~94-99 % of one core at ~2 GHz average clock. Table: [performance.md](performance.md#phone-measurements) |
 
-HYPOTHESIS: a current arm64 phone core is in the same class as the emulator's x86_64 core for this interpreter,
-so expect 25-50 fps; unmeasured. The interpreter is single-threaded (cooperative green threads), so it uses one core.
+The interpreter is single-threaded (cooperative green threads), so it uses one core; the presenter is a second
+thread (~10-14 %).
 
 ## Install on a phone
 
@@ -111,7 +112,7 @@ Full steps: [android.md](android.md#install-for-users-phone). Short version:
 
 Priority order:
 
-1. **Real arm64 phone test**: install, copy files, measure fps / instr/s / battery / thermal.
+1. ~~**Real arm64 phone test**~~: done 2026-11-05 (verify-fps1, numbers above). Open: battery / thermal over a long session; HUD default zoom 48-58 fps (next fast path: the frame renderer's tile loop `0x4b26c0`, 46 % of guest instructions in HUD mode).
 2. ~~**Cursor**~~: done 2026-11-05 (S3.EXE `.rsrc` cursors composed at present time, all frontends; verified on desktop and Android). See [user32-gdi32.md](user32-gdi32.md#cursor-drawing).
 3. ~~**Save/load** on Android, on-screen keyboard~~: both verified on the emulator 2026-11-05 (verify1).
 4. **Audio polish**: listen on a device (music/effects balance: music default 0.6 vs effects at -20 dB set by the game), latency. WAV analysis done (desktop).

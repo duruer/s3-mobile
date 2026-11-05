@@ -118,7 +118,12 @@ The frame cost grows about linearly with the pixel count (landscape blit, sprite
 the game's 800x600 (0.48 M) sits between the first two rows. On the phone (~100 M instructions/s measured) expect
 roughly 0.55x these numbers until the perf-cpu fast paths land: the default 1480x600 is about 13 fps there, 888x360
 about 25 fps. So on the phone the default level should probably be lower (e.g. level 3 = 1184x480); left at 6 until
-measured in the Verify phase. A zoom step itself costs one skipped frame (fast path); a mode set (game start, aspect
+measured in the Verify phase.
+
+**Measured on the phone (verify-fps1, 2026-11-05)**: the window is now the full 2316x904 (cutout area used), so the
+levels are 1536x600 (6, default), 1232x480 (3), 1848x720 (9). With the new fast paths Classic Touch holds 60 fps at
+the default, HUD 48-60; 1848x720 42-60 depending on the view. Default kept at 6. Table:
+[performance.md](performance.md#phone-measurements). A zoom step itself costs one skipped frame (fast path); a mode set (game start, aspect
 change) about 1-2 s on the desktop (display re-setup).
 
 ## Verified (desktop, screenshots in `scratch/res-zoom/`, local only)

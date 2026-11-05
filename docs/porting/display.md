@@ -51,7 +51,8 @@ Missing fields use the defaults (old files keep loading).
 
 A mod (`FpsMod`, installed last so it draws on top of the HUD) that counts **real guest presents**
 (`Machine::stats.presents`; overlay-only refreshes are not counted) and guest instructions over 500 ms windows.
-Drawn small in the top-right corner of the visible game area (Bold 11 px, dark backdrop; green ≥ 55 fps, yellow
+Drawn small in the top-right corner of the visible game area (in the Mobile HUD at the top centre, since
+2026-11-05 verify-fps1: top right it covered the full-screen map's "Close" and the "Back to HUD" button) (Bold 11 px, dark backdrop; green ≥ 55 fps, yellow
 ≥ 30, red below). `Fps`: "60 fps". `Detailed`: + "16.7 ms (max 33)" frame time avg/worst, "100 MIPS", and on Android
 "disp 120/120 Hz" = presenter swaps per second / panel refresh rate. Toggles: settings JSON, `s3run --fps`, and the
 UI modes' menus (they call `display::cycle_fps`).
@@ -88,9 +89,14 @@ Touch mapping (`android.rs`): `Shared::viewport` (written by the render thread) 
 buttons via `overlay::hit_vp`. The engine thread forwards the viewport and display rates to the mods once per slice
 (`frontend.rs` `sync_display`) and pushes the display settings to the presenter (`Shared::set_display`).
 
-Measured cost: HYPOTHESIS until the Verify phase on the phone — the upload of 800x600 RGB565 (0.96 MB) per frame and a
-single quad are far below 1 ms on a Snapdragon 8+ Gen 1 GPU; the old path's `ANativeWindow_lock` + memcpy cost was
-similar, so the FPS gain comes from the engine side (perf-cpu agent), not from the presenter. The presenter's job is
+Measured on the phone (verify-fps1, 2026-11-05, Galaxy Z Fold4 cover screen): logcat `display: modes
+[8:904x2316@120 9:...@96 10:...@60 ...] -> Some((8, 120))`, `present: GLES surface 2316x904 (window 2316x904)` (the
+full panel width now, was 2229), `ANativeWindow_setFrameRateWithChangeStrategy(120) -> 0`; detailed counter
+"disp 60/120 Hz" at 60 game fps. The `s3-present` thread uses ~10-14 % of one core (top) and 6.6 % of the process
+cycles (simpleperf), the engine thread never waits for it. Native wide on the cover screen gives 1536x600 at the
+default zoom (aspect 2316/904); HUD and Classic both fill the whole screen; Back closes the HUD full-screen map.
+fps per mode and zoom: [performance.md](performance.md#phone-measurements). The FPS gain comes from the engine side
+(perf-cpu + verify-fps1 fast paths), not from the presenter. The presenter's job is
 to not get in the way: no blocking of the engine thread, vsync-paced swaps at the panel's high refresh rate.
 
 ## Desktop `s3run`

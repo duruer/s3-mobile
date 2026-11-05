@@ -9,7 +9,7 @@
 use s3_cpu::{NativeBlock, NativeBlocks};
 use s3_runtime::{LogLevel, Machine};
 
-use crate::{fast_blit, fast_sprite};
+use crate::{fast_blit, fast_land, fast_obj, fast_snap, fast_sprite};
 
 /// All fast paths for the GOG exe: (start, end, block).
 pub fn gog_blocks() -> Vec<(u32, u32, NativeBlock)> {
@@ -21,6 +21,9 @@ pub fn gog_blocks() -> Vec<(u32, u32, NativeBlock)> {
         nb("palette_row", fast_blit::PAL_START, fast_blit::PAL_EXIT, fast_blit::PAL_HASH, fast_blit::palette_row),
         nb("darken", fast_blit::DARK_START, fast_blit::DARK_EXIT, fast_blit::DARK_HASH, fast_blit::darken),
         nb("dither", fast_blit::DITHER_START, fast_blit::DITHER_EXIT, fast_blit::DITHER_HASH, fast_blit::dither),
+        nb("obj_empty", fast_obj::START, fast_obj::END, fast_obj::HASH, fast_obj::obj_empty),
+        nb("land_clean", fast_land::START, fast_land::END, fast_land::HASH, fast_land::land_clean),
+        nb("snap_tiles", fast_snap::START, fast_snap::EXIT, fast_snap::HASH, fast_snap::snap_tiles),
     ]
 }
 

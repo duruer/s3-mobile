@@ -17,10 +17,40 @@ Default settings with the custom resolution mod (800x600 in game) run at 53-55 f
 (`scratch/perf/def4.png`). Numbers are noisy (other agents build on the same PC, random map per s3run run); the
 `s3det` wall time over a fixed deterministic workload is the most reliable comparison.
 
-**Phone (HYPOTHESIS, to be measured in the Verify phase)**: before ~26 fps at ~100 M instr/s. The changes are
-architecture independent (fewer host instructions per guest instruction: callgrind Ir of the benchmark 12.07 G ->
-8.69 G; fewer guest instructions per frame from the fast paths), so expect roughly 2-2.4x: **~55-65 fps at
-640x480**, less at larger custom resolutions (the draw thread's work grows with the pixels and tiles on screen).
+**Phone: measured 2026-11-05 (verify-fps1), see [Phone measurements](#phone-measurements)**: perf-cpu alone gave
+~2.5x guest MIPS (100 -> 250) but the phone's default wide size 1536x600 needs ~6.5 M guest instructions per frame
+(~10 000 snapshot tiles), so it ran 38-40 fps; three more fast paths over the per-tile loops (below) brought Classic
+Touch to the 60 cap.
+
+### Phone measurements
+
+Samsung Galaxy Z Fold4 (SM-F936B, Snapdragon 8+ Gen 1, Android 14), cover screen 2316x904 @120 Hz, display mode
+Native wide, cap 60, random map 384, readings of the detailed FPS counter (3 samples 3 s apart; "MIPS" counts a
+native fast path as the guest instructions it stands for). Screenshots `scratch/vfps/phone/` (local only).
+
+| Build | UI mode | Render size (zoom level) | fps | MIPS |
+| --- | --- | --- | --- | --- |
+| before the workflow | HUD | 800x600-ish | ~26 | ~100 |
+| perf-cpu | HUD | 1536x600 (6, default) | 36 | 250 |
+| perf-cpu | Classic | 1536x600 (6) / ~1440x560 (5) / 1336x520 (4) | 38-40 / 40 / 44 | 250 |
+| perf-cpu | Classic, Fit 4:3 | ~693x520 | 60 (cap) | 200 |
+| + `snap_tiles` + `obj_empty` (v1) | Classic | 1536x600 (6) | 54-56 | 353-365 |
+| + `land_clean` + `obj_empty` v2 | **Classic** | **1536x600 (6, default)** | **60 / 62 / 60** | 412-419 |
+| same | Classic | 1232x480 (3) | 60 / 60 / 60 | ~320 (headroom) |
+| same | Classic | 1848x720 (9) | 42 / 46 / 42 | 392-420 |
+| same | HUD | 1536x600 (6, default) | 58 / 56 / 48 (48: lots of animated water) | 376-449 |
+| same | HUD | 1232x480 (3) | 60 / 60 / 60 | ~322 |
+| same | HUD | 1848x720 (9) | 58 / 60 / 46 | 438-509 |
+
+Notes: the engine thread is 94-99 % of one core; simpleperf (`su`, 8 s, 4 kHz) shows it at ~2 GHz average clock
+(the governor does not hold the prime core's 3.19 GHz; pinning the thread to cpu7 with `taskset` gave only ~5 %),
+92 % of the process cycles in `s3-engine` (interpreter `run_with` + handlers; `to_framebuffer_into` 3.7 %, libc
+5 %), 6.6 % in `s3-present`. Water and other animated landscape make triangles dirty every frame (`land_clean`
+declines them), which is why the fps depends on the map view.
+
+Desktop at the phone aspect (`s3run --headless --display native --window 2316x904 --fps full`, `S3_FPS_CAP=0`):
+Classic 35 fps (perf-cpu, under the profiler) -> 43-45 (`snap_tiles`) -> **70-72** (all), HUD 62-64.
+`s3det` 90 000 vms wall time 55.9 s -> 41.4 s.
 
 ## What limits fps
 
@@ -109,6 +139,9 @@ or when its writes overlap what it reads.
 | `palette_row` | `0x5fc93d..0x5fc952` | 8-bit -> 16-bit through a palette (`0x5fc860`) | 8/pixel |
 | `darken` | `0x5fd0ea..0x5fd0ff` | `[eax] = ([eax] >> 1) & [0x7e8dec]` per dword | 8/dword |
 | `dither` | `0x5fd096..0x5fd0ae` | checkerboard shadow in `0x5fd080` | 8 or 9/pixel |
+| `snap_tiles` | `0x522219..0x52303e` | logic thread, render snapshot fill (`0x51f110`): copy one map tile into its snapshot cell per iteration (`fast_snap.rs`). Common path only: tile inside the map, `[gd+0x2d284] != 1`, not the special row `[gd+0x2d2e4]`, byte +0xb != `[gd+0x2d300]`, light byte with equal 3-bit fields and bit 7 clear, no object words, no flag 0x20; else stops at the loop head before that tile | 133/tile |
+| `obj_empty` | `0x4d3050..0x4d5a4f` (+ setter `0x5fc540`, hash-checked at each call) | draw thread, per-tile object drawer called by `0x4b26c0` for every tile: the whole call (prologue, four setter calls, type-compare chain, epilogue, `ret 0x18`) for object type 0 when nothing is drawn (`fast_obj.rs`) | 110-116/call |
+| `land_clean` | `0x54ce53..0x54e712` | draw thread, landscape pass `0x54cbd0`: triangle loop for clean triangles (no dirty corner bit, flags `[ebp-0x68]/[ebp-0xe4]/[ebp-0xe8]` != 1) - corner heights, min y into `[ebp-0x34]`, phase flip (`fast_land.rs`) | 60-66/triangle |
 
 **Verification**
 - Differential unit test `cargo test -p s3-mods fast_tests` (needs the local S3.EXE; skipped otherwise): maps the
@@ -120,6 +153,15 @@ or when its writes overlap what it reads.
   default: identical per-second memory/CPU hashes and instruction counts (`scratch/perf/det5`).
 - The interpreter rework itself: `s3det` old CPU vs new CPU on the same code: identical for 90 000 vms
   (`insns=11897551127`, `scratch/perf/det3`).
+
+verify-fps1 (2026-11-05) added `snap_tiles`, `obj_empty`, `land_clean`: each has a differential test against the real
+exe (`differential_snap_tiles`, `differential_obj_empty`, `differential_land_clean`: random cells / frames /
+budgets, compare registers, EFLAGS, EIP and memory); `s3det` 90 000 vms with all fast paths vs `S3_FAST=0`:
+IDENTICAL (`insns=11817005518`, `scratch/vfps/det`); live two-instance MP with zoom pinches: IDENTICAL
+(`scratch/vfps/mp`). Profile after them (HUD, 2316x904): `0x4b26c0` frame renderer tile loop **46 %** (~98
+instructions per tile, branchy: ambient-sound statistics, tree/decoration checks, three call sites of `0x4d3050`),
+`0x5fd080`/`0x5fd120` shadow sprites 17 %, `0x4d3050` (non-empty tiles) 7 %, `0x5fc860` 4.5 %. The frame renderer
+loop is the next target for the HUD default to hold 60.
 
 Ideas for more fast paths: the masked (fog) sprite loop `0x5fc41a..0x5fc4af`, the run loop of `0x5fd120`
 (calls through `[0x7e8e20]`), `0x5fc540` (could be inlined at its call sites as a superinstruction).
@@ -142,5 +184,8 @@ Ideas for more fast paths: the masked (fog) sprite loop `0x5fc41a..0x5fc4af`, th
 
 - Multi-core: all guest threads share one host core. Running the draw thread on its own host thread would give
   the logic thread (and audio) a core of their own, but the machine (HLE state, memory) is single-threaded today.
-- Measure on the phone (Verify phase): `S3_SAMPLE`-like fps/instr/s logging exists on Android via the FPS counter
-  (display agent).
+- ~~Measure on the phone~~: done (verify-fps1, table above). Phone profiling recipe: `adb shell su -c "simpleperf
+  record -p PID -f 4000 --duration 8 -o /data/local/tmp/s3perf.data"`, pull, `simpleperf report --sort
+  vaddr_in_file` (NDK `simpleperf/bin/linux/x86_64`) and symbolize the addresses with `llvm-symbolizer
+  --obj=port/target/aarch64-linux-android/release/libs3android.so` (the .so in the APK is stripped).
+- Next fast path: the `0x4b26c0` tile loop (HUD default 48-58 fps on the phone).

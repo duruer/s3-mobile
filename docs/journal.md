@@ -2,6 +2,106 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-05 — fps, zoom, full screen, HUD (workflow)
+
+User feedback (workflow wf_a446e364-b12): minimum 60 fps (was ~26 on the phone, ~30 emulator, ~48 desktop), an FPS
+counter setting, full-screen display like Settlers United, the game's own left panel hidden in the Mobile HUD, a
+full-screen map on minimap tap, in-game zoom in both UI modes. Result on the real phone (Galaxy Z Fold4 cover screen):
+Classic Touch 60 fps at the default zoom (cap), Mobile HUD 48-58 fps, full width 2316x904 @120 Hz, pinch zoom,
+full-screen map. Docs: [performance](porting/performance.md), [display](porting/display.md),
+[resolution-zoom](porting/resolution-zoom.md), [ui-hud](porting/ui-hud.md), [status](porting/status.md).
+
+### perf-cpu [done]
+- S3 has no fps cap besides one `WaitForVerticalBlank` per frame; the logic thread is a separate 64 ms timer. Our
+  60 Hz vblank grid turned >16.7 ms frames into 30 fps -> replaced by a frame limiter (`ddraw.rs`, default cap 60,
+  `S3_FPS_CAP`, `set_fps_cap`). Then the draw thread is CPU bound at ~2.5-2.9 M guest instructions per frame (640x480).
+- Guest profile in game (`S3_PROFILE` + REA): `0x51f110` snapshot builder ~19 %, `0x4b26c0` ~17 %, `0x4d3050` ~13 %,
+  `0x54cbd0` ~11 %, blitters `0x5fc350/0x5fd080/0x5fd120/0x5fc860` ~25 %. Map generation (`0x5081a0/0x4da440`,
+  logic thread) takes 10-60 s.
+- s3-cpu: pre-decoded `Op` records (EA forms as const generics), 8/16-bit fast forms, cold fault paths, lazy flags
+  (`Cpu::lk`, `eflags()/set_eflags()`), `cond_fast` jcc, block chaining, codegen-units=1. bench_mips 178 -> ~285;
+  callgrind 12.07G -> 8.69G Ir. s3det 90 000 vms old vs new identical (`insns=11897551127`, `mem=63839f7d8d3d7fb6`),
+  114.9 s -> 66.3 s.
+- Native fast paths: s3-cpu `NativeBlock` (code-hash matched, budget-exact, exact instruction counts),
+  `Machine::set_native_blocks`; s3-mods `fast.rs`/`fast_sprite.rs`/`fast_blit.rs` for `0x5fc4c0` (opaque sprite rows),
+  `0x5fc93d` (palette row), `0x5fd0ea` (darken), `0x5fd096` (dither); `S3_FAST=0` disables. Differential `fast_tests`
+  (real exe, 120 random cases each) caught an EBX bug at budget stops in dither (fixed). s3det fast on/off identical,
+  64.4 s -> 55.9 s.
+- Desktop in game uncapped 33 -> 81 fps at 640x480; 800x600 default 53-55 fps at cap 60.
+- Tools: `S3_SAMPLE fps:/cpu:`, `S3_PROFILE` (+`_FROM_MS`, `.disasm`, `.forms`), `tools/perf_profile.py`,
+  `tools/perf/code_hash.py`. Docs: performance.md (new), cpu.md, directx-hle.md, status.md.
+
+### display [done]
+- New `s3_mods::display`: modes Fit / Fill / Stretch / NativeWide (default), filters Nearest / Linear / SharpBilinear
+  (default), FPS counter Off / Fps / Detailed; saved in `mods-settings.json` under `display`. The `Viewport` is the only
+  screen<->game transform (Machine helpers `viewport`, `visible_game_rect`, `set_display`, `cycle_mode/filter/fps`, ...);
+  CPU scaler `scale_to_xrgb` for desktop/fallback. New `fps.rs` (`FpsMod`, real presents + guest instructions per
+  500 ms, installed last so it draws over the UI modes).
+- Android: render thread `s3-present` (`present.rs`, EGL/GLES2 via own FFI `gl.rs`): RGB565 texture + one quad, sharp
+  bilinear in the fragment shader, swap interval 1, only new frames drawn; high refresh via
+  `ANativeWindow_setFrameRate[WithChangeStrategy]` (dlsym); JNI `display_prefs` picks the highest-refresh mode and
+  cutout mode ALWAYS. Engine present only copies + signals; window loss waits for EGL surface destroy; EGL failure
+  falls back to the CPU letterbox. s3-mods is now a non-optional dependency of s3-android.
+- s3run: `--display`, `--filter`, `--fps`, `--window WxH` (resizable, mouse mapped through the Viewport; headless
+  publishes a simulated viewport). Classic UI: Screen and FPS menu toggles; floating buttons and ✕ anchored to the
+  visible rect.
+- Tests: s3-mods 55, s3-android 25, s3-desktop 8 pass; arm64 APK builds (NEEDED libEGL, libGLESv2); headless in game
+  in both modes at `--window 2229x904 --display fill --fps`. Docs: display.md (new), android.md, mods.md, ui-classic.md.
+
+### res-zoom [done]
+- RE: visible tiles are copied into a render snapshot (`[logic+0x3d0]`, new(0xc7720)): 130x130 grid at +0x500,
+  0x30 bytes/tile, index row+col*130. Sheared rows need cols+rows/2 columns (1024x768 used 126 of 130). Patch moves
+  the fields behind the grid (+0xc65c0..0xc7720) at 51 code sites plus the allocation size -> 256 columns; the row
+  stride stays, so height <= 780.
+- F1-F3: `[0x7dfd44]` = request; key handler releases semaphore `[0x7a800c]` (0x525b5b), the logic thread's ack waits
+  on it (0x53db80). Mode set: 0x42ce90 posts 0x804, 0x405c80 calls SetDisplayMode, display setup 0x42e430 reruns and
+  caches the view rect in the landscape object (+0x58/+0x5c/+0x74..+0x80) -> cause of the HUD black band after F1-F3;
+  fixed by re-syncing every frame and redrawing on a snapshot of the new size.
+- Code: s3-mods `res.rs`, `zoom.rs`; s3-dx SetDisplayMode up to 4096 + flag `DDSDM_PORT_LOGICAL` (crop the presented
+  frame without recreating surfaces); settings `res` section; pinch calls zoom; Classic menu Zoom in/out.
+- Verified on desktop: HUD at phone aspect 888x360..1920x780, Classic 4:3 800..1040 wide, save/load round trip, zoom
+  off + HUD + F2 without black band, two-peer MP with different zooms IDENTICAL (1194 and 921 ticks). Desktop fps:
+  888x360 46, 1480x600 ~24, 1920x780 16 (before verify-fps1's fast paths).
+- Docs: resolution-zoom.md (new), game-state-ui.md "Resolution internals", directx-hle.md, mods.md, touch.md,
+  ui-hud.md; tool `tools/res-zoom/snap_sites.py`.
+
+### hud-polish [done]
+- RE (frame renderer 0x4b26c0): the minimap is a square RGB565 image mw x mw (mw = `[0x730f28]`) at `[snap+0x4c]`
+  (snap = argument of 0x4b26c0 and of the panel renderer 0x4b4d00); column/row = tile * mw / W; drawn sheared
+  x = mx + (mw-r-1)/2 + c, y = my + r. Block 0x4b2b34..0x4b2ce5 copies it incrementally in 64 chunks (counters
+  0x7ad4f8); block 0x4b366a..0x4b3cf3 copies the part over the map, draws the frame art (0x40001/0x40003) and the white
+  camera rectangle (gfx+0x5f694/0x5f6a4). Camera rect (0x4b3a3c): k = (mw<<8)/[snap+0x2c]; x = ([s+0x24]+11)k>>8;
+  y = ([s+0x28]+16)k>>8; w = [s+0x30]k>>8; h = ([s+0x34]-40)k>>8.
+- HUD full-screen layout jumps over both blocks (render thread only, no lockstep impact) -> VERIFIED: the game's
+  minimap, frame and camera rect are gone.
+- New `ui_hud_minimap.rs`: bottom-left widget from the guest image; drag pans (gd::CenterOn 0x51b560), tap opens a
+  full-screen map, tap there jumps the camera and closes. `Mod::on_key` (additive); Esc/Back closes sheets. Settings
+  page (display mode/filter/FPS, zoom placeholder via F1-F3, HUD size, full map, UI mode); HUD laid out inside
+  `display::visible_game_rect`; resource strip moved top left. Original layout recorded at the 0x4c6d70 return (custom
+  resolutions work); landscape widening cap 1024 -> 4096. Tests s3-mods 55+1.
+
+### verify-fps1 [done]
+- Desktop: `cargo test --workspace --release` 257 passed, 1 ignored. HUD: minimap tap -> full map, tap jumps camera,
+  settings page, pinch zoom to 1040x780; save/load OK (`scratch/vfps/sl`); two-instance MP with pinches IDENTICAL
+  (`scratch/vfps/mp`).
+- Phone display: GLES surface 2316x904, `setFrameRate(120)` = 0, mode 904x2316@120; Native wide = 1536x600 at default
+  zoom. With perf-cpu only: HUD 36 fps, Classic 38-40 fps at 250 MIPS (CPU bound).
+- New fast paths (s3-mods, each with a differential test vs the real exe): `fast_snap` (`snap_tiles`,
+  `0x522219..0x52303e`, 133 insns/tile), `fast_obj` (`obj_empty`, whole `0x4d3050` call for empty tiles, 110-116
+  insns, setter `0x5fc540` hash-checked), `fast_land` (`land_clean`, `0x54ce53` loop for clean triangles). s3det all
+  fast vs `S3_FAST=0` IDENTICAL (`insns=11817005518`), 55.9 s -> 41.4 s; desktop 2316x904 uncapped 35 -> 71 fps.
+- Phone after: Classic default 60/62/60 fps (cap), 1232x480 60, 1848x720 42-46; HUD default 48-58, 1232x480 60,
+  1848x720 46-60. simpleperf: engine thread ~2 GHz avg, 92 % of cycles in s3-engine, 6.6 % presenter; pinning to cpu7
+  ~5 % only.
+- Fix: FPS counter in the HUD draws at the top centre (top right covered the full-map "Close"). Phone: full map
+  opens, Close visible, Back closes, minimap drag pans.
+- Remaining hotspot in HUD mode: the `0x4b26c0` tile loop, 46 % of instructions.
+
+### wrap-up [done]
+- Docs consistency: ui-hud.md (FPS counter position, Settings zoom +/- still the F1-F3 placeholder); AGENTS.md map
+  already lists display, performance, resolution-zoom. Open: HUD Settings Zoom -/+ should call `zoom::zoom_in/out`;
+  HUD default zoom below 60 fps on the phone; battery/thermal over a long session not measured.
+
 ## 2026-11-06 — mobile UX + online (workflow)
 
 Result: the game is now touch-native and online-capable without modifying S3.EXE: in-memory hooks keyed by the

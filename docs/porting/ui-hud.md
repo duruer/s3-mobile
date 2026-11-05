@@ -14,7 +14,8 @@ Code (`port/crates/s3-mods/src`): `ui_hud.rs` (the `MobileHud` mod: layout, draw
 
 **2026-11-05 (hud-polish)**, screenshots `scratch/hud-polish/` (local): the game's own minimap, its frame art and its
 white camera rectangle are gone in full-screen layout (nothing of the left panel is drawn any more); the resource
-strip moved to the **top left** (the FPS counter, `fps.rs`, uses the top right); our **minimap widget** sits bottom
+strip moved to the **top left** (the FPS counter, `fps.rs`, draws at the top centre in this mode since verify-fps1;
+at the top right it covered the full-map "Close" button); our **minimap widget** sits bottom
 left above the bar (dark card, the game's minimap image in the same sheared shape, white camera rectangle, an orange
 corner mark hinting "expand"). Drag on it = pan (camera follows the finger), tap = **full-screen map** (whole map
 scaled to the visible screen, camera rectangle, "Close" button, Android Back / Esc closes; tap a point = camera
@@ -112,8 +113,8 @@ Up without a drag opens the overlay. Overlay tap inside the map's bounding box -
 ### Settings and zoom
 
 Display entries call `crate::display::{cycle_mode, cycle_filter, cycle_fps}` (display agent, docs/porting/display.md).
-VERIFIED: "FPS counter: FPS" turned the counter on (top right) and was saved in `mods-settings.json`.
-Zoom - / + is a placeholder until res-zoom's API exists (`ui_hud::zoom_step` / `zoom_label`): it sends F1..F3 like
+VERIFIED: "FPS counter: FPS" turned the counter on (then top right; top centre since verify-fps1) and was saved in `mods-settings.json`.
+Zoom - / + is still a placeholder (open as of 2026-11-05 wrap-up; pinch already uses res-zoom's `zoom.rs`) (`ui_hud::zoom_step` / `zoom_label`): it sends F1..F3 like
 the pinch in touch.rs (`touch_logic::pinch_zoom_key`) and shows the game resolution as the level. Known issue: the
 runtime F1-F3 switch in HUD mode shows a black band (below) — res-zoom's zoom replaces this.
 
