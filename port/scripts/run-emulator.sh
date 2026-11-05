@@ -24,7 +24,7 @@ ROOT="$(cd "$PORT_DIR/.." && pwd)"
 SDK="${ANDROID_HOME:-$HOME/Android/Sdk}"
 AVD=s3_api35
 CONSOLE_PORT=5610
-SERIAL="emulator-$CONSOLE_PORT"
+SERIAL="${ADB_SERIAL:-emulator-$CONSOLE_PORT}"   # ADB_SERIAL=<ip:port> targets a real phone
 PKG=com.settlers3port.app
 APK="$PORT_DIR/target/apk/settlers3port.apk"
 GAME_DIR="${GAME_DIR:-$ROOT/game-files/gog-s3-ultimate}"
@@ -101,10 +101,21 @@ push() {
   $ADB shell mkdir -p "$DEV_GAME/GFX" "$DEV_GAME/Map"
   for i in "${items[@]}"; do $ADB push -q "$GAME_DIR/$i" "$DEV_GAME/$i" >/dev/null; done
   for f in "${gfx[@]}"; do $ADB push -q "$GAME_DIR/GFX/$f" "$DEV_GAME/GFX/$f" >/dev/null; done
+  # Real phones (e.g. Samsung, Android 14) refuse `adb push` creating directories under Android/data
+  # ("secure_mkdirs() failed: Operation not permitted"), but `adb shell mkdir` works. So create every
+  # directory first, then push file by file; files already present with the same size are skipped.
   for d in "${dirs[@]}"; do
     echo "   $d"
-    $ADB shell mkdir -p "$DEV_GAME/$(dirname "$d")"
-    $ADB push -q "$GAME_DIR/$d" "$DEV_GAME/$(dirname "$d")/" >/dev/null
+    local mk=()
+    while IFS= read -r sub; do mk+=("'$DEV_GAME/$sub'"); done < <(cd "$GAME_DIR" && find "$d" -type d)
+    $ADB shell "mkdir -p ${mk[*]}" </dev/null
+    while IFS= read -r f; do
+      local want have
+      want=$(stat -c %s "$GAME_DIR/$f")
+      have=$($ADB shell "stat -c %s '$DEV_GAME/$f' 2>/dev/null" </dev/null | tr -d '\r')
+      [ "$want" = "$have" ] && continue
+      $ADB push -q "$GAME_DIR/$f" "$DEV_GAME/$f" >/dev/null </dev/null
+    done < <(cd "$GAME_DIR" && find "$d" -type f)
   done
   $ADB shell du -sh "$DEV_GAME"
 }

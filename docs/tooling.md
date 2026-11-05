@@ -47,3 +47,14 @@ REA also has adb tools (`list_adb_devices`, `install_adb_package`, `capture_adb_
 ## Build tools
 
 cmake, ninja, Java (system), Rust via rustup, bun. Frida is **not** installed.
+
+## Real test phone (2026-11-05)
+
+- **Samsung Galaxy Z Fold4 (SM-F936B)**, Android 14, arm64-v8a, **rooted** (user-confirmed). Reached over wireless adb
+  (`adb devices` shows e.g. `10.0.0.50:<port>`; the port changes when wireless debugging is restarted).
+- Install and push files: `ADB_SERIAL=<ip:port> port/scripts/run-emulator.sh install push launch`.
+  Samsung/Android 14 refuses directories created by `adb push` under `Android/data` (`secure_mkdirs() failed`);
+  the script creates them with `adb shell mkdir -p` first.
+- Root is for debugging only (e.g. `su -c simpleperf`, reading other app dirs). Do not depend on it for normal installs.
+  Ask the user before changing system settings with root.
+- The cover screen is narrow and portrait (904x2229). Test on the inner screen (unfolded) or in landscape.
