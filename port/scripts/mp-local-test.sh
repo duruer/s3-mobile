@@ -7,7 +7,9 @@
 #        GAME_DIR, HOST_EXTRA / JOIN_EXTRA (extra inject items, ';'-separated, times in ms), HASH_EVERY (ticks),
 #        MAP=artokia (default: multi-player map "384-2-Artokia", loads in a few seconds) | random (random 384 map;
 #        its start-position search can take 30-100 s, during which both peers show "Initiating player2player
-#        communication" and wait for each other)
+#        communication" and wait for each other),
+#        HOST_MT / JOIN_MT=1 (run that peer in the multi-core mode, docs/porting/multicore.md),
+#        PYTHON (default python3)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${1:-$ROOT/scratch/mp-test}"
@@ -40,17 +42,17 @@ for t in $(seq 40 20 "$SECS"); do
   JOIN="$JOIN;$((t*1000)):shot $OUT/join-$t.png"
 done
 
-S3_NET_NAME=host "$S3RUN" --headless --game-dir "$GAME_DIR" --data-dir "$OUT/host-data" --max-seconds "$SECS" \
+S3_MT="${HOST_MT:-}" S3_NET_NAME=host "$S3RUN" --headless --game-dir "$GAME_DIR" --data-dir "$OUT/host-data" --max-seconds "$SECS" \
   --mp-hash "$OUT/host.hash" --mp-hash-every "$HASH_EVERY" --inject "$HOST" >"$OUT/host.log" 2>&1 &
 H=$!
-S3_NET_NAME=join "$S3RUN" --headless --game-dir "$GAME_DIR" --data-dir "$OUT/join-data" --max-seconds "$SECS" \
+S3_MT="${JOIN_MT:-}" S3_NET_NAME=join "$S3RUN" --headless --game-dir "$GAME_DIR" --data-dir "$OUT/join-data" --max-seconds "$SECS" \
   --mp-hash "$OUT/join.hash" --mp-hash-every "$HASH_EVERY" --inject "$JOIN" >"$OUT/join.log" 2>&1 &
 J=$!
 wait $H $J || true
 grep -h "dplay:" "$OUT/host.log" | sed 's/^/host: /' | head -40 || true
 grep -h "dplay:" "$OUT/join.log" | sed 's/^/join: /' | head -40 || true
 if [ -s "$OUT/host.hash" ] && [ -s "$OUT/join.hash" ]; then
-  python3 -I "$ROOT/tools/mp_hash_compare.py" "$OUT/host.hash" "$OUT/join.hash"
+  "${PYTHON:-python3}" -I "$ROOT/tools/mp_hash_compare.py" "$OUT/host.hash" "$OUT/join.hash"
 else
   echo "no hash files (game did not start?)"
   exit 1

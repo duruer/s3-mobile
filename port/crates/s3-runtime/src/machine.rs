@@ -16,6 +16,10 @@ use crate::input::InputState;
 use crate::registry::{Registry, ThunkResult};
 use crate::vfs::Vfs;
 
+/// Debug (env `S3_TIMELINE=<host ms>`): print host-µs timestamps of completed HLE calls for 200 ms from then.
+static TIMELINE_FROM: std::sync::LazyLock<Option<u64>> =
+    std::sync::LazyLock::new(|| std::env::var("S3_TIMELINE").ok().and_then(|v| v.parse().ok()));
+
 /// Default instructions per scheduling quantum.
 pub const DEFAULT_QUANTUM: u64 = 200_000;
 
@@ -77,6 +81,13 @@ pub struct Thread {
     pub cs_granted: bool,
     /// Host-side scheduling priority (SetThreadPriority); informational.
     pub priority: i32,
+    /// Multi-core mode (`mt.rs`): the thread's CPU runs on the draw worker; `cpu` is a placeholder (counters
+    /// mirrored) except while the worker dispatches one of its exits. The main scheduler skips it.
+    pub offloaded: bool,
+    /// Multi-core mode: the main thread runs this CPU outside the big lock right now (`cpu` is a spare).
+    pub running_unlocked: bool,
+    /// Host ns this thread spent in `Cpu::run` (profiling).
+    pub cpu_ns: u64,
 }
 
 /// Why the machine stopped.
@@ -145,6 +156,39 @@ pub struct Stats {
     pub hooks: u64,
     /// Host nanoseconds spent inside the interpreter (`Cpu::run`), for profiling (S3_SAMPLE).
     pub cpu_ns: u64,
+    /// Host-time profile of HLE handlers and hooks (env `S3_HOST_PROF=1`): key = thunk address or hook EIP,
+    /// value = (calls, host ns). `None` = off. Diagnostics only; never changes guest behaviour.
+    pub host_prof: Option<HashMap<u32, (u64, u64)>>,
+    /// Named sections inside handlers (same switch), see [`Stats::host_prof_section`].
+    pub host_prof_named: HashMap<&'static str, (u64, u64)>,
+}
+
+impl Stats {
+    #[inline]
+    pub(crate) fn host_prof_add(&mut self, key: u32, ns: u64) {
+        if let Some(p) = &mut self.host_prof {
+            let e = p.entry(key).or_default();
+            e.0 += 1;
+            e.1 += ns;
+        }
+    }
+
+    /// Start timing a named section when `S3_HOST_PROF` is on (`None` otherwise); finish with
+    /// [`Stats::host_prof_section`].
+    #[inline]
+    pub fn host_prof_start(&self) -> Option<std::time::Instant> {
+        self.host_prof.is_some().then(std::time::Instant::now)
+    }
+
+    /// Add the time since `t0` (from [`Stats::host_prof_start`]) to the named section.
+    #[inline]
+    pub fn host_prof_section(&mut self, name: &'static str, t0: Option<std::time::Instant>) {
+        if let Some(t0) = t0 {
+            let e = self.host_prof_named.entry(name).or_default();
+            e.0 += 1;
+            e.1 += t0.elapsed().as_nanos() as u64;
+        }
+    }
 }
 
 /// Process-wide guest data created by [`Machine::setup_process`].
@@ -219,6 +263,21 @@ pub struct Machine {
     pub(crate) seh_return_thunk: u32,
     next_tid: u32,
     rr: usize,
+    /// Multi-core mode (`mt.rs`); `None` = the default single-host-thread scheduler.
+    pub(crate) mt: Option<Box<crate::mt::MtState>>,
+    /// Debug/analysis hook called before (`false`) and after (`true`) each top-level scheduling turn of a thread
+    /// (`run_thread`), e.g. `s3det --write-trace` (which memory each thread writes). Never changes guest state.
+    pub run_observer: Option<RunObserver>,
+}
+
+/// See [`Machine::run_observer`]: `(machine, thread slot, after)`.
+pub type RunObserver = fn(&mut Machine, usize, bool);
+
+impl Drop for Machine {
+    fn drop(&mut self) {
+        // The draw worker uses the guest mapping: stop it before `mem` is released.
+        self.mt_shutdown();
+    }
 }
 
 impl Machine {
@@ -252,7 +311,10 @@ impl Machine {
             input: InputState::new(),
             process: ProcessInfo::default(),
             trace: TraceConfig::from_env(),
-            stats: Stats::default(),
+            stats: Stats {
+                host_prof: std::env::var_os("S3_HOST_PROF").map(|_| HashMap::new()),
+                ..Stats::default()
+            },
             quantum: DEFAULT_QUANTUM,
             ext: Default::default(),
             services: Vec::new(),
@@ -262,6 +324,8 @@ impl Machine {
             seh_return_thunk,
             next_tid: 0x104,
             rr: 0,
+            mt: None,
+            run_observer: None,
         })
     }
 
@@ -296,6 +360,9 @@ impl Machine {
     /// The current mouse cursor (`crate::cursor::CursorState`) is composed into a host-side copy of `fb`.
     pub fn present(&mut self, fb: &crate::FrameBuffer) {
         self.stats.presents += 1;
+        if self.mt.is_some() {
+            self.mt_note_present();
+        }
         self.present_inner(fb);
     }
 
@@ -304,6 +371,19 @@ impl Machine {
     /// without a copy (perf-r2).
     pub fn present_owned(&mut self, fb: crate::FrameBuffer) -> crate::FrameBuffer {
         self.stats.presents += 1;
+        if self.mt.is_some() {
+            // Multi-core mode: the draw worker only queues the frame; the main host thread composes and presents
+            // it (`mt.rs`), so the overlay/cursor/host work leaves the draw thread's critical path and the lock.
+            if self.threads.get(self.cur).is_some_and(|t| t.offloaded) {
+                return self.mt_defer_present(fb);
+            }
+            self.mt_note_present();
+        }
+        self.present_owned_now(fb)
+    }
+
+    /// The composing part of [`Machine::present_owned`] (overlay, cursor, `Host::present`).
+    pub(crate) fn present_owned_now(&mut self, fb: crate::FrameBuffer) -> crate::FrameBuffer {
         if self.ext.overlay_compose.is_none() {
             self.present_cursor(&fb);
             return fb;
@@ -311,10 +391,15 @@ impl Machine {
         let old = self.ext.last_guest_frame.take().unwrap_or_default();
         self.ext.last_guest_size = (fb.width, fb.height);
         let last = fb;
-        match self.apply_overlay_to(&last) {
+        let t0 = self.stats.host_prof_start();
+        let composed = self.apply_overlay_to(&last);
+        self.stats.host_prof_section("present: overlay copy + compose", t0);
+        let t1 = self.stats.host_prof_start();
+        match composed {
             Some(out) => self.present_cursor_owned(out),
             None => self.present_cursor(&last),
         }
+        self.stats.host_prof_section("present: cursor + Host::present", t1);
         self.ext.last_guest_frame = Some(last);
         old
     }
@@ -388,6 +473,31 @@ impl Machine {
         if !self.services.iter().any(|(n, _)| n == name) {
             self.services.push((name.to_string(), f));
         }
+    }
+
+    /// Human-readable host-time profile (`S3_HOST_PROF=1`): top `n` handlers/hooks/services by host time.
+    pub fn host_prof_report(&self, n: usize) -> String {
+        let Some(p) = &self.stats.host_prof else { return String::new() };
+        let mut v: Vec<_> = p.iter().collect();
+        v.sort_by_key(|(_, (_, ns))| std::cmp::Reverse(*ns));
+        let total: u64 = v.iter().map(|(_, (_, ns))| *ns).sum();
+        let mut s = format!("host time in HLE handlers/hooks/services: {} ms\n", total / 1_000_000);
+        for (k, (calls, ns)) in v.into_iter().take(n) {
+            let name = if (*k as usize) < self.services.len() {
+                format!("service {}", self.services[*k as usize].0)
+            } else if *k >= layout::THUNK_BASE {
+                self.registry.describe(*k)
+            } else {
+                format!("hook {k:#x}")
+            };
+            s.push_str(&format!("  {:>8} ms {:>9} calls  {}\n", ns / 1_000_000, calls, name));
+        }
+        let mut v: Vec<_> = self.stats.host_prof_named.iter().collect();
+        v.sort_by_key(|(_, (_, ns))| std::cmp::Reverse(*ns));
+        for (k, (calls, ns)) in v {
+            s.push_str(&format!("  {:>8} ms {:>9} calls  section {}\n", ns / 1_000_000, calls, k));
+        }
+        s
     }
 
     /// Stop the machine (first reason wins).
@@ -526,6 +636,9 @@ impl Machine {
             wait_cs: 0,
             cs_granted: false,
             priority: 0,
+            offloaded: false,
+            running_unlocked: false,
+            cpu_ns: 0,
         });
         Ok(slot)
     }
@@ -688,12 +801,21 @@ impl Machine {
         if self.stop.is_some() {
             return SliceResult::Stopped;
         }
+        if self.mt.is_some() {
+            self.mt_maintain();
+        }
         for e in self.host.poll_events() {
             self.filter_event(e);
         }
         let services: Vec<Service> = self.services.iter().map(|(_, f)| *f).collect();
-        for s in services {
-            s(self);
+        for (i, s) in services.into_iter().enumerate() {
+            if self.stats.host_prof.is_some() {
+                let t0 = std::time::Instant::now();
+                s(self);
+                self.stats.host_prof_add(i as u32, t0.elapsed().as_nanos() as u64);
+            } else {
+                s(self);
+            }
         }
         let start = self.stats.instructions;
         let mut progressed = false;
@@ -707,11 +829,12 @@ impl Machine {
             for k in 0..n {
                 let slot = (self.rr + k) % n;
                 let t = &self.threads[slot];
-                if matches!(t.state, ThreadState::Exited(_) | ThreadState::Suspended(_)) || t.nested > 0 {
+                if matches!(t.state, ThreadState::Exited(_) | ThreadState::Suspended(_)) || t.nested > 0 || t.offloaded
+                {
                     continue;
                 }
                 let budget = self.quantum.min(max_instructions.saturating_sub(self.stats.instructions - start)).max(1);
-                if self.run_thread(slot, budget) {
+                if self.run_thread_top(slot, budget) {
                     round_progress = true;
                 }
                 if self.stop.is_some() {
@@ -735,17 +858,46 @@ impl Machine {
         }
     }
 
-    /// Run one thread for up to `budget` instructions. Returns true if it made progress.
+    /// Run one thread for up to `budget` instructions (nested scheduling, e.g. from `call_guest`: the big lock of
+    /// the multi-core mode stays held). Returns true if it made progress.
     fn run_thread(&mut self, slot: usize, budget: u64) -> bool {
+        self.run_thread_ex(slot, budget, false)
+    }
+
+    /// Like [`Machine::run_thread`], from the top-level scheduler: with a draw worker running, the guest code
+    /// runs with the big lock released (`mt.rs`).
+    fn run_thread_top(&mut self, slot: usize, budget: u64) -> bool {
+        self.run_thread_ex(slot, budget, true)
+    }
+
+    fn run_thread_ex(&mut self, slot: usize, budget: u64, top: bool) -> bool {
+        if let (true, Some(f)) = (top, self.run_observer) {
+            f(self, slot, false);
+            let r = self.run_thread_inner(slot, budget, top);
+            f(self, slot, true);
+            return r;
+        }
+        self.run_thread_inner(slot, budget, top)
+    }
+
+    fn run_thread_inner(&mut self, slot: usize, budget: u64, top: bool) -> bool {
         self.cur = slot;
         let mut left = budget;
         let mut progress = false;
         loop {
-            let t = &mut self.threads[slot];
-            let before = t.cpu.instructions;
+            let before = self.threads[slot].cpu.instructions;
             let t0 = std::time::Instant::now();
-            let exit = t.cpu.run(&mut self.mem, left);
-            self.stats.cpu_ns += t0.elapsed().as_nanos() as u64;
+            // A blocked thread only re-enters its thunk (no guest code): no need to drop the lock for that.
+            let exit = if top && self.threads[slot].state == ThreadState::Runnable && self.mt_active() {
+                self.run_cpu_unlocked(slot, left)
+            } else {
+                let t = &mut self.threads[slot];
+                t.cpu.run(&mut self.mem, left)
+            };
+            let dt = t0.elapsed().as_nanos() as u64;
+            self.stats.cpu_ns += dt;
+            let t = &mut self.threads[slot];
+            t.cpu_ns += dt;
             let ran = t.cpu.instructions - before;
             self.stats.instructions += ran;
             left = left.saturating_sub(ran);
@@ -795,7 +947,11 @@ impl Machine {
                 continue;
             }
             let t = &self.threads[slot];
-            if matches!(t.state, ThreadState::Exited(_) | ThreadState::Suspended(_)) || t.nested > 0 {
+            if matches!(t.state, ThreadState::Exited(_) | ThreadState::Suspended(_))
+                || t.nested > 0
+                || t.offloaded
+                || t.running_unlocked
+            {
                 continue;
             }
             if self.run_thread(slot, self.quantum) {
@@ -846,8 +1002,40 @@ impl Machine {
             self.stop(StopReason::Unimplemented(msg));
             return Disp::Stop;
         };
-        let r = h(self);
+        let r = if self.stats.host_prof.is_some() {
+            let t0 = std::time::Instant::now();
+            let r = h(self);
+            self.stats.host_prof_add(addr, t0.elapsed().as_nanos() as u64);
+            r
+        } else {
+            h(self)
+        };
         self.cur = slot;
+        if let Some(from) = *TIMELINE_FROM {
+            let now = self.host.now_ms();
+            if now >= from && now < from + 200 && (!retry || !matches!(r, ThunkResult::Block)) {
+                let res = match r {
+                    ThunkResult::Return { eax, .. } => format!("-> {eax:#x}"),
+                    ThunkResult::Block => "BLOCK".into(),
+                    _ => String::new(),
+                };
+                eprintln!(
+                    "timeline {} us t{} {} ({:#x}, {:#x}, {:#x}) from {:#x} {res}",
+                    crate::mt::now_us(),
+                    slot,
+                    self.registry.describe(addr),
+                    self.arg_u32(0),
+                    self.arg_u32(1),
+                    self.arg_u32(2),
+                    self.return_address()
+                );
+            }
+        }
+        // Multi-core mode: wake the other host thread if this call may have signaled something it waits for
+        // (blocking handlers have no side effects before they block, so a `Block` changes nothing).
+        if self.mt.is_some() && !matches!(r, ThunkResult::Block) {
+            self.mt_bump();
+        }
         if self.trace.calls && self.trace.printed < self.trace.limit {
             if let ThunkResult::Return { eax, .. } | ThunkResult::Return64 { eax, .. } = r {
                 self.trace.printed += 1;
@@ -947,7 +1135,9 @@ impl Machine {
                     Disp::Continue => {}
                     Disp::Blocked => {
                         if !self.run_others(slot) {
-                            self.host.idle(1);
+                            // Multi-core mode: releases the big lock while waiting (the thread that can
+                            // wake this one may be on the other host thread).
+                            self.idle(1);
                         }
                     }
                     Disp::ThreadExited => {

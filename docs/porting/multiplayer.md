@@ -411,7 +411,12 @@ Close -> DESTROYPLAYER).
 `s3run --headless` (env `S3_RELAY_URL`, `S3_NET_NAME=host|join`), injects the menu clicks of 5.1 (host creates on
 Artokia, joiner searches/joins at 17-20 s, both ready, host starts at 29 s), takes screenshots every 20 s and
 compares the hash files with `tools/mp_hash_compare.py`. Env: `MAP=random`, `HOST_EXTRA`/`JOIN_EXTRA` (more inject
-items, e.g. in-game build/select/move clicks), `HASH_EVERY`, `PORT`.
+items, e.g. in-game build/select/move clicks), `HASH_EVERY`, `PORT`, `HOST_MT`/`JOIN_MT=1` (that peer in the
+multi-core mode, [multicore.md](multicore.md)), `PYTHON` (default `python3`; on Windows `PYTHON=python`). Runs on
+Windows through Git Bash (`bash.exe port/scripts/mp-local-test.sh`, `S3RUN`/`RELAY` pointing at the `.exe`s).
+In-game select/move clicks that hit units in the 800x600 default view on Artokia (perf-mt): host
+`45000:click 300 362;46000:rclick 650 450;70000:click 480 410;71000:rclick 620 300`, joiner
+`50000:click 292 368;51000:rclick 600 480;80000:click 455 425;81000:rclick 650 350` (4-8 player commands).
 
 **Hash** (`s3run --mp-hash FILE [--mp-hash-every N]`, `port/crates/s3-desktop/src/mp_hash.rs`): a hook at the start of
 every simulation tick (`0x53e5a1`) writes `step=TICK rng=.. n=settlers/buildings/piles settlers=.. buildings=..

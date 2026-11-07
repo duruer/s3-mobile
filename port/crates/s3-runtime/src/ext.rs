@@ -58,6 +58,9 @@ impl Machine {
             t.cpu.set_hooks(a.clone());
         }
         self.ext.hook_addrs = a;
+        if let Some(mt) = self.mt.as_ref() {
+            mt.shared.ext_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Install native fast paths (perf-cpu, docs/porting/performance.md) in every thread's CPU (clears their
@@ -68,6 +71,9 @@ impl Machine {
             t.cpu.set_native_blocks(n.clone());
         }
         self.ext.native_blocks = n;
+        if let Some(mt) = self.mt.as_ref() {
+            mt.shared.ext_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Current native fast paths.
@@ -89,10 +95,14 @@ impl Machine {
     pub(crate) fn dispatch_hook(&mut self, eip: u32) {
         let slot = self.cur;
         self.stats.hooks += 1;
+        let t0 = self.stats.host_prof.is_some().then(std::time::Instant::now);
         let flow = match self.ext.hook_dispatch {
             Some(f) => f(self, eip),
             None => HookFlow::Continue,
         };
+        if let Some(t0) = t0 {
+            self.stats.host_prof_add(eip, t0.elapsed().as_nanos() as u64);
+        }
         self.cur = slot;
         if flow == HookFlow::Continue {
             let cpu = &mut self.threads[slot].cpu;

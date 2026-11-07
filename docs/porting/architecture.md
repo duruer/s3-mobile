@@ -123,6 +123,10 @@ Semaphore, Thread (signaled when exited). Critical sections are implemented by k
 (owner/recursion), blocking when contended, with direct hand-off on Leave.
 Generic waits: `m.poll_wait(&handles, wait_all, timeout_ms) -> WaitPoll` (Ready/Timeout/Failed/Pending; return
 `ThunkResult::Block` on Pending) — use it for any waiting API (user32 MsgWaitForMultipleObjects too).
+Frontends idle through `Machine::idle(ms)` (= `Host::idle` unless the multi-core mode is on). Experimental
+multi-core mode (`Machine::enable_mt`, s3run `S3_MT=1`, never in s3det): the presenting guest thread runs on a
+second host thread under a big HLE lock, see [multicore.md](multicore.md). `Machine::run_observer` is an analysis
+hook around each scheduling turn (`s3det --write-trace`).
 `m.pulse_event(h)`; waitable timers are `KernelObject::Timer`. Details: [kernel32.md](kernel32.md).
 
 ## Exceptions (SEH)

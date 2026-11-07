@@ -303,3 +303,118 @@ fn teb_and_args_and_state() {
     assert_eq!(m.state::<Counter>().borrow_mut().0, 2);
     let _ = (EAX, EBX, ESP);
 }
+
+// ---------------------------------------------------------------------------------------------- multi-core mode
+
+/// Set when a present ran on the draw worker (multi-core test).
+static MT_PRESENT_OFFLOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn h_wait1(m: &mut Machine) -> ThunkResult {
+    let h = m.arg_u32(0);
+    match m.poll_wait(&[h], false, 0xFFFF_FFFF) {
+        WaitPoll::Ready(_) => ThunkResult::stdcall(0, 1),
+        WaitPoll::Pending => ThunkResult::Block,
+        _ => ThunkResult::Error("wait failed".into()),
+    }
+}
+
+fn h_set1(m: &mut Machine) -> ThunkResult {
+    let h = m.arg_u32(0);
+    if let Some(KernelObject::Event { signaled, .. }) = m.handles.get_mut(h) {
+        *signaled = true;
+    }
+    ThunkResult::stdcall(1, 1)
+}
+
+fn h_present(m: &mut Machine) -> ThunkResult {
+    if m.threads[m.cur].offloaded {
+        MT_PRESENT_OFFLOADED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    let fb = FrameBuffer { width: 4, height: 2, pixels: vec![m.mem.read_u32(0x48_0004) as u16; 8] };
+    let _back = m.present_owned(fb);
+    ThunkResult::stdcall(0, 0)
+}
+
+/// The game's draw/logic pipeline in miniature: thread 1 ("draw") waits for event A, does some work, presents,
+/// counts, sets B; thread 0 ("logic") waits for B, counts, sets A. Returns (draw count, logic count, presents,
+/// draw work sum).
+fn pipeline(mt: bool, frames: u32) -> (u32, u32, u64, u32) {
+    let mut m = machine();
+    let wait = m.registry.register("test.dll", "Wait", h_wait1);
+    let set = m.registry.register("test.dll", "Set", h_set1);
+    let present = m.registry.register("test.dll", "Present", h_present);
+    let exit = m.registry.register("test.dll", "Exit", h_exit);
+    let ev_a = m.handles.insert(KernelObject::Event { manual_reset: false, signaled: true });
+    let ev_b = m.handles.insert(KernelObject::Event { manual_reset: false, signaled: false });
+    // logic (slot 0)
+    load(&mut m, CODE, |a| {
+        let mut top = a.create_label();
+        a.set_label(&mut top).unwrap();
+        a.push(ev_b).unwrap();
+        a.mov(ecx, wait).unwrap();
+        a.call(ecx).unwrap();
+        a.inc(dword_ptr(0x48_0000)).unwrap();
+        a.push(ev_a).unwrap();
+        a.mov(ecx, set).unwrap();
+        a.call(ecx).unwrap();
+        a.jmp(top).unwrap();
+    });
+    // draw (slot 1): some guest work per frame (more than one quantum), then present
+    load(&mut m, CODE + 0x200, |a| {
+        let mut top = a.create_label();
+        let mut work = a.create_label();
+        a.mov(esi, frames).unwrap();
+        a.set_label(&mut top).unwrap();
+        a.push(ev_a).unwrap();
+        a.mov(ecx, wait).unwrap();
+        a.call(ecx).unwrap();
+        a.mov(edx, 150_000u32).unwrap();
+        a.set_label(&mut work).unwrap();
+        a.add(dword_ptr(0x48_0008), edx).unwrap();
+        a.dec(edx).unwrap();
+        a.jnz(work).unwrap();
+        a.mov(ecx, present).unwrap();
+        a.call(ecx).unwrap();
+        a.inc(dword_ptr(0x48_0004)).unwrap();
+        a.push(ev_b).unwrap();
+        a.mov(ecx, set).unwrap();
+        a.call(ecx).unwrap();
+        a.dec(esi).unwrap();
+        a.jnz(top).unwrap();
+        a.push(7).unwrap();
+        a.mov(ecx, exit).unwrap();
+        a.call(ecx).unwrap();
+    });
+    m.create_thread(CODE, 0, 0x1_0000, false).unwrap();
+    m.create_thread(CODE + 0x200, 0, 0x1_0000, false).unwrap();
+    if mt {
+        m.enable_mt();
+    }
+    let start = std::time::Instant::now();
+    loop {
+        match m.run_slice(1_000_000) {
+            SliceResult::Stopped => break,
+            SliceResult::Idle => m.idle(1),
+            SliceResult::Ran(_) => {}
+        }
+        assert!(start.elapsed().as_secs() < 120, "pipeline did not finish");
+    }
+    assert_eq!(m.stop_reason(), Some(&StopReason::Exited(7)));
+    let r = (m.mem.read_u32(0x48_0004), m.mem.read_u32(0x48_0000), m.stats.presents, m.mem.read_u32(0x48_0008));
+    drop(m); // joins the worker
+    r
+}
+
+#[test]
+fn mt_pipeline_matches_single_thread() {
+    let st = pipeline(false, 120);
+    assert_eq!(st.0, 120);
+    assert!(st.1 >= 119, "{st:?}");
+    MT_PRESENT_OFFLOADED.store(false, std::sync::atomic::Ordering::SeqCst);
+    let mt = pipeline(true, 120);
+    assert!(MT_PRESENT_OFFLOADED.load(std::sync::atomic::Ordering::SeqCst), "draw thread was never offloaded");
+    assert_eq!(mt.0, 120, "{mt:?}");
+    assert!(mt.1 >= 119, "{mt:?}");
+    assert_eq!(mt.2, 120);
+    assert_eq!(mt.3, st.3, "guest work of the offloaded thread differs");
+}

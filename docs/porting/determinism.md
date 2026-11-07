@@ -23,7 +23,7 @@ Owner of the code parts: `port/crates/s3-cpu/src/fpu*.rs`; test tool `s3det`.
 | `GetSystemTime`/`GetLocalTime`/time zone | Wall clock. **Seeds CRT `rand`** (`srand(time(NULL))`, see below). Fixed epoch in `s3det` |
 | `rdtsc` | Wall clock (`exec.rs`), but **S3.EXE contains no `rdtsc`** (static census) |
 | `CoCreateGuid`/`UuidCreate` | Host-time-seeded RNG (`rpcrt4::random_guid`). First divergence `s3det` found; deterministic in `s3det` |
-| Thread scheduling | Round robin, instruction quanta: deterministic for a given clock + input history. In normal runs slices are wall-clock bounded, like on Windows; the game is built for preemptive scheduling, so simulation results must not depend on it (HYPOTHESIS, to be confirmed by a 2-peer test) |
+| Thread scheduling | Round robin, instruction quanta: deterministic for a given clock + input history. In normal runs slices are wall-clock bounded, like on Windows; the game is built for preemptive scheduling, so simulation results must not depend on it (two-peer tests identical, multiplayer.md 6). The experimental multi-core mode (`S3_MT=1`, [multicore.md](multicore.md)) runs the draw thread truly in parallel; s3det never enables it; MP runs with MT peers: simulation tables identical at every tick |
 | Uninitialised guest memory | Deterministic: the 4 GiB window is zero-filled by mmap, decommit/discard re-zeroes, heap reuse depends only on guest history |
 | Directory listings (FindFirstFile) | Sorted case-insensitively in the VFS (`vfs.rs`), independent of the host file system |
 | Host file timestamps | Not normalised (GetFileTime/FindFirstFile return host mtimes). Matter only if the game uses them in synced state (HYPOTHESIS: no; savegame list display only) |

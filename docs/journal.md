@@ -2,6 +2,26 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-07 — perf-mt: more than one host core
+
+- New [multicore](porting/multicore.md): options (A) draw thread on its own host thread, (B) host presentation work
+  pipelined, (C) others; determinism argument; prototype and evidence.
+- RE (VERIFIED with traces): the render snapshot is **triple-buffered** between logic and draw thread via
+  `InterlockedExchange` on a slot on the main thread's stack (`0x700ffeb0`) plus two auto events ("ready" 0x45c,
+  "want next" 0x458); the logic fills N+1 while the draw thread renders N. Draw -> logic data: only the on-screen hit
+  list (index `[0x7dfd64]`), used by clicks.
+- Measured per frame (HUD 1944x760, 348 fps): draw guest 1.56 ms, logic 0.44 ms, host 0.78 ms (overlay compose
+  0.48, landscape blits 0.2). Logic is only ~15 % of the frame, so (A) can give at most ~+18 %.
+- Prototype (A) behind `S3_MT=1` (s3run only): big HLE lock, worker host thread for the presenting guest thread,
+  lock-free budget exits, deferred present composed on the main thread. Works (unit test `mt_pipeline`, MP runs with
+  MT peers identical, default mode s3det bit-identical) but -40..+17 % fps on the dev PC: present/overlay work under
+  the one lock, handover latency, cross-core cache effects. Next: (B) overlay display list + presenter thread.
+- Found: Windows condvar timeouts follow the 15.6 ms tick (use high-resolution `thread::sleep` polling); fps
+  comparisons on random maps are too noisy - new `tools/perf/fps-bench.ps1` (+ `fast.ps1`, throttling off) uses the fixed map Artokia.
+- Tools: `S3_HOST_PROF=1` (host time per HLE handler / hook / service / named section), per-thread `Cpu::run` time
+  in the run summary, `S3_TIMELINE=<ms>`, `s3det --write-trace` (which memory each thread writes),
+  `mp-local-test.sh` `HOST_MT`/`JOIN_MT`/`PYTHON`.
+
 ## 2026-11-07 — perf-shadow: native row loops of the shadow sprite functions
 
 - New `port/crates/s3-mods/src/fast_shadow.rs` (see [performance](porting/performance.md), "perf-shadow"):
