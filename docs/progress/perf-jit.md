@@ -1,36 +1,35 @@
-# perf-jit (2026-11-07) — IN PROGRESS
+# perf-jit (2026-11-07) — working subset DONE (default off), follow-ups listed below
 
 Goal: optional arm64 JIT for hot guest blocks in `port/crates/s3-cpu` (bit-exact vs the interpreter, same retired
 counts, same budget stops; default OFF, env `S3_JIT=1`; iOS builds keep the interpreter).
 Branch: `worktree-agent-a3531f78a2f0d5bff` (worktree of settlers-3, base `e8042b2`).
 Scratch: worktree `scratch/perf-jit/` (gitignored): `fast.ps1` (power-throttling-off launcher, args from a file),
-`det.sh <s3det> <outdir> [env]` (90000 vms inject run), `bench.sh <test exe> [runs] [env]`, `asm.sh <file.s>`
-(NDK clang + llvm-objdump; disassemble `S3_JIT_DUMP=1` output `s3jit.s`), `base/` = baseline binaries (e8042b2).
+`det.sh <s3det> <outdir> [env]` (90000 vms inject run, `EVERY=` hash interval), `cmp.sh` (alternating JIT off/on),
+`bench.sh <test exe> [runs] [env]`, `fps.sh <s3run> <outdir> [env]` (HUD 2316x904 uncapped, mean fps 50-80 s),
+`asm.sh <file.s>` (NDK clang + llvm-objdump; disassemble `S3_JIT_DUMP=1` output `s3jit.s`), `dump.sh`,
+`base/` = baseline binaries (e8042b2), `jit3/` = latest.
 
-## Design (implemented)
-- `src/jit/{mod,compile,a64,execmem}.rs`, cargo feature `jit` (default on, compiled only on aarch64), runtime
-  switch `S3_JIT=1` / `s3_cpu::set_jit_enabled` / `Cpu::set_jit(Some(bool))`.
-- Trampoline saves x19..x30; guest EAX..EDI in x19..x26, x27 = Cpu, x28 = mem base, x13 = budget left;
-  lazy flags in x9/x10/x11 (+x12 lcf) inside a block, interpreter format in Cpu between blocks.
-- Block entry: `left >= n` else exit (run loop runs a partial block). Memory ops: `addr < 0x10000` -> side exit
-  (run loop continues the block from op i with the interpreter handlers).
-- Untranslated instructions: helper call into the interpreter handler (`jit_op`, op pair `[op, block_end]`).
-- Links: direct `b` if the target is compiled at compile time, else per-EIP slot (indirect); indirect branches
-  via a 32768-entry direct-mapped table. Native fast-path blocks get a stub that calls the native fn (like the
-  run loop); hooked blocks are never compiled. Any invalidation / clear / full arena -> drop all JIT code.
+## Done (commits on the branch)
+- 18ba153 JIT v1 + differential tests; fix: chaining treated EIP 0 as empty successor (host crash).
+- e64d2e7 direct links, native fast-path stubs, 32768-entry indirect table, stats / profiling env vars.
+- 43f1cc2 native loop/jcxz/div/idiv/r8-r16 shifts/shift by CL/leave/movs/stos/FS mov; `S3DET_HASH_FULL=1`.
+- docs commit: cpu.md "JIT", performance.md "perf-jit", determinism.md "JIT", android.md (`jit.txt`), journal,
+  AGENTS.md map; s3-android reads `<data dir>/jit.txt`.
 
-## Done
-- Commit 18ba153: first version + tests. Fixed pre-existing interpreter bug: block chaining treated EIP 0 as an
-  empty successor slot (jump to address 0 crashed the host).
-- Direct links, native stub, bigger jtab, stats (`s3det` prints `jit_stats()` when JIT on; `S3_JIT_FBPROF=1`
-  fallback/exit profile; `S3_CPU_TIME=1` time in Cpu::run).
+## Verification
+- `cargo test --release -p s3-cpu`: all pass except the known `fpu::golden` (f2xm1) failures.
+- `jit_tests`: random programs (1000 seeds x 3 modes), hooks/natives/invalidation, native stub.
+- s3det 90000 vms: JIT vs baseline IDENTICAL (91 lines, insns=11886929367); with S3DET_HASH_FULL=1 JIT on/off
+  IDENTICAL.
+- APK `build-apk.sh --abi arm64-v8a` builds (not installed).
 
-## Results so far (s3det 90000 vms, `EVERY=90000`, throttling off)
-- Interpreter: Cpu::run 5.66 s (process 6.9-7.3 s). JIT: Cpu::run 2.25 s (process 3.7 s).
-- Determinism: per-second hashes + insns=11886929367 IDENTICAL to baseline e8042b2.
-- bench_mips: interpreter ~1200-1350, JIT ~6300 (one run 2300; noisy).
+## Results (same-session pairs)
+- bench_mips 1074-1176 -> 3976-4777 MIPS. s3det Cpu::run 6.9 -> 2.8 s (fast paths on), 13.7 -> 3.1 s (S3_FAST=0).
+- s3run HUD 2316x904: ~1.3x fps (356 -> 443, 248 -> 328 on different random maps); now host-side bound.
 
-## Next
-- Native: loop/jcxz, shifts r8/r16 + by CL, idiv/div, movzx r16, FS mov, movsd; x87 fild/fistp are the top
-  fallbacks (7.6 M each) -> maybe a fast path in s3-mods.
-- s3run fps, APK build, docs (cpu.md JIT section, performance.md, determinism.md, journal).
+## Next / open
+- x87 copy loop `0x5c3e40` (fild/fistp m64 + fxch = 19 M of 20 M fallback calls): native translation or s3-mods
+  fast path reproducing the f64 round trip.
+- `rep movs/stos` natively (0.8 M), adc/sbb, 8/16-bit shifts by CL.
+- Return-address prediction (shadow stack) for `ret`; fault-check elimination for repeated `[reg+disp]`.
+- Phone test: push `jit.txt` = `1`, compare fps + run s3det-equivalent determinism on device.

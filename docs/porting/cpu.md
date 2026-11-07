@@ -14,6 +14,8 @@ are in [architecture.md](architecture.md#cpu-s3-cpu). Which instructions S3.EXE 
 | `src/fpu*.rs` | x87 (fpu agent) |
 | `src/tests.rs` | Hand-assembled snippets (iced `code_asm`), `run_both` cross-checks fast vs generic path |
 | `src/diff_tests.rs` | Differential tests against the real host CPU (x86_64 only) |
+| `src/jit/` | Optional AArch64 JIT (perf-jit, 2026-11-07): `mod.rs` (state, trampoline, links, helpers), `compile.rs` (block translator), `a64.rs` (hand-written encoder), `execmem.rs` (W^X code memory). See [JIT](#jit-optional-aarch64-perf-jit-2026-11-07) |
+| `src/jit_tests.rs` | JIT vs interpreter differential tests (aarch64 only) |
 
 ## Execution model
 
@@ -167,6 +169,73 @@ installed on this PC; valgrind/callgrind is.
   `shift_forms_fast_vs_generic`, `setcc_forms_fast_vs_generic` and `cmp_jcc_fusion_fast_vs_generic` (69 edge and
   pseudo-random values squared, two incoming flag states; every fused form x all 16 conditions, both outcomes).
   Mutations (wrong OF of `shr`, wrong imul overflow, fused branch never taken) are caught.
+
+## JIT (optional, AArch64; perf-jit 2026-11-07)
+
+**Switch.** Cargo feature `jit` (default on; compiled only for `target_arch = "aarch64"`; iOS builds must use
+`--no-default-features`, Apple forbids JIT). At run time it is **off by default**: env `S3_JIT=1` or
+`s3_cpu::set_jit_enabled(true)` (global), `Cpu::set_jit(Some(bool))` (per CPU, tests). `s3_cpu::jit_available()`,
+`jit_enabled()`, `jit_stats()` (counters; `s3det` prints them when the JIT is on). Android: `<data dir>/jit.txt`
+containing `1` ([android.md](android.md)). Debug: `S3_JIT_DUMP=1` appends
+every compiled block (guest disassembly + `.inst` words) to `./s3jit.s` (assemble + `llvm-objdump -d` with the NDK
+clang to read it), `S3_JIT_FBPROF=1` profiles fallback calls per form and exits to the run loop by reason (slow).
+
+**What is compiled.** A block is compiled when the run loop has entered it 8 times (`jit::THRESHOLD`;
+`Cpu::set_jit_threshold`) and it is not hooked. The translation covers exactly the decoded block (same
+instructions, same `n`), so retired counts are unchanged by construction. One code arena of 16 MiB per decode
+cache (per guest thread), allocated on the first compile; full arena, `invalidate_range` dropping anything,
+`clear()` -> all JIT code is dropped (no JIT code runs at those points).
+
+**Execution model** (all choices keep the interpreter's results bit-exact; `determinism.md`):
+- Trampoline `enter(cpu, mem_base, code)` saves x19..x30, loads guest EAX..EDI into **x19..x26** (x27 = `Cpu`,
+  x28 = guest memory base, x13 = remaining budget) and jumps into the block; every exit stores the registers and
+  the budget back. The `Cpu` is `repr(C)`; the code uses field offsets (`offset_of!`).
+- **Budget**: the run loop enters JIT code only when `n <= left` (like the fast path); every block re-checks
+  `left >= n` on entry and otherwise exits with EIP = its start, so the run loop runs the partial block through
+  `run_partial` exactly as before. Budget stops / thread switches happen at the same instruction counts.
+- **Flags**: between blocks the flags are always in the `Cpu` in the interpreter's lazy format (`lk/lsz/la/lb/lr`
+  + `lcf`, or `ef` with `lk = NONE`). Inside a block the compiler knows the last flag writer at compile time:
+  `Lazy(kind, size)` with the operands in x9/x10/x11 (x12 = lcf for inc/dec), `Eager` (status bits in x9, from
+  shifts/mul) or `Cpu` (unknown, e.g. at block start). Conditions (`jcc`, `setcc`) are evaluated with native
+  compares of the (shifted) operands; from the `Cpu` state a helper (`jit_cond`) evaluates them; CF/AF for inc/dec
+  and shifts are read inline from the `Cpu` state. The state is stored at block end, before helper calls and at
+  side exits. For `LOGIC` the stored `la/lb` may differ from the interpreter's zeros; they are never read.
+- **Faults**: every guest access first checks `addr < 0x10000`; on failure the code takes a **side exit before
+  the instruction** (registers and flags as at its start) and the run loop continues the block from that `Op`
+  with the interpreter handlers, which then fault (or not) exactly like the interpreter, including partial effects.
+  #DE of `div/idiv` works the same way.
+- **Coverage (native)**: everything with a fast handler except `adc/sbb` and 8/16-bit shifts by CL: `mov`
+  (8/16/32, r/m/imm), `movzx/movsx`, `lea`, `push/pop`, `add/or/and/sub/xor/cmp/test` all forms and sizes,
+  `inc/dec` r32/m32, `neg/not` r32, `shl/shr/sar` imm (8/16/32) and r32 by CL, `imul` (1/2/3 operands), `mul`,
+  `cdq`, `cwde`, `setcc`, `jcc`, `jmp`/`call` (rel/r/m), `ret [imm]`; plus generic-path forms (they also store
+  `cur_ip`): `loop`, `jecxz`, `67 E3` `jcxz`, `div/idiv` r/m32, `movzx r16,r/m8`, `inc/dec/neg` r8, `leave`,
+  non-rep `movsb/movsd/stosb/stosd`, `mov` r32 <-> `fs:[..]`. Anything else (x87, `rep` strings, `adc/sbb`, ...)
+  calls the interpreter handler for that single instruction (`jit_op` on a private `[op, block_end]` pair; registers
+  and flags spilled/reloaded) and continues in JIT code; a failing fallback exits through `block_exit` as usual.
+- **Linking**: a static successor that is compiled already gets a direct `b`; otherwise a per-EIP slot
+  (`ldr`/`ldr`/`br`, the slot holds the exit stub until the target is compiled). Indirect targets (`ret`, `jmp/call`
+  r/m, fallback branches) go through a 32768-entry direct-mapped `(eip, code)` table, a miss exits to the run loop.
+  Thunk addresses and hooked blocks are never linked. Blocks with a **native fast path** get a stub that does
+  what the run loop does at a block entry (budget 0 -> exit; else call the `NativeFn` with the budget, `instructions`
+  set; declined -> block body, done -> continue at its EIP).
+- **Code memory**: `VirtualAlloc` + `VirtualProtect(PAGE_EXECUTE_READ)` + `FlushInstructionCache` (Windows),
+  `mmap` + `mprotect` + `dc cvau`/`ic ivau` (Linux/Android). W^X: only the pages being written are RW, then RX.
+  Windows ARM64: the JIT frames have no unwind info, so a panic inside a helper called from JIT code aborts the
+  process (helpers do not panic in normal operation).
+
+**Tests** (`src/jit_tests.rs`, aarch64): `jit_matches_interpreter_on_random_programs` (1000 random programs: loops
+over random mixes of all the forms above incl. 8/16-bit forms, memory forms with every EA kind, flag consumers,
+forward branches, calls, pushes, faults (NULL accesses, #DE), string ops; each run on the interpreter and the JIT
+with compile thresholds 0 and 2, in one go and in random budget slices of 1..400 instructions; after every slice
+exit, registers, EIP, EFLAGS, observable lazy state, count and 1 MiB data + stack must be equal; mutations of a
+condition code and of the `div` remainder are caught), `jit_respects_hooks_natives_and_invalidation` (hook hits,
+native calls, self-modifying code + `invalidate_range`), `jit_native_stub_matches_interpreter` (a native fast path
+that sometimes accepts, random slices; caught EIP not being set before the call), `a64::tests` (encodings checked
+against clang, logical immediates).
+
+**Found on the way**: block chaining used EIP 0 as "empty successor", so a guest jump to address 0 (NULL function
+pointer) dereferenced a null block pointer and crashed the host instead of raising the guest fault. Empty is now
+`u32::MAX` (never a block start).
 
 ## Hook point (2026-11-06, mods-w1)
 

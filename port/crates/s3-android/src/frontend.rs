@@ -356,6 +356,12 @@ pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) {
             std::env::set_var("S3_RELAY_URL", url);
         }
     }
+    // Optional AArch64 JIT (docs/porting/cpu.md, default off): `<data dir>/jit.txt` = `1` switches it on.
+    if let Ok(s) = std::fs::read_to_string(data_dir.join("jit.txt")) {
+        let on = s.trim() == "1";
+        s3_runtime::cpu::set_jit_enabled(on);
+        log::info!("jit: {} (from jit.txt; built in: {})", on, s3_runtime::cpu::jit_available());
+    }
 
     // 1. Wait for the game files.
     let mut announced: Option<Vec<&str>> = None;

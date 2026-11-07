@@ -55,7 +55,7 @@ This file is an **index only**. Facts live in `docs/`. Keep this file short; add
 | **Full-screen menu layouts**: 800x600 menus re-arranged per screen for wide phones (pieces, probe detection, touch mapping), `s3run --layout-preview/--layout-probe` | [docs/porting/menu-layout.md](docs/porting/menu-layout.md) |
 | **Custom resolutions + zoom** (res-zoom): any game size up to 2560x780 (render snapshot grid patch, fast logical-size switch), pinch/menu zoom levels, MP determinism check, fps per size | [docs/porting/resolution-zoom.md](docs/porting/resolution-zoom.md) |
 | Android app: build APK (no Gradle), our emulator AVD, copying game files, touch controls, soft keyboard, immersive mode, install on a phone, frontend design | [docs/porting/android.md](docs/porting/android.md) |
-| x86-32 integer interpreter: decode cache, threaded dispatch, exact flag semantics, tests, MIPS | [docs/porting/cpu.md](docs/porting/cpu.md) |
+| x86-32 integer interpreter: decode cache, threaded dispatch, exact flag semantics, tests, MIPS; **optional arm64 JIT** (`S3_JIT=1`) | [docs/porting/cpu.md](docs/porting/cpu.md) |
 | **Performance**: what limits fps, frame limiter (`S3_FPS_CAP`), interpreter speedups (lazy flags, pre-decoded ops), native fast paths for render loops (`S3_FAST`), profiling (`S3_PROFILE`, `tools/perf_profile.py`), measurements | [docs/porting/performance.md](docs/porting/performance.md) |
 | KERNEL32 HLE: OS identity, threads/waits/timers/critical sections, files+VFS+mapped files, locale, SEH, resources | [docs/porting/kernel32.md](docs/porting/kernel32.md) |
 | x87 FPU / MMX emulation: model, instruction coverage, precision limits | [docs/porting/x87-fpu.md](docs/porting/x87-fpu.md) |
