@@ -169,3 +169,6 @@ Pinch follows the fingers continuously (2026-11-07): `zoom::pinch` asks for the 
 least 33 ms apart, so the step size adapts to how fast the game finishes a switch); the end snaps to the nearest
 level and saves it. Before: 40 px level steps, at least 120 ms apart, levels skipped. Desktop JIT, 2316x904, cap 60:
 no frame over 79 ms during in/out pinches, 51-61 fps.
+perf-landfull (2026-11-08): the remaining full redraw after a view-growing step is now cheap: native fast path
+`land_rows` for the rasteriser's row/pixel loop (performance.md, "perf-landfull"). Frame after a zoom-out step on
+the desktop: JIT off 37-117 ms -> 17-42 ms, `S3_JIT=1` 14-44 ms -> 14-17 ms (holds the 60 cap).

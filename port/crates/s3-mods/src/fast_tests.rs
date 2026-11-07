@@ -10,7 +10,7 @@
 
 use s3_cpu::{Cpu, GuestMemory, NativeFn, EAX, EBP, EBX, ECX, EDI, EDX, ESI, ESP};
 
-use crate::{fast_blit, fast_land, fast_obj, fast_snap, fast_sprite, fast_tile};
+use crate::{fast_blit, fast_land, fast_land_rows, fast_obj, fast_snap, fast_sprite, fast_tile};
 
 fn exe_bytes() -> Option<Vec<u8>> {
     let p = std::env::var_os("S3_EXE").map(std::path::PathBuf::from).unwrap_or_else(|| {
@@ -680,4 +680,100 @@ fn differential_land_mark() {
     }
     eprintln!("differential_land_mark: native ran {ran} of 300");
     assert!(ran > 200, "too many declines: {ran}");
+}
+
+/// Row loop of the dirty-triangle rasteriser in `0x54cbd0` (`fast_land_rows::land_rows`): random triangle rows
+/// (edges, u/v/light steps, half switch, ring-buffer wrap), textures, shade tables and budgets.
+#[test]
+fn differential_land_rows() {
+    let Some(exe) = exe_bytes() else {
+        eprintln!("differential_land_rows: S3.EXE not found, skipped");
+        return;
+    };
+    const OBJ: u32 = 0x3400_0000;
+    let mut r = Rng(0x54e4_bc00_1a2d_f011);
+    let (mut ran, mut exits, mut insns) = (0, 0, 0u64);
+    let cases = 600;
+    for case in 0..cases {
+        let budget = if case % 3 == 0 { 1 + r.below(3000) as u64 } else { 1 << 30 };
+        let eflags = 0x202 | (r.next() & 0x8D5);
+        let mut regs: [u32; 8] = std::array::from_fn(|_| r.next());
+        let ebp = STACK + 0x1000;
+        regs[EBP] = ebp;
+        regs[ESP] = ebp - 0x200;
+        let mut frame = random_bytes(&mut r, 0x200);
+        let o = |d: i32| (0x100 + d) as usize; // frame buffer starts at ebp - 0x100
+        let put = |f: &mut Vec<u8>, d: i32, v: u32| f[o(d)..o(d) + 4].copy_from_slice(&v.to_le_bytes());
+        let s = |r: &mut Rng, m: u32| (r.below(2 * m + 1) as i32 - m as i32) as u32; // signed in [-m, m]
+        let pitch = 64 + r.below(448); // pixels
+        regs[EDX] = if r.below(8) == 0 { r.next() & 0xffe } else { 2 * pitch };
+        put(&mut frame, -0x14, if r.below(10) == 0 { s(&mut r, 2) } else { r.below(20) });
+        put(&mut frame, -0x54, r.below(12));
+        put(&mut frame, -0x38, r.below(5));
+        let xl = r.below(300) << 8 | r.below(256);
+        put(&mut frame, -0xe0, xl);
+        put(&mut frame, -0x40, xl.wrapping_add(s(&mut r, 20 << 8)));
+        for d in [-0xa8, -0xb8, -0x8c] {
+            put(&mut frame, d, s(&mut r, 3 << 8)); // edge slopes
+        }
+        for d in [-0x94, -0x84, -0xbc, -0xcc] {
+            put(&mut frame, d, s(&mut r, 20 << 8)); // u, v (texture 16x16, beyond it into neighbours)
+        }
+        for d in [-0x2c, -0x34, -0xd8, -0xac, -0x6c, -0x90] {
+            put(&mut frame, d, s(&mut r, 1 << 8));
+        }
+        for d in [-0x70, -0xa0] {
+            put(&mut frame, d, r.below(128 << 8)); // light
+        }
+        for d in [-0xc0, -0xa4, -0x3c] {
+            put(&mut frame, d, s(&mut r, 4 << 8));
+        }
+        let h = 0x30 + r.below(0x100);
+        put(&mut frame, -0x28, if r.below(3) == 0 { r.below(4).wrapping_sub(1) } else { r.below(h) });
+        put(&mut frame, -0xb0, if r.below(2) == 0 { 1 } else { u32::MAX });
+        put(&mut frame, -0xc8, pitch);
+        put(&mut frame, -0xf8, 2 * pitch);
+        put(&mut frame, -0x20, DST + 0x6_0000 + 2 * r.below(pitch));
+        put(&mut frame, -0x24, SRC + 0x8000 + r.below(0x100));
+        put(&mut frame, -0x88, OBJ);
+        let mut objb = random_bytes(&mut r, 0x100);
+        objb[0x54..0x58].copy_from_slice(&h.to_le_bytes());
+        let shade = if r.below(20) == 0 { 0x100 } else { PAL };
+        objb[0xa4..0xa8].copy_from_slice(&shade.to_le_bytes());
+        if r.below(20) == 0 {
+            put(&mut frame, -0x20, ebp - 0x80); // destination over the frame: must stop/decline
+        }
+        if r.below(20) == 0 {
+            put(&mut frame, -0x24, DST + 0x6_0000); // texture inside the destination rows
+        }
+        let writes = vec![
+            (ebp - 0x100, frame),
+            (OBJ, objb),
+            (SRC, random_bytes(&mut r, 0x1_0000)),
+            (PAL, random_bytes(&mut r, 0x1_0000)),
+            (DST, random_bytes(&mut r, 0x10_0000)),
+        ];
+        let regions = [(STACK, 0x2000), (OBJ, 0x100), (SRC, 0x1_0000), (PAL, 0x1_0000), (DST, 0x10_0000)];
+        if check_in(&exe, fast_land_rows::land_rows, fast_land_rows::START, regs, eflags, &writes, budget, "land_rows", &regions) {
+            ran += 1;
+            // rerun natively for the statistics (exit reached, instructions)
+            let mut mem = GuestMemory::new().unwrap();
+            for (a, d) in &writes {
+                mem.write_bytes(*a, d);
+            }
+            let mut nc = Cpu::new();
+            nc.regs = regs;
+            nc.eip = fast_land_rows::START;
+            insns += fast_land_rows::land_rows(&mut nc, &mut mem, budget).unwrap();
+            if nc.eip == fast_land_rows::EXIT {
+                exits += 1;
+            }
+        }
+    }
+    let cov: Vec<u32> = fast_land_rows::COV.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).collect();
+    eprintln!("differential_land_rows: native ran {ran} of {cases} ({exits} reached the exit, {insns} instructions)");
+    eprintln!("differential_land_rows: branch coverage {cov:?}");
+    assert!(cov.iter().all(|&c| c > 0), "a branch was never taken: {cov:?}");
+    assert!(ran > 300, "too many declines: {ran}");
+    assert!(exits > 100, "too few exits: {exits}");
 }

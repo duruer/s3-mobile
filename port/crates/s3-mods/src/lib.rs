@@ -21,6 +21,7 @@ pub mod fallback;
 pub mod fast; // native fast paths for hot guest loops (docs/porting/performance.md)
 pub mod fast_blit;
 pub mod fast_land;
+pub mod fast_land_rows; // dirty-triangle rasteriser rows (perf-landfull)
 pub mod fast_obj;
 pub mod fast_shadow; // shadow sprite row loops (perf-shadow)
 pub mod fast_snap;

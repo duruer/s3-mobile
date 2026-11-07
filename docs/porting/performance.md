@@ -232,6 +232,7 @@ or when its writes overlap what it reads.
 | `snap_tiles` | `0x522219..0x52303e` | logic thread, render snapshot fill (`0x51f110`): copy one map tile into its snapshot cell per iteration (`fast_snap.rs`). Common path only: tile inside the map, `[gd+0x2d284] != 1`, not the special row `[gd+0x2d2e4]`, byte +0xb != `[gd+0x2d300]`, light byte with equal 3-bit fields and bit 7 clear, no object words, no flag 0x20; else stops at the loop head before that tile | 133/tile |
 | `obj_empty` | `0x4d3050..0x4d5a4f` (+ setter `0x5fc540`, hash-checked at each call) | draw thread, per-tile object drawer called by `0x4b26c0` for every tile: the whole call (prologue, four setter calls, type-compare chain, epilogue, `ret 0x18`) for object type 0 when nothing is drawn (`fast_obj.rs`) | 110-116/call |
 | `land_clean` | `0x54ce53..0x54e712` | draw thread, landscape pass `0x54cbd0`: triangle loop for clean triangles (no dirty corner bit, flags `[ebp-0x68]/[ebp-0xe4]/[ebp-0xe8]` != 1) - corner heights, min y into `[ebp-0x34]`, phase flip (`fast_land.rs`) | 60-66/triangle |
+| `land_rows` | `0x54e4bc..0x54e6e8` | draw thread, landscape pass `0x54cbd0`: row loop of the dirty-triangle rasteriser (edge/u/v/light stepping, per-span `idiv` steps, textured + shaded 16-bit pixels, ring-buffer row wrap, half switch); stops at the row head or the exit (`fast_land_rows.rs`, perf-landfull) | per row 35, then 12 (empty span) or 35 + 44/pixel, then 8-31; exit 3 |
 | `frame_tiles` | `0x4b2e44..0x4b330e` (+ row head `0x4b2e30..0x4b2e44` and the 24 instruction ranges of `0x4d3050`'s empty case, hash-checked at entry) | draw thread, frame renderer `0x4b26c0`: the cell loop over the snapshot (x/40 sector, ambient-sound statistics `[ebx+0x5f588/0x5f5cc]`, 4x4 water-decoration grid test, `+0x508` kind checks, the object call `0x4d3050` inlined for the `obj_empty` case via `fast_obj::plan/apply`) and the row advance (`fast_tile.rs`). Stops at the loop head before a cell with weighted water/shore sound (`0x4b2f0e`), decoration (`0x4b3046`), object type != 0 (incl. 0xfe), `+0x50a`/`+0x51e` != 0, `+0x508` kind 0x800/0x1000/0x1800 or a non-empty `0x4d3050` call | ~200/cell (incl. the call) |
 | `land_mark` | `0x4b277e..0x4b27a7` | draw thread, pre-pass of `0x4b26c0` over one snapshot column: landscape byte `+0x502` to 0x1c / back to 0x10 by bit 2 of `+0x509` for cells with `(+0x505 & 0x3f)*4 <= 0x48` (`fast_tile.rs`) | 8-13/cell |
 
@@ -299,6 +300,43 @@ Env **`S3_FAST_OFF=name,name`** leaves single fast paths out (bisecting a diverg
 
 Ideas for more fast paths: the masked (fog) sprite loop `0x5fc41a..0x5fc4af`, the run loop of `0x5fd120`
 (calls through `[0x7e8e20]`), `0x5fc540` (could be inlined at its call sites as a superinstruction).
+
+### perf-landfull (2026-11-08): dirty-triangle rasteriser rows (`land_rows`)
+
+Pinch zoom stuttered on every step that grows the view: the next frame is a full landscape redraw (all triangles
+dirty, `snap+0xc/+0x10` = 10 000 000, resolution-zoom.md). Profile while pinching out (HUD 2316x904, `S3_PROFILE`
+from 64 s, 3 s, JIT off): landscape pass 428 M of 565 M guest instructions; inside it the pixel loop
+`0x54e593..0x54e620` 321 M (44 instructions per pixel: two C-style `/256`, texel `tex[(u/256)*16 + v/256]`, shade
+word `[[obj+0xa4] + 2*(texel*128 + light/256)]`), the rest of the row loop 74 M (edge stepping, three `idiv` per
+span, row wrap), per-triangle setup `0x54d015..0x54e4bc` (texture choice, slopes) 20 M, triangle loop 12.5 M.
+(REA's "Catch@0054d382" is a function start in its list only; the profiler attributes everything up to `0x54e7d0`
+to it.) The average span is ~8 pixels, ~9.5 rows per triangle.
+
+`land_rows` (`fast_land_rows.rs`) runs whole rows from the row head `0x54e4bc` to the next row head or the exit
+`0x54e6e8`: frame slots are re-read per row, the row's pixels go into a buffer and are written at the row's commit.
+A row whose texel/shade reads overlap its destination span or the stack frame, whose destination overlaps the frame
+or `[obj+0x54]`/`[obj+0xa4]`, that could fault, is wider than 2048 pixels or exceeds the budget ends the run at
+its row head. Flags at the row head: the last CF writer (`cmp esi,-1`, `neg eax` of the wrap, `cmp eax,2/3` of the
+half switch) then `dec`; at the exit `test eax,eax`. Test `differential_land_rows` (600 cases, 564 native,
+coverage counters for every branch: empty/pixel spans, both wraps, half switch 2/3/other, aliasing stops, budget
+stops, exit); a wrong CF source fails it.
+Determinism: `s3det` 90 000 vms (inject of `tools/determinism-test.sh`) all fast paths vs `S3_FAST=0` vs
+`S3_FAST_OFF=land_rows`, and `S3_JIT=1` with and without fast paths: all **IDENTICAL** (91 hash lines,
+`insns=12110861573`, `mem=f258db2c1e42db16`; a temporary counter confirmed that `land_rows` runs in that workload).
+
+Results (desktop ARM64, `tools/perf/fast.ps1`, HUD `--window 2316x904`, cap 60, the pinch-out inject of the task;
+time of the frame after each size switch 920x360 -> ... -> 2000x780; random map per run, so noisy):
+
+| | JIT off | `S3_JIT=1` |
+| --- | --- | --- |
+| before (f71f349) | 37 / 56 / 57 / 86 / 108 / 115 / 117 ms (earlier run 27-102) | 18 / 44 / 29 / 14 / 17 / 20 / 21 ms |
+| after | **23 / 17 / 26 / 28 / 33 / 42 / 20 ms** | **16 / 16 / 16 / 17 / 17 / 14 / 15 ms** (at the 60 cap) |
+
+Profile of the same 3 s after: 565 M -> 249 M guest instructions, landscape 428 M -> 37 M (pixel + row loop
+395 M -> 1.4 M left in the interpreter, the per-triangle setup 22.6 M and triangle loop 12.6 M remain). Now on top:
+`0x5fc860` 9.6 %, `0x5f4f20` 8.7 %, `0x54cbd0` 8.3 % (triangle loop + setup), `0x5fc160` 6.9 %. Next candidate if
+the phone still stutters: the per-triangle setup `0x54d015..0x54e4bc` (~200 instructions per dirty triangle, very
+branchy texture-pair selection) and the dirty-triangle path of the triangle loop head (`land_clean` declines it).
 
 ## Profiling tools
 
