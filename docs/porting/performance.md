@@ -380,6 +380,11 @@ Fold4 cover, HUD, Native wide, zoom 10 (1944x760), cap 60: **60 fps in all 5 sam
 thread at **70 %** of one core (`top -H`; before 94-99 % while missing 60), presenter 13 %. So roughly 40 % headroom
 at the cap (~85 fps worth of work), enough for higher zoom levels or a 90 Hz cap.
 
+After the JIT + multi-core merges (135a0e6), same setup: interpreter (`jit.txt` = 0) 58-60 fps, engine thread
+78.6 %; JIT (`jit.txt` = 1) 60 fps, engine thread 73.6 % (random maps, 1 sample each). At the 60 cap the JIT saves
+only ~5 % of a core on the phone: guest code is no longer the main cost; host-side work (overlay/HUD compose, blits,
+HLE) is (see multicore.md, option B).
+
 ## Not done / next
 
 - Multi-core: see [multicore.md](multicore.md) (perf-mt, 2026-11-07). The draw thread on its own host thread
