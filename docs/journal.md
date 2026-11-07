@@ -2,11 +2,13 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
-## 2026-11-07 — pinch zoom without fps collapse
+## 2026-11-07 — pinch: presentation zoom tried and reverted
 
-Each pinch step was a render-size switch with a full landscape redraw (100-280 ms per frame): now the frame is
-scaled on screen while pinching and the size switches once at release (2-5 -> 118-231 fps on the desktop). Also
-`<data dir>/fps-cap.txt` (0 = unlimited) on Android for benchmarks. → [resolution-zoom](porting/resolution-zoom.md)
+Tried scaling the shown frame while pinching and switching the render size once at release (desktop 2-5 ->
+118-231 fps during a pinch). User feedback: it looks like zooming a picture, not the game zooming; the old UX (real
+zoom per step) was right, only not smooth. Reverted (zoom.rs/display/presenters); kept the Android
+`fps-cap.txt` switch. Next: make each zoom step cheap (the full landscape redraw after a size switch, 100-280 ms:
+`0x54cbd0` triangle rasteriser around `0x54d382`).
 
 ## 2026-11-07 — perf-r2 on the phone
 

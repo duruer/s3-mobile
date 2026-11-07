@@ -136,27 +136,11 @@ pub struct DisplaySettings {
     /// Requested display refresh rate in Hz (Android `ANativeWindow_setFrameRate`); 0 = the highest the panel
     /// offers.
     pub refresh_hz: u32,
-    /// Transient presentation zoom while a pinch is in progress (never saved; see [`VisualZoom`]).
-    #[serde(skip)]
-    pub visual_zoom: Option<VisualZoom>,
-}
-
-/// Presentation-only zoom of the shown frame while the fingers pinch: the frame is scaled by `k` around the frame
-/// point (`fx`, `fy`) (fractions of the frame). The real zoom (a render-size switch, which forces a full landscape
-/// redraw costing 100-300 ms per step) happens once when the pinch ends (perf, 2026-11-07). Only applied to frames
-/// of size `w` x `h` (the size the pinch started on), so the first frame of the new size shows unzoomed.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct VisualZoom {
-    pub k: f32,
-    pub fx: f32,
-    pub fy: f32,
-    pub w: u32,
-    pub h: u32,
 }
 
 impl Default for DisplaySettings {
     fn default() -> Self {
-        DisplaySettings { mode: DisplayMode::default(), filter: ScaleFilter::default(), fps_counter: FpsCounter::Off, refresh_hz: 0, visual_zoom: None }
+        DisplaySettings { mode: DisplayMode::default(), filter: ScaleFilter::default(), fps_counter: FpsCounter::Off, refresh_hz: 0 }
     }
 }
 
@@ -213,20 +197,6 @@ impl Viewport {
             }
         }
         Viewport::new(mode, game_w, game_h, win_w, win_h)
-    }
-
-    /// Apply a pinch [`VisualZoom`] (no-op for other frame sizes and for menu layouts).
-    pub fn with_visual_zoom(mut self, vz: Option<VisualZoom>) -> Viewport {
-        let Some(z) = vz else { return self };
-        if self.layout.is_some() || (z.w, z.h) != (self.game_w, self.game_h) || !(z.k.is_finite() && z.k > 0.0) {
-            return self;
-        }
-        let (ax, ay) = (self.dst_x + z.fx * self.dst_w, self.dst_y + z.fy * self.dst_h);
-        self.dst_w *= z.k;
-        self.dst_h *= z.k;
-        self.dst_x = (ax - z.fx * self.dst_w).round();
-        self.dst_y = (ay - z.fy * self.dst_h).round();
-        self
     }
 
     /// Viewport showing the frame through a menu layout.
@@ -434,18 +404,6 @@ pub struct DisplayState {
     pub refresh_hz: Option<f32>,
     /// Bumped whenever [`DisplaySettings`] change through this module (frontends may poll it).
     pub settings_seq: u64,
-    /// Pinch presentation zoom (merged into [`display_settings`]).
-    pub visual_zoom: Option<VisualZoom>,
-}
-
-/// Set / clear the pinch presentation zoom.
-pub fn set_visual_zoom(m: &mut Machine, vz: Option<VisualZoom>) {
-    m.state::<DisplayState>().borrow_mut().visual_zoom = vz;
-}
-
-/// Current pinch presentation zoom.
-pub fn visual_zoom(m: &mut Machine) -> Option<VisualZoom> {
-    m.state::<DisplayState>().borrow_mut().visual_zoom
 }
 
 /// Frontend: publish the viewport of the shown frame.
@@ -483,9 +441,7 @@ pub fn set_host_rates(m: &mut Machine, host_fps: Option<f32>, refresh_hz: Option
 
 /// Current display settings (cheap copy; frontends call it once per slice).
 pub fn display_settings(m: &mut Machine) -> DisplaySettings {
-    let mut d = m.state::<crate::ModsState>().borrow_mut().settings.display;
-    d.visual_zoom = visual_zoom(m);
-    d
+    m.state::<crate::ModsState>().borrow_mut().settings.display
 }
 
 /// Change and persist the display settings.

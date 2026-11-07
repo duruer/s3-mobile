@@ -477,14 +477,12 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
             let sz = unsafe { g.size() };
             win_size = sz;
             let mode = if game_frame { display.mode } else { DisplayMode::Fit };
-            // Touches map through the unzoomed viewport (published below); only the drawing uses the pinch zoom.
-            let base = Viewport::for_frame(mode, &fb.pixels, fb.width, fb.height, sz.0, sz.1);
-            let vp = base.with_visual_zoom(if game_frame { display.visual_zoom } else { None });
+            let vp = Viewport::for_frame(mode, &fb.pixels, fb.width, fb.height, sz.0, sz.1);
             unsafe {
                 g.upload(fb);
                 g.draw(&vp, if game_frame { display.filter } else { ScaleFilter::Linear });
             }
-            shared.set_viewport(if game_frame { Some(base) } else { None });
+            shared.set_viewport(if game_frame { Some(vp) } else { None });
             *shared.letterbox.lock().unwrap() = None;
             if !unsafe { g.swap() } {
                 // Surface lost: wait for the activity to give us a window again.

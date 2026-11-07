@@ -154,14 +154,3 @@ change) about 1-2 s on the desktop (display re-setup).
 640x480) kept its top-left corner, so on a 1944x760 view the castle sat in the upper-left part. The Mobile HUD
 removing / restoring the panel (`ui_hud_game::apply_layout`) moves the camera by half the panel width for the same
 reason. Verified on the phone.
-
-## Pinch = presentation zoom until release (2026-11-07)
-
-User report: fps collapsed while pinching. Cause (desktop profile during a pinch): every zoom step is a render-size
-switch, and the frame after it does a **full landscape redraw** (`0x54cbd0` triangle rasteriser around `0x54d382`
-= 62 % of the guest instructions during the pinch); one such frame took 100-280 ms, a pinch made 8-10 steps, so
-the pinch ran at 2-5 fps. Now (`zoom::pinch`): while the fingers move, only the shown frame is scaled
-(`display::VisualZoom`, applied by the presenters via `Viewport::with_visual_zoom`; touches still map through the
-unzoomed viewport), clamped to the zoom range of the levels; on release **one** switch to the final level, anchored
-at the pinch start point. The visual zoom is dropped when the first frame of the new size arrives
-(`ZoomMod::tick`). Desktop (HUD 2316x904, uncapped): pinch seconds 2-5 fps -> 118-231 fps, 1 switch per pinch.
