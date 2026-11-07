@@ -16,7 +16,6 @@ use s3_runtime::{HostEvent, MouseButton};
 
 use crate::audio::{AudioRing, OUT_CHANNELS, OUT_RATE};
 use crate::frontend::{run_engine, Shared};
-use crate::overlay::{self, Button, OverlayState};
 use crate::present::Presenter;
 use crate::touch::{pointer_events, Action, PointerFilter};
 use crate::uithread::UiThread;
@@ -108,13 +107,8 @@ fn android_main(app: AndroidApp) {
     let t0 = Instant::now();
     // Render thread (EGL/GLES presenter, docs/porting/display.md): the engine never waits for the display.
     let presenter = Presenter::start(shared.clone());
-    let mut overlay_st = OverlayState::default();
     // Refresh rate asked from the window manager (preferredDisplayModeId / preferredRefreshRate), per setting.
     let mut prefs_hz: Option<u32> = None;
-    // Letterbox button under the current finger (the gesture is not passed to the game).
-    let mut button_touch: Option<Button> = None;
-    // Delayed key-ups of synthetic key presses (Esc button), like CLICK_MS for the mouse.
-    let mut pending_keys: Vec<(u64, HostEvent)> = Vec::new();
     let mut kb_checked = 0u64;
     let mut finishing = false;
     // Fingers -> raw pointer events; gestures are recognized by s3-mods on the engine thread.
@@ -125,10 +119,7 @@ fn android_main(app: AndroidApp) {
 
     while !quit {
         let mut wait = 250;
-        if !pending_keys.is_empty() {
-            wait = wait.min(30);
-        }
-        if overlay_st.keyboard {
+        if *kb_visible.lock().unwrap() {
             wait = wait.min(1000);
         }
         app.poll_events(Some(Duration::from_millis(wait)), |event| match event {
@@ -181,7 +172,6 @@ fn android_main(app: AndroidApp) {
         // Input.
         if let Ok(mut iter) = app.input_events_iter() {
             loop {
-                let t = now_ms(t0);
                 let read = iter.next(|event| match event {
                     InputEvent::MotionEvent(me) => {
                         // Screen -> game: the presenter's viewport (display mode), or the CPU fallback letterbox.
@@ -190,10 +180,6 @@ fn android_main(app: AndroidApp) {
                         let to_game = |x: f32, y: f32| match &lb {
                             Some(l) => l.window_to_game(x, y),
                             None => vp.window_to_game(x, y),
-                        };
-                        let hit = |x: f32, y: f32| match &lb {
-                            Some(l) => overlay::hit(l, x, y),
-                            None => overlay::hit_vp(&vp, x, y),
                         };
                         let idx = me.pointer_index();
                         let p = me.pointer_at_index(idx);
@@ -216,44 +202,6 @@ fn android_main(app: AndroidApp) {
                                 shared.push_event(HostEvent::MouseButton { button, down });
                             }
                             let _ = b;
-                            return InputStatus::Handled;
-                        }
-                        // Letterbox buttons: a gesture that starts on a button belongs to it.
-                        if me.action() == MotionAction::Down {
-                            button_touch = hit(win.0, win.1);
-                            if let Some(b) = button_touch {
-                                log::info!("button {b:?} down");
-                                overlay_st.pressed = Some(b);
-                                return InputStatus::Handled;
-                            }
-                        }
-                        if let Some(b) = button_touch {
-                            match me.action() {
-                                MotionAction::Up | MotionAction::Cancel => {
-                                    button_touch = None;
-                                    overlay_st.pressed = None;
-                                    let still = hit(win.0, win.1) == Some(b);
-                                    if me.action() == MotionAction::Up && still {
-                                        log::info!("button {b:?} pressed");
-                                        match b {
-                                            Button::Esc => {
-                                                shared.push_event(HostEvent::Key { vk: 0x1B, down: true });
-                                                shared.push_event(HostEvent::Char(0x1B));
-                                                pending_keys.push((t + 60, HostEvent::Key { vk: 0x1B, down: false }));
-                                            }
-                                            Button::Keyboard => {
-                                                if let Some(u) = &ui_thread {
-                                                    u.soft_keyboard(None, kb_visible.clone());
-                                                }
-                                            }
-                                            Button::RightClick => {
-                                                shared.rmb_toggle.store(true, Ordering::Release);
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
                             return InputStatus::Handled;
                         }
                         let action = match me.action() {
@@ -326,31 +274,12 @@ fn android_main(app: AndroidApp) {
         }
         {
             let t = now_ms(t0);
-            pending_keys.retain(|(due, ev)| {
-                if *due <= t {
-                    shared.push_event(ev.clone());
-                    false
-                } else {
-                    true
-                }
-            });
             // While the keyboard is believed open, check once a second whether the user closed it.
             if *kb_visible.lock().unwrap() && t >= kb_checked + 1000 {
                 kb_checked = t;
                 if let Some(u) = &ui_thread {
                     u.refresh_keyboard(kb_visible.clone());
                 }
-            }
-            let st = OverlayState { pressed: overlay_st.pressed, right_armed: shared.rmb_armed.load(Ordering::Acquire), keyboard: *kb_visible.lock().unwrap() };
-            overlay_st = st;
-            let changed = {
-                let mut cur = shared.buttons.lock().unwrap();
-                let c = *cur != st;
-                *cur = st;
-                c
-            };
-            if changed {
-                shared.notify_render();
             }
             // Display cutout + high refresh display mode (window manager side; the presenter also asks the surface).
             let hz = shared.display.lock().unwrap().refresh_hz;

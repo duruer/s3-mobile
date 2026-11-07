@@ -18,31 +18,59 @@ are in [architecture.md](architecture.md#cpu-s3-cpu). Which instructions S3.EXE 
 ## Execution model
 
 - **Decode cache**: basic blocks (at most 64 instructions, end at the first control-flow instruction or before the
-  thunk page). Blocks live in an arena `Vec<Block>`. A `HashMap<eip, index>` sits behind a direct-mapped
-  8192-entry L1 array `(eip, index)`. `Cpu::run` moves the cache out of the `Cpu` (`mem::take`) while it executes,
-  so instructions are borrowed straight from the arena with no `Arc`/refcount per block.
-  `invalidate_range` drops overlapping blocks and rebuilds the map (rare: S3.EXE has no self-modifying code).
-  There is one cache per `Cpu`, i.e. per guest thread. Memory cost is about 48 bytes per decoded instruction
-  (iced `Instruction` plus a handler pointer).
-- **Threaded dispatch** (`fast.rs`, reworked 2026-11-05 by perf-cpu, see [performance.md](performance.md)): at
-  decode time each instruction gets an `Op` record: handler `fn(&mut Cpu, &mut GuestMemory, &Op) -> bool`, next EIP,
-  register numbers (8-bit: 0..3 = AL..BL, 4..7 = AH..BH), displacement, immediate (pre-extended) or branch target,
-  EA form as a const generic (`[disp]`, `[base+disp]`, `[base+index*s+disp]`, `[index*s+disp]`; FS/GS and 16-bit
-  addressing go generic), and `Op::ins` = pointer to the iced `Instruction` (same block) for the generic path.
+  thunk page). Blocks live in an arena `Vec<Box<Block>>` (boxed, so addresses are stable and chaining can use
+  pointers; `#[repr(C, align(64))]`, the fields read at every block entry share one cache line). A
+  `HashMap<eip, index>` sits behind a direct-mapped 8192-entry L1 array `(eip, index)`. `Cpu::run` moves the cache
+  out of the `Cpu` (`mem::take`) while it executes, so instructions are borrowed straight from the arena with no
+  `Arc`/refcount per block. `invalidate_range` drops overlapping blocks, clears every chaining pointer and rebuilds
+  the map (rare: S3.EXE has no self-modifying code). There is one cache per `Cpu`, i.e. per guest thread. Memory
+  cost is about 72 bytes per decoded instruction (iced `Instruction` 40 + `Op` 32) plus one `Op` and ~128 bytes per
+  block.
+- **Threaded dispatch** (`fast.rs`, reworked 2026-11-05 by perf-cpu and 2026-11-07 by perf-interp, see
+  [performance.md](performance.md)): at decode time each instruction gets a 32-byte `Op` record: handler
+  `fn(&mut Cpu, &mut GuestMemory, &Op) -> bool`, next EIP, register numbers (8-bit: 0..3 = AL..BL, 4..7 = AH..BH),
+  displacement, immediate (pre-extended) or branch target, EA form as a const generic (`[disp]`, `[base+disp]`,
+  `[base+index*s+disp]`, `[index*s+disp]`; FS/GS and 16-bit addressing go generic). A `generic` op keeps the
+  pointer to its iced `Instruction` (same block) in `disp`/`imm` (`Op::set_ins`). Every block's `ops` ends with a
+  `block_end` sentinel. **Tail-call threading** (2026-11-07): each non-branch handler ends with
+  `next(cpu, mem, op)` = call the handler of `op + 1`, which LLVM compiles to `ldr x, [op, #32]!; br x` (a sibling
+  call; even without it the depth is bounded by 65), so a block runs as one chain of indirect branches with one
+  prediction site per handler; control transfers (`call/ret/jmp/jcc`, always last) return `true` straight to the
+  run loop, other blocks end at the sentinel. On aarch64-linux-android the hot handlers are frameless (e.g. `mov
+  r32,[base+disp]` = 14 instructions including the dispatch); Windows ARM64 keeps a frame record (`stp x29,x30`).
   Specialised handlers: `mov` r,r / r,m / m,r / r,imm / m,imm for 8/16/32 bits, ALU `add/or/adc/sbb/and/sub/xor/cmp/
   test` in r,r / r,imm / r,m / m,r / m,imm for 8/16/32 bits, `movzx/movsx` (r32 from m8/m16/r8/r16), `lea`, `push`
   (r/imm/m), `pop r`, `call` (rel/r/m), `ret`, `ret imm16`, `jmp` (rel/r/m), all `jcc` (one handler per condition),
-  `inc/dec r32`, `shl/shr/sar r32,imm8`, `nop`. Everything else uses the generic `exec::step`.
+  `inc/dec r32`, `shl/shr/sar r32,imm8`, `nop`; since 2026-11-07 also `imul` (r32,r/m32 / r32,r/m32,imm / r/m32),
+  `mul r/m32`, `cdq`, `cwde`, `shl/shr/sar` r8/r16 by imm8 and r8/r16/r32 by CL, `setcc r8`, `neg/not r32`,
+  `inc/dec m32` (what the in-game profile still sent to the generic path, ~1.1 % of instructions). Everything else
+  uses the generic `exec::step`.
+- **Superinstructions** (2026-11-07): when a block ends with `cmp`/`test` (r,r / r,imm for 8/16/32 bits; m,imm for
+  some sizes and `[disp]`/`[base+disp]`) or `dec r32` directly followed by a `jcc` with one of the 12 conditions
+  `cond_fast` reads from the lazy state, the compare's `Op` gets a fused handler `cmp_jcc` (decode-time peephole,
+  `fuse_cmp_jcc`). Its body is the compare handler followed by the `jcc` handler (branch target read from the
+  `jcc`'s own `Op` behind it), so flags, faults and counts are those of the two instructions; it saves one dispatch
+  and lets the compiler fold the condition into the fresh operands (`cmp r32,r32; je` = 18 aarch64 instructions).
+  The pair still counts as 2 retired instructions (counts are per block).
   Rule: a fast handler must behave exactly like `step`. `Cpu::set_generic_only(true)` disables the fast handlers
   (debugging aid). The tests run every snippet through both paths.
-- **Contract of a handler**: `cpu.eip` already holds the next instruction's address (the run loop stores it).
-  Branches overwrite it. A failing handler stores its exit in `Cpu::pending_exit` and returns `false`; for a fault
-  `run` rewinds EIP (and the fault's `eip`) to the faulting instruction, as Windows would report it.
-  `Interrupt`/`Halt` leave EIP after the instruction. Fast handlers do not update `cur_ip`; the generic wrapper does
-  (x87 uses it as the last instruction pointer). Fault paths are `#[cold]` out-of-line functions.
-- **Run loop**: only the last instruction of a block can change EIP, so there is no per-instruction EIP check; the
-  retired-instruction count is added per block (exact on faults). **Block chaining**: each block caches its last two
-  successors `(eip, arena index)` (cleared by `invalidate_range`), skipping the L1 lookup.
+- **Contract of a handler**: before a block runs, `cpu.eip` holds the address after its *last* instruction
+  (`Block::end`): only the last instruction can branch and no other instruction reads EIP (the generic `exec::step`
+  reads `cpu.eip` only for `call`/`ret`/`jmp`/`jcc`/`loop`, which end blocks). Branches overwrite it. A failing
+  handler stores its exit in `Cpu::pending_exit` and its own `Op` address in `Cpu::fault_op` (cold out-of-line
+  `av` / `generic_exit`, reached by a tail call so the fast paths need no stack frame) and returns `false`; the run
+  loop (`block_exit`) computes the instruction index from `fault_op`; for a fault it rewinds EIP (and the fault's
+  `eip`) to the faulting instruction, as Windows would report it, and does not count it; `Interrupt`/`Halt` count
+  it and leave EIP after it. Fast handlers do not update `cur_ip`; the generic wrapper does (x87 uses it as the last
+  instruction pointer).
+- **Run loop**: per block: thunk/magic check, budget check, successor lookup, entry counter, one `special` test
+  (hooked or native), then the first handler (which runs the whole block). Retired instructions are counted through
+  the remaining budget only (`instructions = base + max - left`, stored before native calls and at exits). If the
+  budget ends inside a block, its first `left` instructions run one by one through `exec::step` (`run_partial`,
+  cold; same results as the fast handlers by their contract), so thread switches happen at exactly the same
+  instruction counts. **Block chaining**: each block caches its last two successors (start EIP + block pointer;
+  cleared by `invalidate_range`), skipping the L1 lookup; in game 98.8 % of block entries hit it
+  (90 000 vms s3det: 528 M + 646 M hits, 14 M L1 lookups, 118 k map/decode lookups).
 - **Native blocks** (`NativeBlock`, `Cpu::set_native_blocks`): host-registered native replacements of guest code
   regions, matched by `code_hash` of the code bytes, called at block entry with the remaining budget; see
   [performance.md](performance.md#native-fast-paths-s3-cpu-nativeblock-s3-mods-fastrs).
@@ -101,13 +129,25 @@ compare-and-branch, call/ret and push/pop.
 | + threaded dispatch with fast handlers | 170-185 |
 | + `Op` records, 8/16-bit forms, cold fault paths, lazy flags, block chaining (perf-cpu, 2026-11-05) | 280-290 |
 
+Windows 11 ARM64 dev PC (Snapdragon X2 Elite, power throttling off, best of 5; perf-interp 2026-11-07):
+
+| Version | MIPS |
+| --- | --- |
+| perf-cpu (commit `f0a50f7`) | 440 |
+| + tail-call threaded dispatch inside blocks, lean run loop | 770-800 |
+| + 32-byte `Op`, `special` flag | 900 |
+| + boxed blocks, pointer chaining | 1120-1140 |
+| + `cmp/test/dec` + `jcc` superinstructions | 1160 |
+
 In game the interpreter does ~225 M instr/s on the desktop (more cache misses and generic instructions than the
 benchmark). Measurements, profiling tools and next steps: [performance.md](performance.md). `perf` is not
 installed on this PC; valgrind/callgrind is.
 
 ## Tests
 
-`CARGO_TARGET_DIR=port/target cargo test -p s3-cpu -j 4`:
+`CARGO_TARGET_DIR=port/target cargo test -p s3-cpu -j 4` (on Windows ARM64 the two `fpu::golden` tests fail at
+`f0a50f7` already: f2xm1 and the pure-function hash differ from the golden vectors, see
+[determinism.md](determinism.md); open issue):
 - `diff_tests.rs` (x86_64 hosts): add/adc/sub/sbb/cmp/and/or/xor/test (8/16/32), neg/not/inc/dec,
   shl/shr/sar/rol/ror/rcl/rcr by CL with counts 0..40, 63, 64, 255, 257 and by immediates, shld/shrd 16/32,
   imul 2-op, bsf/bsr, bt/bts/btr/btc, mul/imul/div/idiv 8/16/32 (including the #DE cases). Operands are about
@@ -120,6 +160,13 @@ installed on this PC; valgrind/callgrind is.
   rep with ECX=0, a fault in the middle of a rep), `67 E3` jcxz, loops, BCD, pushfd/popfd probes, cpuid, int3/int n/
   ud2/invalid bytes/in, xlat, enter with nesting, xchg/cmpxchg/lock inc on memory, the FS-relative SEH prologue,
   0x66 16-bit operations, the 16-bit addressing wrap, and the MIPS benchmark (ignored).
+- `tests.rs` (perf-interp, run on every host, unlike `diff_tests.rs`): `budget_stops_are_exact` (a loop with calls,
+  imul, adc, cdq run with budgets 1/2/3/5/7/13 and in one go, fast and generic: each run retires exactly its budget,
+  same final registers, flags, memory and count), `mid_block_exits_count_exactly` (faults/`int3`/`hlt` in the middle
+  of a block and in the partial-block path: EIP and count), `imul_mul_cdq_forms_fast_vs_generic`,
+  `shift_forms_fast_vs_generic`, `setcc_forms_fast_vs_generic` and `cmp_jcc_fusion_fast_vs_generic` (69 edge and
+  pseudo-random values squared, two incoming flag states; every fused form x all 16 conditions, both outcomes).
+  Mutations (wrong OF of `shr`, wrong imul overflow, fused branch never taken) are caught.
 
 ## Hook point (2026-11-06, mods-w1)
 

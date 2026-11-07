@@ -160,6 +160,15 @@ script).
 
 ## Open items / recommendations
 
+- **Golden vectors fail on Windows 11 ARM64** (found by perf-interp 2026-11-07, rustc 1.99.1 / LLVM 23.1.1,
+  `aarch64-pc-windows-msvc`, already at commit `f0a50f7`, not caused by the interpreter work):
+  `golden_x87_vectors` differs only in **`f2xm1`**, and `golden_pure_functions` gives `0xa8d2b319571e5c63`
+  (expected `0x7d0c9df6e90f4fca`). The compiled `math::exp2m1` contains no
+  FMA (checked in the asm), so the suspect is `libm::expm1` or a toolchain change since the constants were made on
+  x86_64; HYPOTHESIS, unverified. If it is aarch64-specific, phones and x86_64 desktops would desync in lockstep
+  wherever the game runs `f2xm1` on sim data. Next step: run the golden test on x86_64 with the same toolchain and
+  on the phone (`adb shell`), then bisect the pure-function hash per function.
+
 - **Frontends**: call `s3_cpu::fpu::math::host_float_env_check()` (re-exported as
   `s3_runtime::cpu::fpu::math`) on the emulation thread at startup and refuse multiplayer if it fails.
 - **Run the golden vectors and `s3det` on an arm64 phone** (or emulator-5610 with arm64 translation, by an agent

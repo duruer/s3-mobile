@@ -934,8 +934,11 @@ pub fn present_primary(m: &mut Machine) {
     let mut fb = std::mem::take(&mut s.fb);
     blit::to_framebuffer_into(&m.mem, &surf, rgb555, palette.as_deref(), &mut fb);
     s.presents += 1;
-    m.present(&fb);
-    s.fb = fb;
+    // The state borrow must end before the host/mods run (they may call back into ddraw).
+    drop(s);
+    // Ownership round trip: the runtime keeps this frame and hands back the previous buffer (no copy).
+    let back = m.present_owned(fb);
+    state(m).borrow_mut().fb = back;
 }
 
 fn is_visible(m: &mut Machine, surf: u32) -> bool {

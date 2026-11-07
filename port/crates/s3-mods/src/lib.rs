@@ -22,8 +22,10 @@ pub mod fast; // native fast paths for hot guest loops (docs/porting/performance
 pub mod fast_blit;
 pub mod fast_land;
 pub mod fast_obj;
+pub mod fast_shadow; // shadow sprite row loops (perf-shadow)
 pub mod fast_snap;
 pub mod fast_sprite;
+pub mod fast_tile;
 pub mod gesture;
 pub mod hooks;
 pub mod overlay;

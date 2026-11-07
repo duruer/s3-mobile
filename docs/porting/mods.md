@@ -147,7 +147,7 @@ Unconsumed gestures map like the former Android mapper: Tap = left click (button
 setting), ThreeFingerTap = keyboard request (`take_keyboard_request`), one-finger Pan = left drag, or right drag on the
 in-game map (x >= 170, not 800x600), mirrored and halved = "grab" scrolling. `set_right_next(m, true)` = RMB button.
 Android sends `HostEvent::Pointer` since 2026-11-05 (`s3-android/src/touch.rs`, RMB/keyboard flags via
-`Shared::rmb_toggle/rmb_armed/keyboard_req` <-> `s3_mods::set_right_next/right_next/take_keyboard_request`).
+`Shared::keyboard_req` <-> `s3_mods::take_keyboard_request`; the RMB flags went with the letterbox buttons 2026-11-07).
 
 ## Settings (`settings.rs`)
 

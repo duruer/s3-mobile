@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Print length and FNV-1a 64 hash (s3_cpu::code_hash) of guest code ranges of a PE (for NativeBlock entries).
 
-usage: python3 -I tools/perf/code_hash.py S3.EXE START END [START END ...]   (hex VAs, END exclusive)
+usage: python3 -I tools/perf/code_hash.py [--concat] S3.EXE START END [START END ...]   (hex VAs, END exclusive)
+--concat: one hash over all ranges concatenated (fast_tile.rs OBJ_HASH).
 Prints no code bytes (game code must not end up in our sources)."""
 import struct
 import sys
@@ -37,12 +38,21 @@ def fnv(data):
 
 
 def main():
-    b = open(sys.argv[1], "rb").read()
+    args = sys.argv[1:]
+    concat = args[:1] == ["--concat"]
+    if concat:
+        args = args[1:]
+    b = open(args[0], "rb").read()
     secs = sections(b)
-    a = sys.argv[2:]
+    a = args[1:]
+    parts = []
     for i in range(0, len(a), 2):
         s, e = int(a[i], 16), int(a[i + 1], 16)
-        print(f"{s:#x}..{e:#x} len {e - s} hash {fnv(read(b, secs, s, e - s)):#018x}")
+        parts.append(read(b, secs, s, e - s))
+        if not concat:
+            print(f"{s:#x}..{e:#x} len {e - s} hash {fnv(parts[-1]):#018x}")
+    if concat:
+        print(f"{len(parts)} ranges, {sum(map(len, parts))} bytes, hash {fnv(b''.join(parts)):#018x}")
 
 
 if __name__ == "__main__":

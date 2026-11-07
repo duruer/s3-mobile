@@ -4,7 +4,7 @@
 //!   for the display.
 //! - This thread uploads the RGB565 frame (`glTexSubImage2D`, no CPU conversion or scaling) and draws one textured
 //!   quad placed by [`Viewport`] (Fit / Fill / Stretch / Native wide) with the selected filter (nearest, linear,
-//!   sharp bilinear shader), plus the letterbox buttons as small textures; `eglSwapBuffers` with swap interval 1
+//!   sharp bilinear shader); `eglSwapBuffers` with swap interval 1
 //!   paces it to the display (60/90/120 Hz). It requests the panel's high refresh rate with
 //!   `ANativeWindow_setFrameRate[WithChangeStrategy]` (looked up with dlsym: API 30/31).
 //! - If EGL / GLES fails, it falls back to the old CPU path (`ANativeWindow_lock`, letterbox, compositor scaling).
@@ -19,12 +19,12 @@ use std::time::{Duration, Instant};
 use ndk::hardware_buffer_format::HardwareBufferFormat;
 use ndk::native_window::NativeWindow;
 use s3_mods::display::{DisplayMode, ScaleFilter, Viewport};
+use s3_mods::menu_layout::Background;
 use s3_runtime::FrameBuffer;
 
 use crate::frontend::{Phase, Shared};
 use crate::gl::*;
 use crate::layout::{blit_letterboxed, Letterbox};
-use crate::overlay::{self, Button, OverlayState};
 use crate::screen;
 
 struct CtlState {
@@ -139,7 +139,6 @@ struct Gles {
     tex: GLuint,
     tex_size: (u32, u32),
     tex_filter: GLint,
-    buttons: Vec<(Button, GLuint, u32, OverlayState)>,
 }
 
 impl Gles {
@@ -182,12 +181,11 @@ impl Gles {
             config,
             context,
             surface: EGL_NO_SURFACE,
-            plain: Program { id: 0, u_rect: -1, u_tex: -1, u_size: -1, u_scale: -1 },
-            sharp: Program { id: 0, u_rect: -1, u_tex: -1, u_size: -1, u_scale: -1 },
+            plain: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
+            sharp: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
             tex: 0,
             tex_size: (0, 0),
             tex_filter: -1,
-            buttons: Vec::new(),
         })
     }
 
@@ -252,10 +250,13 @@ impl Gles {
         }
     }
 
-    unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter, buttons: &[(Button, overlay::Rect)], st: &OverlayState) {
+    unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter) {
         let (ww, wh) = (vp.win_w as f32, vp.win_h as f32);
         glViewport(0, 0, vp.win_w as i32, vp.win_h as i32);
-        glClearColor(0.0, 0.0, 0.0, 1.0);
+        match vp.layout.map(|l| l.background) {
+            Some(Background::Color([r, g, b])) => glClearColor(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0),
+            _ => glClearColor(0.0, 0.0, 0.0, 1.0),
+        }
         glClear(GL_COLOR_BUFFER_BIT);
         // Game frame.
         let (sx, sy) = vp.scale();
@@ -279,45 +280,31 @@ impl Gles {
             glUniform2f(prog.u_size, vp.game_w as f32, vp.game_h as f32);
             glUniform2f(prog.u_scale, sx.max(1.0), sy.max(1.0));
         }
-        let r = clip_rect(vp.dst_x, vp.dst_y, vp.dst_w, vp.dst_h, ww, wh);
-        glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        // Letterbox buttons: one small texture each, re-rendered when their size / state changes.
-        if buttons.is_empty() {
+        let Some(l) = vp.layout else {
+            let r = clip_rect(vp.dst_x, vp.dst_y, vp.dst_w, vp.dst_h, ww, wh);
+            glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
+            glUniform4f(prog.u_uv, 0.0, 0.0, 1.0, 1.0);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             return;
-        }
-        glUseProgram(self.plain.id);
-        glUniform1i(self.plain.u_tex, 0);
-        for (b, rect) in buttons {
-            let size = rect.w.min(256);
-            let idx = match self.buttons.iter().position(|e| e.0 == *b) {
-                Some(i) => i,
-                None => {
-                    let mut t = 0;
-                    glGenTextures(1, &mut t);
-                    glBindTexture(GL_TEXTURE_2D, t);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    self.buttons.push((*b, t, 0, OverlayState { pressed: Some(*b), right_armed: true, keyboard: true }));
-                    self.buttons.len() - 1
-                }
-            };
-            let e = &mut self.buttons[idx];
-            glBindTexture(GL_TEXTURE_2D, e.1);
-            let vis = |s: &OverlayState| (s.pressed == Some(*b), s.right_armed, s.keyboard);
-            if e.2 != size || vis(&e.3) != vis(st) {
-                let img = overlay::button_image(*b, size, st);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB as GLint, size as i32, size as i32, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, img.as_ptr() as *const c_void);
-                e.2 = size;
-                e.3 = *st;
-            }
-            let r = clip_rect(rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32, ww, wh);
-            glUniform4f(self.plain.u_rect, r[0], r[1], r[2], r[3]);
+        };
+        // Full-screen menu layout (s3_mods::menu_layout): background, then one quad per piece.
+        let (gw, gh) = (vp.game_w as f32, vp.game_h as f32);
+        let uv = |x: u16, y: u16, w: u16, h: u16| [x as f32 / gw, y as f32 / gh, (x + w) as f32 / gw, (y + h) as f32 / gh];
+        if let Background::Stretch([x, y, w, h]) = l.background {
+            let r = clip_rect(0.0, 0.0, ww, wh, ww, wh);
+            let t = uv(x, y, w, h);
+            glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
+            glUniform4f(prog.u_uv, t[0], t[1], t[2], t[3]);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
-        self.tex_filter = -1; // button textures changed the binding; re-apply next frame
+        for p in l.pieces {
+            let [x, y, w, h] = p.src;
+            let r = clip_rect(vp.dst_x + p.at[0] as f32 * sx, vp.dst_y + p.at[1] as f32 * sy, w as f32 * sx, h as f32 * sy, ww, wh);
+            let t = uv(x, y, w, h);
+            glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
+            glUniform4f(prog.u_uv, t[0], t[1], t[2], t[3]);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
     }
 
     /// Swap; `false` if the surface is gone (re-attach needed).
@@ -343,16 +330,29 @@ impl Drop for Gles {
 
 // ---------------------------------------------------------------- the thread
 
+/// Frame sequence number held in the presenter's local buffer (only the render thread uses it).
+static LOCAL_SEQ: AtomicU64 = AtomicU64::new(u64::MAX);
+
 /// What to show: the game frame, the frame with the "engine stopped" panel, or a status screen.
 fn pick_image(shared: &Shared, local: &mut Option<FrameBuffer>, status_cache: &mut Option<(u64, FrameBuffer)>, frame_seq: &mut u64) -> (bool, u64) {
     let status = shared.status.lock().unwrap().clone();
-    let slot = shared.frame.lock().unwrap();
+    let mut slot = shared.frame.lock().unwrap();
     *frame_seq = slot.seq;
-    match &slot.fb {
+    let seq = slot.seq;
+    match &mut slot.fb {
         Some(fb) => {
             match local {
-                Some(l) if l.width == fb.width && l.height == fb.height => l.pixels.copy_from_slice(&fb.pixels),
-                _ => *local = Some(fb.clone()),
+                // A new frame of the same size: swap buffers with the slot instead of copying (perf-r2). The slot
+                // then holds an older frame, which the engine overwrites completely on its next present.
+                Some(l) if l.width == fb.width && l.height == fb.height => {
+                    if LOCAL_SEQ.swap(seq, Ordering::AcqRel) != seq {
+                        std::mem::swap(&mut l.pixels, &mut fb.pixels);
+                    }
+                }
+                _ => {
+                    *local = Some(fb.clone());
+                    LOCAL_SEQ.store(seq, Ordering::Release);
+                }
             }
             drop(slot);
             if status.phase == Phase::Stopped {
@@ -385,7 +385,6 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
     let mut local: Option<FrameBuffer> = None;
     let mut status_cache: Option<(u64, FrameBuffer)> = None;
     let mut shown = (u64::MAX, u64::MAX, u64::MAX); // frame seq, status seq, display seq
-    let mut shown_buttons = OverlayState::default();
     let mut cpu_geometry: Option<(u32, u32)> = None;
     let mut fps_t0 = Instant::now();
     let mut fps_n = 0u32;
@@ -447,11 +446,10 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
         };
         // 2. Wait for something new.
         let disp_seq = shared.display_seq.load(Ordering::Acquire);
-        let buttons_st = *shared.buttons.lock().unwrap();
         {
             let status_seq = shared.status.lock().unwrap().seq;
             let g = shared.frame.lock().unwrap();
-            if g.seq == shown.0 && status_seq == shown.1 && disp_seq == shown.2 && buttons_st == shown_buttons {
+            if g.seq == shown.0 && status_seq == shown.1 && disp_seq == shown.2 {
                 let _ = shared.frame_cv.wait_timeout(g, Duration::from_millis(250)).unwrap();
                 // Keep the display rate current while nothing new arrives (paused game, menus).
                 let el = fps_t0.elapsed();
@@ -473,18 +471,16 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
         let (game_frame, status_seq) = pick_image(&shared, &mut local, &mut status_cache, &mut frame_seq);
         let fb = local.as_ref().unwrap();
         shown = (frame_seq, status_seq, disp_seq);
-        shown_buttons = buttons_st;
 
         if let Some(g) = gles.as_mut() {
             // GPU path.
             let sz = unsafe { g.size() };
             win_size = sz;
             let mode = if game_frame { display.mode } else { DisplayMode::Fit };
-            let vp = Viewport::new(mode, fb.width, fb.height, sz.0, sz.1);
-            let buttons = if game_frame { overlay::layout_vp(&vp) } else { Vec::new() };
+            let vp = Viewport::for_frame(mode, &fb.pixels, fb.width, fb.height, sz.0, sz.1);
             unsafe {
                 g.upload(fb);
-                g.draw(&vp, if game_frame { display.filter } else { ScaleFilter::Linear }, &buttons, &buttons_st);
+                g.draw(&vp, if game_frame { display.filter } else { ScaleFilter::Linear });
             }
             shared.set_viewport(if game_frame { Some(vp) } else { None });
             *shared.letterbox.lock().unwrap() = None;
@@ -511,12 +507,6 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
                     l.off_y = (bh as u32).saturating_sub(lb.game_h) / 2;
                     let dst = unsafe { std::slice::from_raw_parts_mut(guard.bits() as *mut u16, stride * bh) };
                     blit_letterboxed(&l, &fb.pixels, dst, stride, bh);
-                    if game_frame {
-                        let mut lo = l;
-                        lo.buf_w = bw as u32;
-                        lo.buf_h = bh as u32;
-                        overlay::draw(&lo, &buttons_st, dst, stride, bh);
-                    }
                 }
                 Err(e) => log::error!("ANativeWindow_lock: {e}"),
             }

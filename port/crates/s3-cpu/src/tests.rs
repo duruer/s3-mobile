@@ -921,3 +921,322 @@ fn hook_exits_mid_block_and_skip_once() {
     cpu.push32(&mut mem, layout::MAGIC_RETURN);
     assert_eq!(cpu.run(&mut mem, 100), CpuExit::ReturnMagic);
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// perf-interp: threaded dispatch must keep exits and retired-instruction counts exact.
+
+/// Loop with loads, stores, ALU, a call and a conditional skip (like `bench_mips`, 200 iterations).
+fn budget_program(a: &mut CodeAssembler) {
+    let mut top = a.create_label();
+    let mut func = a.create_label();
+    let mut done = a.create_label();
+    let mut skip = a.create_label();
+    a.mov(ecx, 200u32).unwrap();
+    a.mov(esi, DATA).unwrap();
+    a.xor(eax, eax).unwrap();
+    a.set_label(&mut top).unwrap();
+    a.mov(edx, dword_ptr(esi + 8)).unwrap();
+    a.add(edx, ecx).unwrap();
+    a.mov(dword_ptr(esi + 8), edx).unwrap();
+    a.imul_3(edx, edx, 37).unwrap();
+    a.test(ecx, 3).unwrap();
+    a.jne(skip).unwrap();
+    a.push(ecx).unwrap();
+    a.call(func).unwrap();
+    a.add(esp, 4).unwrap();
+    a.set_label(&mut skip).unwrap();
+    a.lea(edi, ptr(esi + ecx * 4)).unwrap();
+    a.and(edi, 0xFFF).unwrap();
+    a.movzx(ebx, byte_ptr(esi + edi)).unwrap();
+    a.add(eax, ebx).unwrap();
+    a.adc(eax, edx).unwrap();
+    a.dec(ecx).unwrap();
+    a.jne(top).unwrap();
+    a.jmp(done).unwrap();
+    a.set_label(&mut func).unwrap();
+    a.push(ebp).unwrap();
+    a.mov(ebp, esp).unwrap();
+    a.mov(eax, dword_ptr(ebp + 8)).unwrap();
+    a.shl(eax, 2).unwrap();
+    a.cdq().unwrap();
+    a.pop(ebp).unwrap();
+    a.ret().unwrap();
+    a.set_label(&mut done).unwrap();
+    a.nop().unwrap();
+}
+
+/// Running with small budgets (stops inside blocks) must retire exactly the budget per run and end in the same
+/// state, with the same total count, as one run (fast and generic paths).
+#[test]
+fn budget_stops_are_exact() {
+    let mut results = Vec::new();
+    for generic in [false, true] {
+        for chunk in [1_000_000u64, 1, 2, 3, 5, 7, 13] {
+            let (mut cpu, mut mem) = setup(budget_program);
+            cpu.set_generic_only(generic);
+            let mut runs = 0u32;
+            loop {
+                let before = cpu.instructions;
+                let e = cpu.run(&mut mem, chunk);
+                runs += 1;
+                match e {
+                    CpuExit::Budget => assert_eq!(cpu.instructions - before, chunk, "chunk {chunk}"),
+                    CpuExit::ReturnMagic => break,
+                    e => panic!("{e:?}"),
+                }
+                assert!(runs < 1_000_000);
+            }
+            results.push((generic, chunk, cpu.regs, cpu.eflags(), cpu.instructions, mem.slice(DATA, 0x1000).to_vec()));
+        }
+    }
+    let r0 = &results[0];
+    for r in &results {
+        assert_eq!((r.2, r.3, r.4), (r0.2, r0.3, r0.4), "generic {} chunk {}", r.0, r.1);
+        assert_eq!(r.5, r0.5, "memory, generic {} chunk {}", r.0, r.1);
+    }
+}
+
+/// Exits in the middle of a block: retired count and EIP for faults (instruction not retired, EIP at it) and
+/// for `int3` / `hlt` (retired, EIP after it), from fast and generic handlers.
+#[test]
+fn mid_block_exits_count_exactly() {
+    // nop; mov eax,[0x10]; ret  -> AV at CODE+1 after 1 instruction.
+    let (cpu, _, e) = run_bytes(&[0x90, 0xA1, 0x10, 0, 0, 0, 0xC3], |_, _| {});
+    assert!(
+        matches!(e, CpuExit::Fault { kind: FaultKind::AccessViolation { addr: 0x10, write: false }, eip, .. } if eip == CODE + 1),
+        "{e:?}"
+    );
+    assert_eq!((cpu.eip, cpu.instructions), (CODE + 1, 1));
+    // nop; nop; mov [ecx],eax (ecx = 0); ret
+    let (cpu, _, e) = run_bytes(&[0x90, 0x90, 0x89, 0x01, 0xC3], |_, _| {});
+    assert!(
+        matches!(e, CpuExit::Fault { kind: FaultKind::AccessViolation { addr: 0, write: true }, eip, .. } if eip == CODE + 2),
+        "{e:?}"
+    );
+    assert_eq!((cpu.eip, cpu.instructions), (CODE + 2, 2));
+    // nop; push eax with ESP in the guard -> fault, ESP unchanged.
+    let (cpu, _, e) = run_bytes(&[0x90, 0x50, 0xC3], |c, _| c.regs[ESP] = 0x100);
+    assert!(matches!(e, CpuExit::Fault { eip, .. } if eip == CODE + 1), "{e:?}");
+    assert_eq!((cpu.eip, cpu.instructions, cpu.regs[ESP]), (CODE + 1, 1, 0x100));
+    // nop; cdq; idiv ecx (ecx = 0) -> #DE after 2 instructions.
+    let (cpu, _, e) = run_bytes(&[0x90, 0x99, 0xF7, 0xF9, 0xC3], |_, _| {});
+    assert!(matches!(e, CpuExit::Fault { kind: FaultKind::DivideError, eip, .. } if eip == CODE + 2), "{e:?}");
+    assert_eq!((cpu.eip, cpu.instructions), (CODE + 2, 2));
+    // nop; int3 -> retired, EIP after it.
+    let (cpu, _, e) = run_bytes(&[0x90, 0xCC, 0xC3], |_, _| {});
+    assert_eq!(e, CpuExit::Interrupt(3));
+    assert_eq!((cpu.eip, cpu.instructions), (CODE + 2, 2));
+    // nop; nop; hlt; nop -> Halt, EIP after hlt.
+    let (cpu, _, e) = run_bytes(&[0x90, 0x90, 0xF4, 0x90, 0xC3], |_, _| {});
+    assert_eq!(e, CpuExit::Halt);
+    assert_eq!((cpu.eip, cpu.instructions), (CODE + 3, 3));
+    // Partial-block path: budget 2, then a run that faults at the 4th instruction of the block.
+    let mut mem = GuestMemory::new().unwrap();
+    mem.write_bytes(CODE, &[0x90, 0x90, 0x90, 0xA1, 0x10, 0, 0, 0, 0x90, 0xC3]);
+    let mut cpu = Cpu::new();
+    cpu.regs[ESP] = STACK_TOP;
+    cpu.eip = CODE;
+    assert_eq!(cpu.run(&mut mem, 2), CpuExit::Budget);
+    assert_eq!((cpu.eip, cpu.instructions), (CODE + 2, 2));
+    let e = cpu.run(&mut mem, 3);
+    assert!(matches!(e, CpuExit::Fault { eip, .. } if eip == CODE + 3), "{e:?}");
+    assert_eq!((cpu.eip, cpu.instructions), (CODE + 3, 3));
+    // Budget stop exactly before the faulting instruction, then the fault from the full-block path.
+    cpu.eip = CODE;
+    cpu.instructions = 0;
+    assert_eq!(cpu.run(&mut mem, 3), CpuExit::Budget);
+    assert_eq!((cpu.eip, cpu.instructions), (CODE + 3, 3));
+}
+
+/// Edge-case and pseudo-random operand values for the fast-vs-generic form tests.
+fn form_values() -> Vec<u32> {
+    let mut v = vec![
+        0u32, 1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 0x7F, 0x80, 0x81, 0xFF, 0x100, 0x7FFF, 0x8000, 0xFFFF,
+        0x1_0000, 0x7FFF_FFFF, 0x8000_0000, 0x8000_0001, 0xFFFF_FFFE, 0xFFFF_FFFF, 0x1234_5678, 0xDEAD_BEEF,
+    ];
+    let mut x = 0x9E37_79B9u32;
+    for _ in 0..40 {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        v.push(x);
+    }
+    v
+}
+
+/// Run `emit` for operand pairs `(a, b)` (EAX = a, EBX = b, ECX = b, EDX = !a, [DATA+0xF00] = b, incoming flags
+/// alternating 0 / all status flags) and store EAX, EBX, ECX, EDX and EFLAGS of every case into DATA; the
+/// fast and the generic path must agree on everything (`run_both`).
+fn forms_fast_vs_generic(emit: &dyn Fn(&mut CodeAssembler)) {
+    let vals = form_values();
+    let pairs: Vec<(u32, u32)> = vals.iter().flat_map(|&a| vals.iter().map(move |&b| (a, b))).collect();
+    for chunk in pairs.chunks(150) {
+        run_both(|a| {
+            for (k, &(x, y)) in chunk.iter().enumerate() {
+                let o = DATA + 20 * k as u32;
+                a.mov(eax, x).unwrap();
+                a.mov(ebx, y).unwrap();
+                a.mov(ecx, y).unwrap();
+                a.mov(edx, !x).unwrap();
+                a.mov(dword_ptr(DATA + 0xF00), y).unwrap();
+                a.push(if k % 2 == 0 { 0x202u32 } else { 0x202 | 0x8D5 }).unwrap();
+                a.popfd().unwrap();
+                emit(a);
+                a.pushfd().unwrap();
+                a.pop(dword_ptr(o + 16)).unwrap();
+                a.mov(dword_ptr(o), eax).unwrap();
+                a.mov(dword_ptr(o + 4), ebx).unwrap();
+                a.mov(dword_ptr(o + 8), ecx).unwrap();
+                a.mov(dword_ptr(o + 12), edx).unwrap();
+            }
+        });
+    }
+}
+
+#[test]
+fn imul_mul_cdq_forms_fast_vs_generic() {
+    forms_fast_vs_generic(&|a| a.imul_2(eax, ebx).unwrap());
+    forms_fast_vs_generic(&|a| a.imul_2(eax, dword_ptr(DATA + 0xF00)).unwrap());
+    forms_fast_vs_generic(&|a| a.imul_3(edx, ebx, 37).unwrap());
+    forms_fast_vs_generic(&|a| a.imul_3(edx, ebx, -3).unwrap());
+    forms_fast_vs_generic(&|a| a.imul_3(eax, ebx, 0x1234_5678).unwrap());
+    forms_fast_vs_generic(&|a| a.imul_3(ecx, dword_ptr(DATA + 0xF00), -100_000).unwrap());
+    forms_fast_vs_generic(&|a| a.imul(ebx).unwrap());
+    forms_fast_vs_generic(&|a| a.imul(dword_ptr(DATA + 0xF00)).unwrap());
+    forms_fast_vs_generic(&|a| a.mul(ebx).unwrap());
+    forms_fast_vs_generic(&|a| a.mul(dword_ptr(DATA + 0xF00)).unwrap());
+    forms_fast_vs_generic(&|a| a.cdq().unwrap());
+    forms_fast_vs_generic(&|a| a.cwde().unwrap());
+    forms_fast_vs_generic(&|a| a.neg(ebx).unwrap());
+    forms_fast_vs_generic(&|a| a.not(ebx).unwrap());
+    forms_fast_vs_generic(&|a| a.inc(dword_ptr(DATA + 0xF00)).unwrap());
+    forms_fast_vs_generic(&|a| a.dec(dword_ptr(DATA + 0xF00)).unwrap());
+}
+
+#[test]
+fn shift_forms_fast_vs_generic() {
+    for c in [0u32, 1, 2, 7, 8, 9, 15, 16, 17, 24, 31] {
+        forms_fast_vs_generic(&|a| a.shl(bl, c).unwrap());
+        forms_fast_vs_generic(&|a| a.shr(bh, c).unwrap());
+        forms_fast_vs_generic(&|a| a.sar(al, c).unwrap());
+        forms_fast_vs_generic(&|a| a.shl(bx, c).unwrap());
+        forms_fast_vs_generic(&|a| a.shr(ax, c).unwrap());
+        forms_fast_vs_generic(&|a| a.sar(dx, c).unwrap());
+    }
+    // By CL (ECX = b: all counts incl. >= 32, masked to 5 bits).
+    forms_fast_vs_generic(&|a| a.shl(eax, cl).unwrap());
+    forms_fast_vs_generic(&|a| a.shr(edx, cl).unwrap());
+    forms_fast_vs_generic(&|a| a.sar(eax, cl).unwrap());
+    forms_fast_vs_generic(&|a| a.shl(ax, cl).unwrap());
+    forms_fast_vs_generic(&|a| a.shr(dx, cl).unwrap());
+    forms_fast_vs_generic(&|a| a.sar(bx, cl).unwrap());
+    forms_fast_vs_generic(&|a| a.shl(al, cl).unwrap());
+    forms_fast_vs_generic(&|a| a.shr(ah, cl).unwrap());
+    forms_fast_vs_generic(&|a| a.sar(bl, cl).unwrap());
+}
+
+#[test]
+fn setcc_forms_fast_vs_generic() {
+    // After cmp (lazy SUB), test (lazy LOGIC), add (lazy ADD) and the popfd'd flags (eager).
+    forms_fast_vs_generic(&|a| {
+        a.cmp(eax, ebx).unwrap();
+        a.setb(al).unwrap();
+        a.setl(ah).unwrap();
+        a.setbe(bl).unwrap();
+        a.setg(bh).unwrap();
+        a.seto(cl).unwrap();
+        a.setp(ch).unwrap();
+        a.sets(dl).unwrap();
+        a.sete(dh).unwrap();
+    });
+    forms_fast_vs_generic(&|a| {
+        a.add(ebx, eax).unwrap();
+        a.setae(al).unwrap();
+        a.setge(ah).unwrap();
+        a.seta(bl).unwrap();
+        a.setle(bh).unwrap();
+        a.setno(cl).unwrap();
+        a.setnp(ch).unwrap();
+        a.setns(dl).unwrap();
+        a.setne(dh).unwrap();
+    });
+    forms_fast_vs_generic(&|a| {
+        a.test(al, bl).unwrap();
+        a.setb(al).unwrap();
+        a.setle(ah).unwrap();
+        a.seta(bl).unwrap();
+        a.setg(bh).unwrap();
+    });
+    forms_fast_vs_generic(&|a| {
+        a.setb(al).unwrap();
+        a.setl(ah).unwrap();
+        a.setbe(bl).unwrap();
+        a.setg(bh).unwrap();
+        a.seto(cl).unwrap();
+        a.setp(ch).unwrap();
+        a.sets(dl).unwrap();
+        a.sete(dh).unwrap();
+    });
+}
+
+/// Superinstructions (`cmp`/`test`/`dec` + block-ending `jcc`, `fast::cmp_jcc`): every fused form and condition
+/// against the generic path, both branch outcomes.
+#[test]
+fn cmp_jcc_fusion_fast_vs_generic() {
+    type Cmp = fn(&mut CodeAssembler);
+    let cmps: [Cmp; 21] = [
+        |a| a.cmp(eax, ebx).unwrap(),
+        |a| a.cmp(ax, bx).unwrap(),
+        |a| a.cmp(al, bl).unwrap(),
+        |a| a.cmp(eax, 0x7F).unwrap(),
+        |a| a.cmp(ebx, 0x8000_0000u32).unwrap(),
+        |a| a.cmp(ax, 0x8000).unwrap(),
+        |a| a.cmp(bl, 0x80).unwrap(),
+        |a| a.test(eax, ebx).unwrap(),
+        |a| a.test(ax, bx).unwrap(),
+        |a| a.test(al, bl).unwrap(),
+        |a| a.test(ebx, 0x8000_0001u32).unwrap(),
+        |a| a.test(bl, 0x81).unwrap(),
+        |a| a.cmp(byte_ptr(DATA + 0xF00), 0x80).unwrap(),
+        |a| a.cmp(byte_ptr(esi + 0xF00), 0x7F).unwrap(),
+        |a| a.cmp(dword_ptr(DATA + 0xF00), 9).unwrap(),
+        |a| a.cmp(dword_ptr(esi + 0xF00), -1).unwrap(),
+        |a| a.cmp(word_ptr(esi + 0xF00), 0x7FFF).unwrap(),
+        |a| a.test(byte_ptr(DATA + 0xF00), 0x81).unwrap(),
+        |a| a.test(byte_ptr(esi + 0xF00), 1).unwrap(),
+        |a| a.test(dword_ptr(esi + 0xF00), 0x8000_0000u32).unwrap(),
+        |a| a.dec(ebx).unwrap(),
+    ];
+    type Jcc = fn(&mut CodeAssembler, CodeLabel);
+    let jccs: [Jcc; 16] = [
+        |a, l| a.je(l).unwrap(),
+        |a, l| a.jne(l).unwrap(),
+        |a, l| a.jb(l).unwrap(),
+        |a, l| a.jae(l).unwrap(),
+        |a, l| a.jbe(l).unwrap(),
+        |a, l| a.ja(l).unwrap(),
+        |a, l| a.js(l).unwrap(),
+        |a, l| a.jns(l).unwrap(),
+        |a, l| a.jl(l).unwrap(),
+        |a, l| a.jge(l).unwrap(),
+        |a, l| a.jle(l).unwrap(),
+        |a, l| a.jg(l).unwrap(),
+        |a, l| a.jo(l).unwrap(),
+        |a, l| a.jno(l).unwrap(),
+        |a, l| a.jp(l).unwrap(),
+        |a, l| a.jnp(l).unwrap(),
+    ];
+    for c in cmps {
+        for j in jccs {
+            forms_fast_vs_generic(&|a| {
+                let mut l = a.create_label();
+                a.mov(esi, DATA).unwrap();
+                c(a);
+                j(a, l);
+                a.lea(edx, ptr(edx + 1)).unwrap();
+                a.set_label(&mut l).unwrap();
+                a.nop().unwrap();
+            });
+        }
+    }
+}

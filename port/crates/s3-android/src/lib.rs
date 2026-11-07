@@ -8,7 +8,7 @@ pub mod audio;
 pub mod frontend;
 pub mod keys;
 pub mod layout;
-pub mod overlay;
+pub mod perf_hint;
 pub mod screen;
 pub mod touch;
 

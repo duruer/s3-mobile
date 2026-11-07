@@ -45,6 +45,8 @@ pub struct MachineExt {
     pub(crate) overlay_buf: Option<FrameBuffer>,
     /// Last guest frame (kept only while an overlay is installed) for overlay-only refreshes.
     pub(crate) last_guest_frame: Option<FrameBuffer>,
+    /// Size of the last guest frame (valid also while `last_guest_frame` is taken out for composing).
+    pub(crate) last_guest_size: (u32, u32),
 }
 
 impl Machine {
@@ -75,7 +77,7 @@ impl Machine {
 
     /// Size of the last guest frame seen by the overlay step ((0, 0) before the first present).
     pub fn last_frame_size(&self) -> (u32, u32) {
-        self.ext.last_guest_frame.as_ref().map(|f| (f.width, f.height)).unwrap_or((0, 0))
+        self.ext.last_guest_size
     }
 
     /// Current hook address set.
@@ -116,11 +118,18 @@ impl Machine {
 
     /// Apply the overlay to a guest frame. Returns the frame to present (`None` = present `fb` unchanged).
     pub(crate) fn apply_overlay(&mut self, fb: &FrameBuffer) -> Option<FrameBuffer> {
-        let compose = self.ext.overlay_compose?;
+        self.ext.overlay_compose?;
         // Remember the raw guest frame for overlay-only refreshes.
         let mut last = self.ext.last_guest_frame.take().unwrap_or_default();
         copy_frame(&mut last, fb);
+        self.ext.last_guest_size = (fb.width, fb.height);
         self.ext.last_guest_frame = Some(last);
+        self.apply_overlay_to(fb)
+    }
+
+    /// Overlay over a copy of `fb` (which is already remembered as the last guest frame, or a refresh of it).
+    pub(crate) fn apply_overlay_to(&mut self, fb: &FrameBuffer) -> Option<FrameBuffer> {
+        let compose = self.ext.overlay_compose?;
         if let Some(w) = self.ext.overlay_wanted {
             if !w(self) {
                 return None;
@@ -145,7 +154,10 @@ impl Machine {
     /// a HUD animation or touch feedback while the game presents nothing). Not counted in `stats.presents`.
     pub fn refresh_overlay(&mut self) {
         let Some(src) = self.ext.last_guest_frame.take() else { return };
-        self.present_inner(&src);
+        match self.apply_overlay_to(&src) {
+            Some(out) => self.present_cursor_owned(out),
+            None => self.present_cursor(&src),
+        }
         if self.ext.last_guest_frame.is_none() {
             self.ext.last_guest_frame = Some(src);
         }

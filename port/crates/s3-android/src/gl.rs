@@ -124,12 +124,14 @@ extern "C" {
     pub fn glFinish();
 }
 
-/// Quad vertex shader: `u_rect` = destination (x0, y0, x1, y1) in clip space; uv 0..1.
+/// Quad vertex shader: `u_rect` = destination (x0, y0, x1, y1) in clip space; `u_uv` = source (u0, v0, u1, v1)
+/// in texture coordinates (0, 0, 1, 1 = whole texture; sub-rectangles for menu layout pieces).
 pub const VS: &str = "attribute vec2 a_pos;\n\
 varying vec2 v_uv;\n\
 uniform vec4 u_rect;\n\
+uniform vec4 u_uv;\n\
 void main() {\n\
-  v_uv = a_pos;\n\
+  v_uv = mix(u_uv.xy, u_uv.zw, a_pos);\n\
   gl_Position = vec4(mix(u_rect.xy, u_rect.zw, a_pos), 0.0, 1.0);\n\
 }\n";
 
@@ -177,6 +179,7 @@ unsafe fn compile(ty: GLenum, src: &str) -> Result<GLuint, String> {
 pub struct Program {
     pub id: GLuint,
     pub u_rect: GLint,
+    pub u_uv: GLint,
     pub u_tex: GLint,
     pub u_size: GLint,
     pub u_scale: GLint,
@@ -204,6 +207,7 @@ pub unsafe fn program(fs: &str) -> Result<Program, String> {
     Ok(Program {
         id: p,
         u_rect: glGetUniformLocation(p, c"u_rect".as_ptr()),
+        u_uv: glGetUniformLocation(p, c"u_uv".as_ptr()),
         u_tex: glGetUniformLocation(p, c"u_tex".as_ptr()),
         u_size: glGetUniformLocation(p, c"u_size".as_ptr()),
         u_scale: glGetUniformLocation(p, c"u_scale".as_ptr()),

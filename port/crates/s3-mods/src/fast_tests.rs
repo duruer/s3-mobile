@@ -8,9 +8,9 @@
 //! Skipped (passes with a note) when the exe is missing. Exe path: env `S3_EXE`, else
 //! `game-files/gog-s3-ultimate/S3.EXE` in the repository.
 
-use s3_cpu::{Cpu, GuestMemory, NativeFn, EAX, EBP, ECX, EDI, EDX, ESI, ESP};
+use s3_cpu::{Cpu, GuestMemory, NativeFn, EAX, EBP, EBX, ECX, EDI, EDX, ESI, ESP};
 
-use crate::{fast_blit, fast_land, fast_obj, fast_snap, fast_sprite};
+use crate::{fast_blit, fast_land, fast_obj, fast_snap, fast_sprite, fast_tile};
 
 fn exe_bytes() -> Option<Vec<u8>> {
     let p = std::env::var_os("S3_EXE").map(std::path::PathBuf::from).unwrap_or_else(|| {
@@ -380,4 +380,304 @@ fn differential_land_clean() {
     }
     eprintln!("differential_land_clean: native ran {ran} of 300");
     assert!(ran > 60, "too many declines: {ran}");
+}
+
+/// RLE rows `(count, skip|last)` (+ `count*2` pixel bytes per run when `pixels`: `shadow_zero` skips them).
+fn shadow_rle(r: &mut Rng, rows: u32, pixels: bool) -> Vec<u8> {
+    let mut src = Vec::new();
+    for _ in 0..rows {
+        let runs = 1 + r.below(5);
+        for k in 0..runs {
+            let cnt = if r.below(6) == 0 { 0 } else { r.below(60) } as u8;
+            let skip = r.below(40) as u8 | if k + 1 == runs { 0x80 } else { 0 };
+            src.push(cnt);
+            src.push(skip);
+            if pixels {
+                src.extend(random_bytes(r, cnt as usize * 2));
+            }
+        }
+    }
+    src
+}
+
+/// Second row loop of `0x5fc160` (`fast_shadow::shadow_zero`): zero runs through `[0x7e8c74]`.
+#[test]
+fn differential_shadow_zero() {
+    use crate::fast_shadow as fs;
+    let Some(exe) = exe_bytes() else {
+        eprintln!("differential_shadow_zero: S3.EXE not found, skipped");
+        return;
+    };
+    let mut r = Rng(0x5fc1_6000_2cd0_beef);
+    let mut ran = 0;
+    for case in 0..300 {
+        let budget = if case % 3 == 0 { 1 + r.below(600) as u64 } else { 1 << 30 };
+        let eflags = 0x202 | (r.next() & 0x8D5);
+        let mut regs: [u32; 8] = std::array::from_fn(|_| r.next());
+        let s = STACK + 0x1000;
+        regs[ESP] = s;
+        let rows = 1 + r.below(10);
+        let pitch = 2 * (100 + r.below(600)) + r.below(2);
+        let src = shadow_rle(&mut r, rows, true);
+        let row0 = DST + 2 * r.below(64);
+        let mut stack = random_bytes(&mut r, 0x200);
+        let o = 0x100; // the stack buffer starts at s - 0x100
+        let put = |b: &mut Vec<u8>, off: usize, v: u32| b[o + off..o + off + 4].copy_from_slice(&v.to_le_bytes());
+        put(&mut stack, 0x90, SRC);
+        put(&mut stack, 0x98, row0 + 2 * r.below(8));
+        put(&mut stack, 0x10, row0);
+        put(&mut stack, 0x34, pitch);
+        let counter = r.below(3);
+        put(&mut stack, 0x14, counter + 1 + r.below(rows));
+        regs[EDI] = counter;
+        regs[EAX] = row0;
+        let entry = if r.below(2) == 0 { fs::ZERO_ROW } else { fs::ZERO_RUN };
+        let fptr: u32 = if r.below(25) == 0 { 0x005f_4920 } else { 0x005f_48e0 };
+        let writes = vec![
+            (SRC, src),
+            (s - 0x100, stack),
+            (DST, random_bytes(&mut r, 0x8000)),
+            (0x007e_8c74, fptr.to_le_bytes().to_vec()),
+        ];
+        if check(&exe, fs::shadow_zero, entry, regs, eflags, &writes, budget, "shadow_zero") {
+            ran += 1;
+        }
+    }
+    eprintln!("differential_shadow_zero: native ran {ran} of 300");
+    assert!(ran > 150, "too many declines: {ran}");
+}
+
+/// Row loop of `0x5fd120` (`fast_shadow::shadow_rows`): runs through `[0x7e8e20]` = dither `0x5fd080` or darken
+/// `0x5fd0c0`, random phases (negative row phases too), masks, odd destinations.
+#[test]
+fn differential_shadow_rows() {
+    use crate::fast_shadow as fs;
+    let Some(exe) = exe_bytes() else {
+        eprintln!("differential_shadow_rows: S3.EXE not found, skipped");
+        return;
+    };
+    let mut r = Rng(0x5fd1_2000_d24f_0042);
+    let mut ran = [0u32; 2];
+    for case in 0..400 {
+        let budget = if case % 3 == 0 { 1 + r.below(800) as u64 } else { 1 << 30 };
+        let eflags = 0x202 | (r.next() & 0x8D5);
+        let mut regs: [u32; 8] = std::array::from_fn(|_| r.next());
+        let s = STACK + 0x1000;
+        regs[ESP] = s;
+        let rows = 1 + r.below(10);
+        let pitch = 2 * (100 + r.below(600)) + r.below(2);
+        let src = shadow_rle(&mut r, rows, false);
+        let row0 = DST + 2 * r.below(64) + if r.below(20) == 0 { 1 } else { 0 };
+        let mut stack = random_bytes(&mut r, 0x200);
+        let o = 0x100;
+        let put = |b: &mut Vec<u8>, off: usize, v: u32| b[o + off..o + off + 4].copy_from_slice(&v.to_le_bytes());
+        put(&mut stack, 0x10, SRC);
+        put(&mut stack, 0x90, if r.below(4) == 0 { r.next() } else { r.below(32) });
+        put(&mut stack, 0x94, row0 + 2 * r.below(8));
+        put(&mut stack, 0x8c, row0);
+        put(&mut stack, 0x30, pitch);
+        let counter = r.below(3);
+        put(&mut stack, 0xa4, counter);
+        put(&mut stack, 0x18, counter + 1 + r.below(rows));
+        regs[ESI] = if r.below(3) == 0 { (r.below(40) as i32 - 35) as u32 } else { r.below(32) };
+        regs[EDI] = r.below(32);
+        regs[EAX] = row0;
+        let entry = [fs::ROWS_FIRST, fs::ROWS_ROW, fs::ROWS_RUN][r.below(3) as usize];
+        let dark = r.below(2) == 0;
+        let fptr: u32 = if r.below(30) == 0 { 0x005f_d120 } else if dark { 0x005f_d0c0 } else { 0x005f_d080 };
+        let mut glob = random_bytes(&mut r, 0x50);
+        glob[0x48..0x4c].copy_from_slice(&fptr.to_le_bytes()); // 0x7e8dd8 + 0x48 = 0x7e8e20
+        let writes = vec![(SRC, src), (s - 0x100, stack), (DST, random_bytes(&mut r, 0x8000)), (0x007e_8dd8, glob)];
+        if check(&exe, fs::shadow_rows, entry, regs, eflags, &writes, budget, "shadow_rows") {
+            ran[dark as usize] += 1;
+        }
+    }
+    eprintln!("differential_shadow_rows: native ran dither/darken {ran:?} of ~200 each");
+    assert!(ran.iter().all(|&n| n > 80), "too many declines: {ran:?}");
+}
+
+/// The instructions `0x4d3050` executes in its empty case all lie in `fast_tile::OBJ_RANGES` (the bytes
+/// `frame_tiles` hash-checks before it inlines the call).
+#[test]
+fn obj_empty_path_hashed() {
+    let Some(exe) = exe_bytes() else {
+        eprintln!("obj_empty_path_hashed: S3.EXE not found, skipped");
+        return;
+    };
+    const SNAP: u32 = 0x3600_0000;
+    let mut traced = 0;
+    for land in [0u8, 1, 2, 3, 5, 7, 8, 9, 0x10, 0x1c, 0x4f, 0x51, 0x80, 0xff] {
+        for v50a in [0u16, 1, 0x8000] {
+            for b505 in [0u8, 0x13, 0x3f, 0xff] {
+                for mode in [0u32, 2, 3, 5, 0x10] {
+                    let mut mem = GuestMemory::new().unwrap();
+                    load_image(&mut mem, &exe);
+                    let e = STACK + 0x1000;
+                    mem.write_u32(e, 0x0040_1000);
+                    mem.write_u32(e + 4, SNAP);
+                    mem.write_u32(e + 8, 3);
+                    mem.write_u32(e + 0xc, 5);
+                    mem.write_u32(e + 0x18, 0);
+                    mem.write_u32(SNAP + 0x60, mode);
+                    let cell = SNAP + (5 + 3 * 130) * 48;
+                    mem.write_u8(cell + 0x502, land);
+                    mem.write_u8(cell + 0x505, b505);
+                    mem.write_u16(cell + 0x50a, v50a);
+                    let mut cpu = Cpu::new();
+                    cpu.regs[ESP] = e;
+                    cpu.eip = fast_obj::START;
+                    let (mut nc, mut nm) = (Cpu::new(), GuestMemory::new().unwrap());
+                    nc.regs = cpu.regs;
+                    load_image(&mut nm, &exe);
+                    nm.write_bytes(STACK, mem.slice(STACK, 0x2000));
+                    nm.write_bytes(SNAP, mem.slice(SNAP, 0x2_0000));
+                    let Some(k) = fast_obj::obj_empty(&mut nc, &mut nm, 1 << 20) else { continue };
+                    for _ in 0..k {
+                        let ip = cpu.eip;
+                        if (fast_obj::START..fast_obj::END).contains(&ip) {
+                            assert!(
+                                fast_tile::OBJ_RANGES.iter().any(|&(a, b)| ip >= a && ip < b),
+                                "obj_empty executes {ip:#x} outside OBJ_RANGES"
+                            );
+                        }
+                        cpu.step(&mut mem);
+                    }
+                    assert_eq!(cpu.eip, 0x0040_1000);
+                    traced += 1;
+                }
+            }
+        }
+    }
+    eprintln!("obj_empty_path_hashed: {traced} empty calls traced");
+    assert!(traced > 100);
+}
+
+/// Frame renderer cell loop (`fast_tile::frame_tiles`): random rows/columns, cells mostly on the native path,
+/// random sound-statistics sectors, decoration grid, object kinds, budgets; native vs interpreter.
+#[test]
+fn differential_frame_tiles() {
+    let Some(exe) = exe_bytes() else {
+        eprintln!("differential_frame_tiles: S3.EXE not found, skipped");
+        return;
+    };
+    const SNAP: u32 = 0x3600_0000;
+    const REND: u32 = 0x3700_0000;
+    const SNAP_LEN: u32 = 0x8_0000;
+    let mut r = Rng(0xf4a3_e000_004b_2e44);
+    let mut ran = 0;
+    let mut longest = 0u64;
+    for case in 0..400 {
+        let budget = if case % 4 == 0 { 1 + r.below(3000) as u64 } else { 1 << 30 };
+        let eflags = 0x202 | (r.next() & 0x8D5);
+        let mut regs: [u32; 8] = std::array::from_fn(|_| r.next());
+        let ebp = STACK + 0x1000;
+        regs[EBP] = ebp;
+        regs[ESP] = ebp - 0xf8;
+        regs[EBX] = REND;
+        regs[EDI] = SNAP;
+        let rows = 2 + r.below(8);
+        let w = r.below(30);
+        let row = r.below(rows + 1);
+        let start = r.below(12);
+        let col = start + r.below(w + 3);
+        regs[EAX] = start;
+        regs[ECX] = row;
+        regs[ESI] = col;
+        let mut frame = random_bytes(&mut r, 0x200);
+        let o = |d: i32| (0x100 + d) as usize; // frame buffer starts at ebp - 0x100
+        let put = |f: &mut Vec<u8>, d: i32, v: u32| f[o(d)..o(d) + 4].copy_from_slice(&v.to_le_bytes());
+        put(&mut frame, 8, SNAP);
+        put(&mut frame, 0xc, row);
+        put(&mut frame, -0x7c, w);
+        put(&mut frame, -0x44, rows);
+        put(&mut frame, -0x24, start);
+        put(&mut frame, -0x14, (r.below(800) as i32 - 60) as u32);
+        put(&mut frame, -0x18, (r.below(1000) as i32 - 100) as u32);
+        put(&mut frame, -0x1c, (r.below(1000) as i32 - 100) as u32);
+        put(&mut frame, -0x4c, col);
+        let mut snap = random_bytes(&mut r, SNAP_LEN as usize);
+        let put_s = |b: &mut Vec<u8>, off: usize, v: u32| b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        put_s(&mut snap, 0x24, r.below(8));
+        put_s(&mut snap, 0x28, r.below(8));
+        put_s(&mut snap, 0x60, [0, 0, 0, 2, 3, 1, 4][r.below(7) as usize]);
+        let lands = [0u8, 0, 1, 2, 5, 7, 8, 0x0f, 0x10, 0x1c, 0x20, 0x50, 0x51, 0xff];
+        for i in 0..60u32 {
+            for rr in 0..rows + 6 {
+                let c = (0x500 + (rr + i * 130) * 48) as usize;
+                if c + 0x30 > snap.len() {
+                    continue;
+                }
+                let cb = &mut snap[c..c + 0x30];
+                cb[2] = lands[r.below(lands.len() as u32) as usize];
+                cb[3] = if r.below(10) != 0 { 0 } else { [0xf7, 0xf8, 0xfb, 0xfd, 0xfe, 0xff, 3][r.below(7) as usize] };
+                if r.below(10) != 0 {
+                    cb[0xa] = 0;
+                    cb[0xb] = 0;
+                }
+                if r.below(10) != 0 {
+                    cb[0x1e] = 0;
+                    cb[0x1f] = 0;
+                }
+                if r.below(5) != 0 {
+                    cb[9] &= 0x07; // +0x508 word: kind bits 0xf800 clear
+                }
+                if r.below(3) == 0 {
+                    cb[5] &= 0x92; // small L
+                }
+            }
+        }
+        let rend = random_bytes(&mut r, 0x1000);
+        let writes = vec![(ebp - 0x100, frame), (SNAP, snap), (REND + 0x5f000, rend)];
+        let regions = [(STACK, 0x2000), (SNAP, SNAP_LEN), (REND + 0x5f000, 0x1000)];
+        let mut probe = (Cpu::new(), GuestMemory::new().unwrap());
+        load_image(&mut probe.1, &exe);
+        for (a, d) in &writes {
+            probe.1.write_bytes(*a, d);
+        }
+        probe.0.regs = regs;
+        if let Some(k) = fast_tile::frame_tiles(&mut probe.0, &mut probe.1, budget) {
+            longest = longest.max(k);
+        }
+        if check_in(&exe, fast_tile::frame_tiles, fast_tile::START, regs, eflags, &writes, budget, "frame_tiles", &regions)
+        {
+            ran += 1;
+        }
+    }
+    let cov: Vec<u64> = fast_tile::COVER.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).collect();
+    eprintln!("differential_frame_tiles: native ran {ran} of 400, longest {longest} instructions, rows/exits/stats/G/H {cov:?}");
+    assert!(cov.iter().all(|&c| c > 20), "path not covered: {cov:?}");
+    assert!(ran > 150, "too many declines: {ran}");
+    assert!(longest > 2000, "runs too short: {longest}");
+}
+
+/// Pre-pass column loop (`fast_tile::land_mark`).
+#[test]
+fn differential_land_mark() {
+    let Some(exe) = exe_bytes() else {
+        eprintln!("differential_land_mark: S3.EXE not found, skipped");
+        return;
+    };
+    const SNAP: u32 = 0x3600_0000;
+    let mut r = Rng(0x0d1a_4b27_7e00_1c10);
+    let mut ran = 0;
+    for case in 0..300 {
+        let budget = if case % 4 == 0 { 1 + r.below(300) as u64 } else { 1 << 30 };
+        let eflags = 0x202 | (r.next() & 0x8D5);
+        let mut regs: [u32; 8] = std::array::from_fn(|_| r.next());
+        regs[EAX] = SNAP + 0x502 + 48 * r.below(130);
+        regs[EDI] = 1 + r.below(60);
+        let mut snap = random_bytes(&mut r, 0x6_0000);
+        for b in snap.iter_mut() {
+            if r.below(4) == 0 {
+                *b = [0x1c, 0x10, 0, 4][r.below(4) as usize];
+            }
+        }
+        let writes = vec![(SNAP, snap)];
+        let regions = [(SNAP, 0x6_0000)];
+        if check_in(&exe, fast_tile::land_mark, fast_tile::MARK_START, regs, eflags, &writes, budget, "land_mark", &regions) {
+            ran += 1;
+        }
+    }
+    eprintln!("differential_land_mark: native ran {ran} of 300");
+    assert!(ran > 200, "too many declines: {ran}");
 }

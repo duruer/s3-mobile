@@ -83,6 +83,20 @@ fn blend(p: u16, c: Rgba, cov: u32) -> u16 {
     pack((c.r as u32 * a + r * ia) / 255, (c.g as u32 * a + g * ia) / 255, (c.b as u32 * a + b * ia) / 255)
 }
 
+/// Blend `c` at full coverage over every pixel of `row` (opaque colours are a plain fill).
+#[inline]
+fn blend_span(row: &mut [u16], c: Rgba) {
+    match c.a {
+        0 => {}
+        255 => row.fill(pack(c.r as u32, c.g as u32, c.b as u32)),
+        _ => {
+            for p in row {
+                *p = blend(*p, c, 255);
+            }
+        }
+    }
+}
+
 /// Drawing surface over a frame.
 pub struct Canvas<'a> {
     pub fb: &'a mut FrameBuffer,
@@ -133,10 +147,24 @@ impl<'a> Canvas<'a> {
         let fw = self.fb.width as usize;
         for yy in y0..y1 {
             let row = &mut self.fb.pixels[yy as usize * fw..yy as usize * fw + fw];
-            for p in &mut row[x0 as usize..x1 as usize] {
-                *p = blend(*p, c, 255);
-            }
+            blend_span(&mut row[x0 as usize..x1 as usize], c);
         }
+    }
+
+    /// Blend `c` (full coverage) over `x0..x1` of row `y`, clipped.
+    #[inline]
+    fn span(&mut self, y: i32, x0: i32, x1: i32, c: Rgba) {
+        let (cx0, cy0, cx1, cy1) = self.clip;
+        if y < cy0 || y >= cy1 {
+            return;
+        }
+        let (a, b) = (x0.max(cx0), x1.min(cx1));
+        if a >= b {
+            return;
+        }
+        let fw = self.fb.width as usize;
+        let row = &mut self.fb.pixels[y as usize * fw..y as usize * fw + fw];
+        blend_span(&mut row[a as usize..b as usize], c);
     }
 
     /// Outline of width `t` inside the rectangle.
@@ -174,24 +202,43 @@ impl<'a> Canvas<'a> {
         let (hw, hh) = (w as f32 / 2.0, h as f32 / 2.0);
         let (cx, cy) = (x as f32 + hw, y as f32 + hh);
         let ri = r.ceil() as i32 + 1;
-        for yy in y..y + h {
-            let near_y = yy < y + ri || yy >= y + h - ri;
-            for xx in x..x + w {
-                let near_x = xx < x + ri || xx >= x + w - ri;
-                let cov = if stroke.is_none() && !near_x && !near_y {
-                    255
-                } else {
-                    let d = Self::rbox_sd(xx as f32 + 0.5, yy as f32 + 0.5, cx, cy, hw, hh, r);
-                    let outer = (0.5 - d).clamp(0.0, 1.0);
-                    let k = match stroke {
-                        Some(t) => outer * (0.5 + d + t).clamp(0.0, 1.0),
-                        None => outer,
-                    };
-                    (k * 255.0) as u32
-                };
+        let (_, cy0, _, cy1) = self.clip;
+        let cov_at = |xx: i32, yy: i32| -> u32 {
+            let d = Self::rbox_sd(xx as f32 + 0.5, yy as f32 + 0.5, cx, cy, hw, hh, r);
+            let outer = (0.5 - d).clamp(0.0, 1.0);
+            let k = match stroke {
+                Some(t) => outer * (0.5 + d + t).clamp(0.0, 1.0),
+                None => outer,
+            };
+            (k * 255.0) as u32
+        };
+        // Same coverage as evaluating the distance at every pixel (perf-r2: that was ~5 % of the engine thread on
+        // the phone): rows away from the corners are exact spans; the distance is only computed where it can be
+        // fractional (corner rows, the outer `edge` columns of the other rows).
+        let edge = match stroke {
+            // A stroke row is covered only within t + 1 px of the sides (coverage 0 further in).
+            Some(t) => (t.ceil() as i32 + 1).max(ri),
+            None => ri,
+        };
+        for yy in y.max(cy0)..(y + h).min(cy1) {
+            let near_y = yy < y + edge || yy >= y + h - edge;
+            if near_y || 2 * edge >= w {
+                for xx in x..x + w {
+                    let cov = cov_at(xx, yy);
+                    if cov > 0 {
+                        self.blend_pixel(xx, yy, c, cov);
+                    }
+                }
+                continue;
+            }
+            for xx in (x..x + edge).chain(x + w - edge..x + w) {
+                let cov = cov_at(xx, yy);
                 if cov > 0 {
                     self.blend_pixel(xx, yy, c, cov);
                 }
+            }
+            if stroke.is_none() {
+                self.span(yy, x + edge, x + w - edge, c);
             }
         }
     }
@@ -341,6 +388,62 @@ mod tests {
         assert_eq!(fb.pixels[3 * 10 + 3], 0);
         let (r, g, b) = s3_runtime::host::rgb565_to_rgb888(fb.pixels[9 * 10 + 9]);
         assert!((120..=135).contains(&r) && g == 0 && b == 0, "{r} {g} {b}");
+    }
+
+    #[test]
+    fn rounded_spans_match_per_pixel_reference() {
+        // The old per-pixel algorithm, kept as the reference.
+        fn reference(fb: &mut FrameBuffer, x: i32, y: i32, w: i32, h: i32, radius: f32, stroke: Option<f32>, c: Rgba) {
+            let r = radius.clamp(0.0, (w.min(h) as f32) / 2.0);
+            let (hw, hh) = (w as f32 / 2.0, h as f32 / 2.0);
+            let (cx, cy) = (x as f32 + hw, y as f32 + hh);
+            let ri = r.ceil() as i32 + 1;
+            let mut cv = Canvas::new(fb);
+            for yy in y..y + h {
+                let near_y = yy < y + ri || yy >= y + h - ri;
+                for xx in x..x + w {
+                    let near_x = xx < x + ri || xx >= x + w - ri;
+                    let cov = if stroke.is_none() && !near_x && !near_y {
+                        255
+                    } else {
+                        let d = Canvas::rbox_sd(xx as f32 + 0.5, yy as f32 + 0.5, cx, cy, hw, hh, r);
+                        let outer = (0.5 - d).clamp(0.0, 1.0);
+                        let k = match stroke {
+                            Some(t) => outer * (0.5 + d + t).clamp(0.0, 1.0),
+                            None => outer,
+                        };
+                        (k * 255.0) as u32
+                    };
+                    if cov > 0 {
+                        cv.blend_pixel(xx, yy, c, cov);
+                    }
+                }
+            }
+        }
+        let mut seed = 12345u32;
+        let mut rnd = |n: u32| {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 8) % n
+        };
+        for _ in 0..400 {
+            let (x, y) = (rnd(60) as i32 - 20, rnd(60) as i32 - 20);
+            let (w, h) = (rnd(90) as i32 + 1, rnd(70) as i32 + 1);
+            let r = rnd(30) as f32 * 0.7;
+            let stroke = if rnd(2) == 0 { None } else { Some(rnd(12) as f32 * 0.6 + 0.5) };
+            let c = Rgba { r: rnd(256) as u8, g: rnd(256) as u8, b: rnd(256) as u8, a: [255, 128, 40][rnd(3) as usize] };
+            let mut base = FrameBuffer::new(100, 80);
+            for (i, p) in base.pixels.iter_mut().enumerate() {
+                *p = (i as u16).wrapping_mul(40503);
+            }
+            let (mut a, mut b) = (base.clone(), base.clone());
+            reference(&mut a, x, y, w, h, r, stroke, c);
+            let mut cv = Canvas::new(&mut b);
+            match stroke {
+                Some(t) => cv.stroke_rounded_rect(x, y, w, h, r, t, c),
+                None => cv.fill_rounded_rect(x, y, w, h, r, c),
+            }
+            assert!(a.pixels == b.pixels, "x {x} y {y} w {w} h {h} r {r} stroke {stroke:?} c {c:?}");
+        }
     }
 
     #[test]

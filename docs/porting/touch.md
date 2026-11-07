@@ -40,8 +40,8 @@ thread, so desktop tests exercise exactly the Android code path.
 | Pinch in / out | **zoom** = render resolution levels (res-zoom, [resolution-zoom.md](resolution-zoom.md)): continuous, one level per finger-distance factor 1.12, the map point under the fingers stays; levels 360..780 px high at the window aspect. With the custom resolution off: the old F1/F2/F3 step (640x480 <-> 800x600 <-> 1024x768, threshold scale 0.75 / 1.33) | – |
 
 **No long press is ever a right click.** The original game ignores right-ups held for 15 or more game steps
-(`0x53437d`), so every synthetic right click is a quick down/up. The legacy `RMB` letterbox button still works:
-when "next tap = right click" is armed, `touch-context` passes the tap to the fallback.
+(`0x53437d`), so every synthetic right click is a quick down/up. (The `RMB` letterbox button was removed 2026-11-07; if
+"next tap = right click" is armed via `s3_mods::set_right_next`, `touch-context` passes the tap to the fallback.
 
 Hit test: the game's own single-click box is x ±10 px, feet `y-5 ..= y+32` (`0x5339a1`). We look for hit-list
 entries in a larger box (x ±18, feet `y-12 ..= y+44`), prefer the local player's own entries, then the nearest to the
@@ -111,8 +111,8 @@ type selection, tap on a building with units selected.
   (which still turns long presses into right clicks if `long_press_right_click`). Unknown exes and `S3_MODS=0` also
   fall back to the legacy mapping.
 - `S3_TOUCH_TRACE=1` prints camera writes and pinch decisions to stderr.
-- Old Android letterbox buttons (ESC, ABC, RMB) are kept: the UI modes do not yet offer a keyboard / Esc
-  equivalent. Back still sends Esc; three-finger tap toggles the keyboard.
+- Old Android letterbox buttons (ESC, ABC, RMB) removed 2026-11-07. Back sends Esc; three-finger tap toggles the
+  keyboard.
 
 ## Tests
 

@@ -13,6 +13,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 s3-runtime.workspace = true
 s3-engine = { workspace = true, optional = true }
+# fps cap for the CPU performance hint (perf_hint.rs).
+s3-dx = { workspace = true, optional = true }
 # Gesture recognition / context-aware touch run on the engine thread (RMB button, keyboard request flags);
 # display modes + the shared screen<->game transform (s3_mods::display) are used by the presenter in every build.
 s3-mods.workspace = true
@@ -23,7 +25,7 @@ font8x8 = { version = "0.3", default-features = false }
 [features]
 # The real engine. Without it (--no-default-features) the app is only the shell: status screen, input, audio.
 default = ["engine"]
-engine = ["dep:s3-engine"]
+engine = ["dep:s3-engine", "dep:s3-dx"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }

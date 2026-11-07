@@ -4,8 +4,9 @@
 //!   EIP ([`DecodeCache`]); a block ends at the first control-flow instruction or after
 //!   [`MAX_BLOCK_INSNS`] instructions. [`Cpu::invalidate_range`] drops blocks overlapping written code.
 //! - Execution: [`Cpu::run`] executes until the instruction budget is exhausted or something needs the host
-//!   (EIP enters the thunk page, the magic return address is reached, a fault, `int n`, `hlt`).
-//! - Flags are computed eagerly into [`Cpu::eflags`] by the helpers in `flags.rs`.
+//!   (EIP enters the thunk page, the magic return address is reached, a fault, `int n`, `hlt`). Inside a block
+//!   the handlers of `fast.rs` tail-call each other (threaded code); see `docs/porting/cpu.md`.
+//! - Flags are lazy (`flags.rs`): read them with [`Cpu::eflags`], write with [`Cpu::set_eflags`].
 //! - Memory is flat; only FS/GS segment overrides add a base (`fs_base` = TEB).
 //! - Accesses to guest addresses below `layout::NULL_GUARD_END` (64 KiB) raise
 //!   `FaultKind::AccessViolation`, like a NULL dereference on Windows.
@@ -152,26 +153,43 @@ pub struct Context {
 }
 
 /// A decoded basic block.
+///
+/// `repr(C)` + 64-byte alignment: the fields the run loop reads at every block entry (`succ_eip` ..
+/// `special`) share one cache line. Blocks are boxed (stable addresses) so chaining can use pointers.
 #[derive(Debug)]
+#[repr(C, align(64))]
 pub struct Block {
-    pub start: u32,
-    /// Address after the last instruction.
-    pub end: u32,
-    pub insns: Vec<Instruction>,
-    /// Handler + pre-decoded operands per instruction (threaded dispatch, see `fast.rs`).
-    ops: Vec<fast::Op>,
-    /// `start` is a hook address (see [`HookAddrs`]).
-    pub hooked: bool,
+    /// Block chaining: the last two successors seen after this block, start EIP (0 = empty) and block
+    /// (pointer into the owning cache's arena). Cleared whenever blocks are dropped (`invalidate_range`).
+    succ_eip: [u32; 2],
+    succ_blk: [*mut Block; 2],
     /// Times this block was entered (profiling; see [`DecodeCache::profile`]).
     pub entries: u64,
     /// Native fast path for this block's start address (see [`NativeFn`]).
     native: Option<NativeFn>,
+    /// `ops.as_ptr()`.
+    op0: *const fast::Op,
+    /// Address after the last instruction.
+    pub end: u32,
+    /// Number of instructions (`insns.len()`).
+    n: u32,
+    /// `hooked || native.is_some()` (one test per block entry on the common path).
+    special: bool,
+    /// `start` is a hook address (see [`HookAddrs`]).
+    pub hooked: bool,
+    /// Handler + pre-decoded operands per instruction (threaded dispatch, see `fast.rs`), plus a final
+    /// `fast::block_end` sentinel (so `ops.len() == insns.len() + 1`).
+    ops: Box<[fast::Op]>,
+    pub start: u32,
+    pub insns: Vec<Instruction>,
     /// End of the guest code covered by `native` (for invalidation; 0 = none).
     native_end: u32,
-    /// Block chaining: the last two successors `(eip, arena index)` seen after this block (eip 0 = empty).
-    /// Cleared whenever arena indices change (`invalidate_range`).
-    succ: [(u32, u32); 2],
 }
+
+// SAFETY: the raw pointers (`succ_blk`, `op0`) only point into the cache that owns this block (its arena and its
+// own `ops`); a cache and its CPU move between host threads as a whole and are never shared.
+unsafe impl Send for Block {}
+unsafe impl Sync for Block {}
 
 #[derive(Default)]
 struct AddrHasher(u64);
@@ -200,7 +218,7 @@ const L1_SIZE: usize = 8192;
 /// `Cpu` while executing, so instructions are borrowed straight from the arena (no refcounting per block).
 #[derive(Default)]
 pub struct DecodeCache {
-    blocks: Vec<Block>,
+    blocks: Vec<Box<Block>>,
     map: HashMap<u32, u32, BuildHasherDefault<AddrHasher>>,
     /// `(eip, arena index + 1)`; index 0 = empty. Allocated lazily (so `Default` is allocation-free).
     l1: Vec<(u32, u32)>,
@@ -238,7 +256,8 @@ impl DecodeCache {
             self.map.clear();
             for (i, b) in self.blocks.iter_mut().enumerate() {
                 self.map.insert(b.start, i as u32);
-                b.succ = [(0, 0); 2];
+                b.succ_eip = [0; 2];
+                b.succ_blk = [std::ptr::null_mut(); 2];
             }
             self.l1.clear();
         }
@@ -255,6 +274,12 @@ impl DecodeCache {
         if tag == eip && idx != 0 {
             return Ok(idx as usize - 1);
         }
+        self.lookup_slow(eip, slot, mem)
+    }
+
+    /// [`DecodeCache::lookup`] after an L1 miss: hash map, else decode the block.
+    #[inline(never)]
+    fn lookup_slow(&mut self, eip: u32, slot: usize, mem: &GuestMemory) -> Result<usize, CpuExit> {
         let idx = match self.map.get(&eip) {
             Some(&i) => i as usize,
             None => {
@@ -263,9 +288,10 @@ impl DecodeCache {
                     if code_hash(mem.slice(eip, nb.len as usize)) == nb.hash {
                         b.native = Some(nb.f);
                         b.native_end = eip.wrapping_add(nb.len);
+                        b.special = true;
                     }
                 }
-                self.blocks.push(b);
+                self.blocks.push(Box::new(b));
                 let i = self.blocks.len() - 1;
                 self.map.insert(eip, i as u32);
                 i
@@ -284,7 +310,7 @@ impl DecodeCache {
     /// (slow) handler are marked `*` (profiling aid).
     pub fn profile_disasm(&self, top: usize) -> String {
         use iced_x86::Formatter;
-        let mut v: Vec<&Block> = self.blocks.iter().filter(|b| b.entries > 0).collect();
+        let mut v: Vec<&Block> = self.blocks.iter().map(|b| &**b).filter(|b| b.entries > 0).collect();
         v.sort_by_key(|b| std::cmp::Reverse(b.entries * b.insns.len() as u64));
         let mut f = iced_x86::IntelFormatter::new();
         let mut out = String::new();
@@ -305,23 +331,30 @@ impl DecodeCache {
         let mut m: HashMap<String, u64> = HashMap::new();
         for b in self.blocks.iter().filter(|b| b.entries > 0) {
             for (ins, op) in b.insns.iter().zip(&b.ops) {
-                let g = if op.h as usize == fast::generic as fast::Handler as usize { "*" } else { " " };
-                let mut k = format!("{g}{:?}", ins.mnemonic());
-                for i in 0..ins.op_count() {
-                    let kind = ins.op_kind(i);
-                    let d = match kind {
-                        iced_x86::OpKind::Register => format!("r{}", ins.op_register(i).size() * 8),
-                        iced_x86::OpKind::Memory => format!("m{}", ins.memory_size().size() * 8),
-                        _ => format!("{kind:?}"),
-                    };
-                    k.push(' ');
-                    k.push_str(&d);
-                }
-                *m.entry(k).or_default() += b.entries;
+                *m.entry(form_key(ins, op)).or_default() += b.entries;
             }
         }
         let mut v: Vec<_> = m.into_iter().collect();
         v.sort_by_key(|e| std::cmp::Reverse(e.1));
+        v
+    }
+
+    /// Adjacent instruction pairs inside blocks (`"form ; form"`, same keys as [`DecodeCache::profile_forms`]),
+    /// weighted by block entries: candidates for superinstructions. The first entry is `"#blocks"` with the total
+    /// block entries (average executed block length = total instructions / that).
+    pub fn profile_pairs(&self) -> Vec<(String, u64)> {
+        let mut m: HashMap<String, u64> = HashMap::new();
+        let mut blocks = 0u64;
+        for b in self.blocks.iter().filter(|b| b.entries > 0) {
+            blocks += b.entries;
+            let keys: Vec<String> = b.insns.iter().zip(&b.ops).map(|(i, o)| form_key(i, o)).collect();
+            for w in keys.windows(2) {
+                *m.entry(format!("{} ; {}", w[0], w[1])).or_default() += b.entries;
+            }
+        }
+        let mut v: Vec<_> = m.into_iter().collect();
+        v.sort_by_key(|e| std::cmp::Reverse(e.1));
+        v.insert(0, ("#blocks".into(), blocks));
         v
     }
 
@@ -334,8 +367,25 @@ impl DecodeCache {
 
     /// The block starting at `eip`, if it is cached.
     pub fn get(&self, eip: u32) -> Option<&Block> {
-        self.map.get(&eip).map(|&i| &self.blocks[i as usize])
+        self.map.get(&eip).map(|&i| &*self.blocks[i as usize])
     }
+}
+
+/// Profile key of one instruction form: `*` (generic handler) or ` `, mnemonic, operand kinds.
+fn form_key(ins: &Instruction, op: &fast::Op) -> String {
+    let g = if op.h as usize == fast::generic as fast::Handler as usize { "*" } else { " " };
+    let mut k = format!("{g}{:?}", ins.mnemonic());
+    for i in 0..ins.op_count() {
+        let kind = ins.op_kind(i);
+        let d = match kind {
+            iced_x86::OpKind::Register => format!("r{}", ins.op_register(i).size() * 8),
+            iced_x86::OpKind::Memory => format!("m{}", ins.memory_size().size() * 8),
+            _ => format!("{kind:?}"),
+        };
+        k.push(' ');
+        k.push_str(&d);
+    }
+    k
 }
 
 fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool, hooks: Option<&HookAddrs>) -> Result<Block, CpuExit> {
@@ -379,12 +429,43 @@ fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool, hooks: Option<&
         return Err(CpuExit::Fault { eip, kind: FaultKind::InvalidOpcode, detail: "truncated".into() });
     }
     insns.shrink_to_fit();
-    ops.shrink_to_fit();
     for (op, ins) in ops.iter_mut().zip(&insns) {
-        op.ins = ins;
+        if op.h as usize == fast::generic as fast::Handler as usize {
+            op.set_ins(ins);
+        }
     }
+    // Superinstruction: a compare right before the block-ending `jcc` (see `fast::cmp_jcc`).
+    let k = insns.len();
+    if !generic_only && k >= 2 && fast::is_fast_jcc(&insns[k - 1]) {
+        let g = fast::generic as fast::Handler as usize;
+        if ops[k - 2].h as usize != g {
+            if let Some(h) = fast::fuse_cmp_jcc(&insns[k - 2], insns[k - 1].condition_code()) {
+                ops[k - 2].h = h;
+            }
+        }
+    }
+    // Sentinel: the handlers dispatch to `op + 1` after each instruction (see `fast::next`).
+    let mut sentinel = fast::select_generic(&insns[insns.len() - 1]);
+    sentinel.h = fast::block_end;
+    ops.push(sentinel);
     let hooked = hooks.is_some_and(|h| h.contains(&eip));
-    Ok(Block { start: eip, end, insns, ops, hooked, entries: 0, native: None, native_end: 0, succ: [(0, 0); 2] })
+    let n = insns.len() as u32;
+    let ops = ops.into_boxed_slice();
+    Ok(Block {
+        start: eip,
+        end,
+        n,
+        insns,
+        op0: ops.as_ptr(),
+        ops,
+        hooked,
+        special: hooked,
+        entries: 0,
+        native: None,
+        native_end: 0,
+        succ_eip: [0; 2],
+        succ_blk: [std::ptr::null_mut(); 2],
+    })
 }
 
 /// One guest CPU (one per guest thread).
@@ -417,6 +498,8 @@ pub struct Cpu {
     hook_skip: u32,
     /// Exit produced by a handler that returned `false` (see `fast.rs`).
     pending_exit: Option<CpuExit>,
+    /// Address of the `fast::Op` whose handler failed (set together with `pending_exit`).
+    fault_op: usize,
 }
 
 impl Default for Cpu {
@@ -445,6 +528,7 @@ impl Cpu {
             cur_ip: 0,
             hook_skip: 0,
             pending_exit: None,
+            fault_op: 0,
         }
     }
 
@@ -523,92 +607,137 @@ impl Cpu {
     }
 
     fn run_with(&mut self, cache: &mut DecodeCache, mem: &mut GuestMemory, max_instructions: u64) -> CpuExit {
+        // Retired instructions are counted through `left` only and stored into `self.instructions` (= base +
+        // max_instructions - left) before anything that may read it (native blocks, exits).
+        let base = self.instructions;
         let mut left = max_instructions;
-        // Arena index of the previous block (for chaining), usize::MAX = none.
-        let mut prev = usize::MAX;
-        loop {
-            if self.eip >= layout::THUNK_BASE {
-                if self.eip == layout::MAGIC_RETURN {
-                    return CpuExit::ReturnMagic;
-                }
-                return CpuExit::Thunk(self.eip);
+        // Previous block (for chaining), null = none.
+        let mut prev: *mut Block = std::ptr::null_mut();
+        let exit = 'run: loop {
+            let eip = self.eip;
+            if eip >= layout::THUNK_BASE {
+                break if eip == layout::MAGIC_RETURN { CpuExit::ReturnMagic } else { CpuExit::Thunk(eip) };
             }
             if left == 0 {
-                return CpuExit::Budget;
+                break CpuExit::Budget;
             }
-            let eip = self.eip;
-            let idx = if prev != usize::MAX {
-                let p = &cache.blocks[prev];
-                if p.succ[0].0 == eip {
-                    p.succ[0].1 as usize
-                } else if p.succ[1].0 == eip {
-                    p.succ[1].1 as usize
-                } else {
-                    let i = match cache.lookup(eip, mem) {
-                        Ok(i) => i,
-                        Err(e) => return e,
-                    };
-                    let p = &mut cache.blocks[prev];
-                    p.succ[1] = p.succ[0];
-                    p.succ[0] = (eip, i as u32);
-                    i
+            // Block pointers stay valid while this loop runs: blocks are boxed and only appended while the cache
+            // is out of the `Cpu` (`invalidate_range`, which drops blocks, also clears every `succ_blk`).
+            let bp: *mut Block = 'find: {
+                if !prev.is_null() {
+                    // SAFETY: see above.
+                    let p = unsafe { &mut *prev };
+                    if p.succ_eip[0] == eip {
+                        break 'find p.succ_blk[0];
+                    }
+                    if p.succ_eip[1] == eip {
+                        break 'find p.succ_blk[1];
+                    }
                 }
-            } else {
-                match cache.lookup(eip, mem) {
+                let i = match cache.lookup(eip, mem) {
                     Ok(i) => i,
-                    Err(e) => return e,
+                    Err(e) => break 'run e,
+                };
+                let b: *mut Block = &mut *cache.blocks[i];
+                if !prev.is_null() {
+                    // SAFETY: see above.
+                    let p = unsafe { &mut *prev };
+                    p.succ_eip[1] = p.succ_eip[0];
+                    p.succ_blk[1] = p.succ_blk[0];
+                    p.succ_eip[0] = eip;
+                    p.succ_blk[0] = b;
                 }
+                b
             };
-            prev = idx;
-            let blk = &mut cache.blocks[idx];
+            prev = bp;
+            // SAFETY: see above.
+            let blk = unsafe { &mut *bp };
             blk.entries += 1;
             let blk = &*blk;
-            if blk.hooked {
-                if self.hook_skip == self.eip {
-                    self.hook_skip = 0;
-                } else {
-                    return CpuExit::Hook(self.eip);
+            if blk.special {
+                if blk.hooked {
+                    if self.hook_skip == eip {
+                        self.hook_skip = 0;
+                    } else {
+                        break CpuExit::Hook(eip);
+                    }
+                }
+                if let Some(f) = blk.native {
+                    self.instructions = base + (max_instructions - left);
+                    if let Some(k) = f(self, mem, left) {
+                        debug_assert!(k <= left);
+                        left -= k.min(left);
+                        continue;
+                    }
                 }
             }
-            if let Some(f) = blk.native {
-                if let Some(k) = f(self, mem, left) {
-                    debug_assert!(k <= left);
-                    self.instructions += k;
-                    left -= k.min(left);
+            let n = blk.n as u64;
+            if n <= left {
+                // Threaded code: the first handler runs the whole block (each handler tail-calls the next one,
+                // see `fast::next`). Inside a block only the last instruction can change EIP (blocks end at the
+                // first control-flow instruction) and no other instruction reads it, so EIP is set once to the
+                // last instruction's next address before the block runs.
+                self.eip = blk.end;
+                // SAFETY: `ops` holds at least one instruction plus the sentinel.
+                let op0 = unsafe { &*blk.op0 };
+                if (op0.h)(self, mem, op0) {
+                    left -= n;
                     continue;
                 }
+                let i = (self.fault_op - blk.ops.as_ptr() as usize) / std::mem::size_of::<fast::Op>();
+                self.instructions = base + (max_instructions - left);
+                return self.block_exit(blk, i);
             }
-            let n = blk.ops.len().min(left.min(usize::MAX as u64) as usize);
-            // Inside a block only the last instruction can change EIP (blocks end at the first control-flow
-            // instruction), so the loop needs no per-instruction EIP check.
-            let ops = &blk.ops[..n];
-            let base = ops.as_ptr();
-            let mut p = base;
-            // SAFETY: `p` walks `ops[..n]` (one past the end is only compared, never read).
-            let end = unsafe { base.add(n) };
-            while p != end {
-                let op = unsafe { &*p };
-                self.eip = op.next;
-                if !(op.h)(self, mem, op) {
-                    let i = unsafe { p.offset_from(base) } as usize;
-                    let mut exit = self.pending_exit.take().unwrap_or(CpuExit::Halt);
-                    if let CpuExit::Fault { eip, .. } = &mut exit {
-                        let ip = blk.insns[i].ip32();
-                        *eip = ip;
-                        self.eip = ip;
-                        self.cur_ip = ip;
-                        self.instructions += i as u64;
-                    } else {
-                        // Interrupt/Halt complete the instruction.
-                        self.instructions += i as u64 + 1;
-                    }
-                    return exit;
-                }
-                p = unsafe { p.add(1) };
+            // The budget ends inside this block.
+            self.instructions = base + (max_instructions - left);
+            if let Some(e) = self.run_partial(blk, mem, left as usize) {
+                return e;
             }
-            self.instructions += n as u64;
-            left -= n as u64;
+            left = 0;
+        };
+        self.instructions = base + (max_instructions - left);
+        exit
+    }
+
+    /// Execute the first `n` (< `blk.n`) instructions of `blk` one by one with the generic interpreter (same
+    /// results as the fast handlers by their contract), so the CPU stops at exactly the same instruction as a
+    /// complete block run would pass. `Some(exit)` if one of them failed (`self.instructions` updated).
+    #[cold]
+    #[inline(never)]
+    fn run_partial(&mut self, blk: &Block, mem: &mut GuestMemory, n: usize) -> Option<CpuExit> {
+        for (i, ins) in blk.insns[..n].iter().enumerate() {
+            self.eip = ins.next_ip32();
+            self.cur_ip = ins.ip32();
+            if let Err(e) = exec::step(self, mem, ins) {
+                self.pending_exit = Some(e);
+                return Some(self.block_exit(blk, i));
+            }
         }
+        None
+    }
+
+    /// Exit after instruction `i` of `blk` failed (its exit is in `pending_exit`): a fault rewinds EIP to the
+    /// faulting instruction (as Windows reports it); `Interrupt`/`Halt` complete the instruction.
+    #[cold]
+    #[inline(never)]
+    fn block_exit(&mut self, blk: &Block, i: usize) -> CpuExit {
+        let mut exit = self.pending_exit.take().unwrap_or(CpuExit::Halt);
+        let ins = &blk.insns[i];
+        if let CpuExit::Fault { eip, .. } = &mut exit {
+            let ip = ins.ip32();
+            *eip = ip;
+            self.eip = ip;
+            self.cur_ip = ip;
+            self.instructions += i as u64;
+        } else {
+            // EIP after the instruction, unless it is a control transfer that set it already (e.g. `int n` via
+            // the generic path leaves EIP after the instruction too).
+            if ins.flow_control() == FlowControl::Next {
+                self.eip = ins.next_ip32();
+            }
+            self.instructions += i as u64 + 1;
+        }
+        exit
     }
 
     /// Execute exactly one instruction (debugging / tests). Thunk/magic EIPs return their exits.

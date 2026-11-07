@@ -299,6 +299,26 @@ impl Machine {
         self.present_inner(fb);
     }
 
+    /// Like [`Machine::present`], but takes the frame by value and returns a buffer for the next frame (the
+    /// previous one, to reuse its allocation). With an overlay the frame becomes the remembered guest frame
+    /// without a copy (perf-r2).
+    pub fn present_owned(&mut self, fb: crate::FrameBuffer) -> crate::FrameBuffer {
+        self.stats.presents += 1;
+        if self.ext.overlay_compose.is_none() {
+            self.present_cursor(&fb);
+            return fb;
+        }
+        let old = self.ext.last_guest_frame.take().unwrap_or_default();
+        self.ext.last_guest_size = (fb.width, fb.height);
+        let last = fb;
+        match self.apply_overlay_to(&last) {
+            Some(out) => self.present_cursor_owned(out),
+            None => self.present_cursor(&last),
+        }
+        self.ext.last_guest_frame = Some(last);
+        old
+    }
+
     /// Overlay (mods) + cursor composition, then `Host::present`.
     pub(crate) fn present_inner(&mut self, fb: &crate::FrameBuffer) {
         if self.ext.overlay_compose.is_some() {
@@ -311,7 +331,23 @@ impl Machine {
         self.present_cursor(fb);
     }
 
-    fn present_cursor(&mut self, fb: &crate::FrameBuffer) {
+    /// Present an owned composed frame (overlay output): the cursor state keeps it without a copy and the
+    /// buffer it held goes back to the overlay pool.
+    pub(crate) fn present_cursor_owned(&mut self, fb: crate::FrameBuffer) {
+        let (x, y) = (self.input.mouse_x, self.input.mouse_y);
+        let cs = self.state::<crate::cursor::CursorState>();
+        let mut c = cs.borrow_mut();
+        let old = c.compose_owned(fb, x, y);
+        if let Some(f) = c.shown() {
+            self.host.present(f);
+        }
+        drop(c);
+        if let Some(o) = old {
+            self.recycle_overlay(o);
+        }
+    }
+
+    pub(crate) fn present_cursor(&mut self, fb: &crate::FrameBuffer) {
         let (x, y) = (self.input.mouse_x, self.input.mouse_y);
         let cs = self.state::<crate::cursor::CursorState>();
         let mut c = cs.borrow_mut();

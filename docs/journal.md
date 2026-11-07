@@ -2,6 +2,95 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-07 — perf-shadow: native row loops of the shadow sprite functions
+
+- New `port/crates/s3-mods/src/fast_shadow.rs` (see [performance](porting/performance.md), "perf-shadow"):
+  `shadow_zero` = second row loop of `0x5fc160` with its per-run callee `[0x7e8c74]` = `0x5f48e0` (zero runs),
+  `shadow_rows` = row loop of `0x5fd120` with callee `[0x7e8e20]` = `0x5fd080` (checkerboard) or `0x5fd0c0`
+  (darken). Whole runs/rows including the calls (stack slots of call + pushes reproduced), callees hash-checked.
+- Finding: in game (HUD 2316x904) `0x5fc160` + `0x5f48e0` were 21 % of guest instructions on some maps (the profile
+  attributed `0x5f48e0` to `0x5f4830`); its first loop (`[0x7e8c70]`) and the fog loop `0x5fc41a` of `0x5fc350`
+  did not run at all. After: `0x5fc160` 1.5 %, `0x5fd120` 0.8 %, frame renderer `0x4b26c0` 63 %.
+- Desktop benchmark (S3_FPS_CAP=0, 60-80 s, alternating runs, random maps): base ~35 / ~31 fps, new ~40 / ~38 fps.
+- Differential tests `differential_shadow_zero` / `differential_shadow_rows` pass; s3det 90 000 vms fast vs
+  `S3_FAST=0`: IDENTICAL, default settings (`insns=11817005518`) and HUD settings (`insns=12256208149`)
+  (`scratch/perf-shadow/det-plain`, `det-hud`).
+
+## 2026-11-07 — performance review
+
+Phone HUD zoom 10 (1944x760): 50-56 fps. simpleperf: ~17 % of the engine thread is host presentation work (frame
+copies, RGB565 conversion loop, software HUD drawing), rest interpreter; guest profile led by the `0x4b26c0` tile
+loop (42 %). Ranked list of options in [performance](porting/performance.md#measurements-2026-11-07-perf-review).
+
+## 2026-11-07 — full-screen menu layouts
+
+- Menus are fixed 800x600; on the 2316x904 phone plain crop keeps only 312 rows. New `s3_mods::menu_layout`:
+  per-screen pieces re-arranged on a wide canvas, detected by 4x4 probe colours (popups -> Fit), touch mapped back
+  through the pieces, GPU quads with a `u_uv` sub-rect. 10 screens. Plain colour backgrounds because the game draws
+  the cursor into the frame (tiles repeated it). `s3run --layout-preview/--layout-probe`. Phone: main menu full
+  screen, moved Load Game button works. → [menu-layout](porting/menu-layout.md)
+- User bugs: (1) black sides on the tutorial loading screen -> `loading` layout (640x480). (2) tutorial map could
+  not be panned below the upper half: the game camera clamp `0x51b4d0` uses the view width for the y limit; with
+  wide resolutions that collapses on small maps. gog-base patches `0x51b528` to read the view height; host clamp
+  too. Both verified on the phone. → [game-state-ui](reverse-engineering/game-state-ui.md)
+- User bug: a new game started with the castle in the upper-left part of the screen (Mobile HUD). The game centres
+  the castle for the narrow start view (640x480); the res switch to the wide size kept the camera corner, and the
+  HUD removing the panel shifted the view again. Fix: `res::switch_hook` anchors the view centre when no anchor is
+  given; `ui_hud_game::apply_layout` shifts the camera by half the panel width. Verified desktop + phone (castle
+  centred after Scenario -> map picker -> setup -> players, all through the menu layouts).
+- PC crashed mid-session; files were intact. Phone adb port changes after reconnect (now :42279).
+
+## 2026-11-07 — real game launcher icon, build-apk.sh on Windows
+
+- Launcher icon is now the game's own crest from the user's `S3.EXE` (`RT_ICON` id 11, 32x32 4 bpp; id 10 is 16x16),
+  extracted at build time by new `tools/s3_icon.py` (pure stdlib, PE or .ICO input) into `port/target`, never committed.
+  `S3GOLD.ICO` = gold-edition 32x32 8 bpp variant; `gog.ico` = generic GOG CD icon. → [android](porting/android.md)
+- `build-apk.sh` ported to Windows Git Bash. A new debug keystore was generated in `port/target` (the WSL one is
+  not on this machine), so an APK built here cannot update an install signed on the old machine (uninstall first:
+  this deletes the pushed game files under `Android/data`).
+- Wireless adb: this PC had to pair first (`adb pair <ip>:<pair-port> <code>`; before that `adb connect` just says
+  "failed to connect"). Then `adb connect 192.168.1.52:40781` worked.
+- Reinstall without re-pushing 1.1 GB: with root, `mv` `files/game` + `files/data` to `/data/media/0/s3port-backup`
+  (same fs, instant), uninstall, install, launch once, `mv` back, then `chown -R <new app uid>:ext_data_rw` and
+  `chcon -R` to the new dir's context (incl. its MLS categories, e.g. `s0:c95,c257,c512,c768`). Game starts fine;
+  launcher shows the crest icon (Samsung puts it on a white tile). → [android](porting/android.md)
+- Legal: the crest is Ubisoft artwork, so an APK with it must not be published. Default icon is now our own adaptive
+  vector "III" (white serif, red outline, navy; style like the Settlers United icon without its "IV"). Game crest only
+  with `build-apk.sh --game-icon`. Installed on the phone, shows correctly. XML comments must not contain `--`
+  (aapt2: "not well-formed").
+- Removed the ESC / ABC / RMB letterbox buttons (`s3-android/src/overlay.rs` deleted, presenter/UI thread/Shared
+  cleaned). Back = Esc, three-finger tap = keyboard remain. Verified on the phone (main menu, no buttons).
+## 2026-11-07 — perf-tile: frame renderer cell loop native
+
+- `0x4b26c0` (draw thread) was 41.9 % of guest instructions in game (HUD 2316x904). Its cell loop
+  `0x4b2e44..0x4b330e`, per cell: sector `q = x/40` (magic multiply); ambient-sound statistics for sectors 0..15
+  (`[ebx+0x5f588/0x5f5cc + 4*(land>>4)]` += `8` or `15-q` / `min(q,8)`; bytes `+0x503` 0xf8..0xfd add weighted sums
+  at `0x4b2f0e`); a 4x4 water-decoration grid (`0x4b3046`: land < 0x10 at the cell and 3 neighbours,
+  `(snap[0x24]+i) & 3 == 0`, `(snap[0x28]+r) & 3 == 0`); then `0x4d3050` from one of three sites: `L >= 0x49` with
+  type `+0x503` (or 0xfe), else by the `+0x508` kind (0x1800 = typed object, 0x1000 / 0x800 = more drawers). Rows
+  advance y += 9, x0 +/- 8. A pre-pass `0x4b277e` turns landscape 0x10 <-> 0x1c by bit 2 of `+0x509`.
+- New native fast paths `frame_tiles` + `land_mark` (`port/crates/s3-mods/src/fast_tile.rs`), the empty object call
+  inlined via `fast_obj::plan/apply`. Profile share 41.9 % -> 6.2 %; desktop HUD fps ~29-35 -> ~41-47; s3det 90 000
+  vms identical to `S3_FAST=0`. New env `S3_FAST_OFF`. Details: [performance](porting/performance.md).
+## 2026-11-07 — perf-interp: faster interpreter (s3-cpu)
+
+- Measured first (in game, HUD 2316x904): blocks average 6.5 instructions, generic path ~1.1 % of instructions,
+  instruction pairs diffuse (top pair 4.3 %), successor cache hit rate 98.8 %. The cost was the per-instruction
+  call loop and a run loop that spilled registers (inlined `exec::step`).
+- s3-cpu: tail-call threaded dispatch inside blocks (`fast::next`, `block_end` sentinel, no per-op EIP store,
+  budget stops inside a block via `exec::step`), lean run loop, fast forms for imul/mul/cdq/cwde, 8/16-bit and CL
+  shifts, setcc, neg/not, inc/dec m32, 32-byte `Op`, boxed blocks with pointer chaining, `cmp/test/dec + jcc`
+  superinstructions. New tests: exact budget stops, mid-block exit counts, fast-vs-generic form tests that run on
+  ARM hosts too.
+- Windows ARM64 dev PC (power throttling off): bench_mips 440 -> 1160 MIPS; s3det 90 000 vms `Cpu::run` 17-19 s ->
+  9.8 s (CPU time 20-23 s -> 13.3 s); s3run HUD 2316x904 uncapped 93-102 -> 126-190 fps (random maps).
+  s3det old vs new: IDENTICAL hashes and `insns=11817005518` (also with EFLAGS/FS/x87 last-IP in the CPU hash).
+- Learned: agent-started processes on this PC run under Windows power throttling (EcoQoS), 2-4x slower and noisy;
+  benchmark with throttling disabled (performance.md). The `fpu::golden` tests fail on Windows ARM64 already at
+  `f0a50f7` (f2xm1) — open determinism issue (determinism.md). `s3-runtime` `vfs_case_insensitive_and_overlay` also
+  fails on Windows at `f0a50f7`.
+- Docs: [cpu.md](porting/cpu.md), [performance.md](porting/performance.md), [determinism.md](porting/determinism.md).
+
 ## 2026-11-05 — fps, zoom, full screen, HUD (workflow)
 
 User feedback (workflow wf_a446e364-b12): minimum 60 fps (was ~26 on the phone, ~30 emulator, ~48 desktop), an FPS

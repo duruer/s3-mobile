@@ -90,7 +90,7 @@ Full steps: [android.md](android.md#install-for-users-phone). Short version:
 4. Reopen the app. In menus a tap is a left click. In game the touch mods are active (UI mode A by default, see
    [ui-modes.md](ui-modes.md)): tap = select / move / place, drag = pan, long press then drag = box select,
    two-finger tap = cancel/deselect, pinch = resolution; Save / Quit via the floating **Menu** button (A) or the HUD
-   menu (B). Back = Esc. Letterbox buttons: `ESC`, `ABC` (soft keyboard), `RMB` (next tap is a right click).
+   menu (B). Back = Esc, three-finger tap = soft keyboard (the ESC/ABC/RMB letterbox buttons were removed 2026-11-07).
    Multiplayer: put the relay URL (e.g. `ws://host:7788/`) in `<data dir>/relay-url.txt`, then "Multi-player Game: LAN".
 
 ## Known issues
@@ -112,7 +112,7 @@ Full steps: [android.md](android.md#install-for-users-phone). Short version:
 
 Priority order:
 
-1. ~~**Real arm64 phone test**~~: done 2026-11-05 (verify-fps1, numbers above). Open: battery / thermal over a long session; HUD default zoom 48-58 fps (next fast path: the frame renderer's tile loop `0x4b26c0`, 46 % of guest instructions in HUD mode).
+1. ~~**Real arm64 phone test**~~: done 2026-11-05 (verify-fps1, numbers above). Open: battery / thermal over a long session; HUD default zoom 48-58 fps (the frame renderer's tile loop `0x4b26c0` got native fast paths 2026-11-07, perf-tile: desktop HUD 2316x904 ~29-35 -> ~41-47 fps; phone not re-measured yet).
 2. ~~**Cursor**~~: done 2026-11-05 (S3.EXE `.rsrc` cursors composed at present time, all frontends; verified on desktop and Android). See [user32-gdi32.md](user32-gdi32.md#cursor-drawing).
 3. ~~**Save/load** on Android, on-screen keyboard~~: both verified on the emulator 2026-11-05 (verify1).
 4. **Audio polish**: listen on a device (music/effects balance: music default 0.6 vs effects at -20 dB set by the game), latency. WAV analysis done (desktop).
@@ -123,7 +123,7 @@ Priority order:
 7. **In-game Esc menu**: find out why Esc does nothing in game (game option, or an HLE gap), so Back can open Save/Quit.
 8. ~~**Touch UX**~~: context touch, two UI modes, pinch = resolution: done 2026-11-05 ([touch.md](touch.md),
    [ui-classic.md](ui-classic.md), [ui-hud.md](ui-hud.md)), verified on Android (ux-verify1). Next: real phone,
-   in-app settings screen (mode, relay URL), hide the old letterbox buttons when a UI mode is active.
+   in-app settings screen (mode, relay URL). Old letterbox buttons removed 2026-11-07.
 9. **Videos**: Indeo 5 decoder (or keep skipping).
 10. **Multiplayer**: DirectPlay HLE over our relay works desktop <-> desktop and Android -> desktop (ux-verify1); next: relay URL setting + lobby UI on Android, public relay, arm64 peer test, Android-hosted game.
 11. **iOS**: same Rust core (interpreter only, no JIT needed), a UIKit/Metal frontend implementing `Host`.

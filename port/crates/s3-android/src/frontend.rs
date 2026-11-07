@@ -65,10 +65,6 @@ pub struct Shared {
     pub delivered: AtomicU64,
     /// The game ended itself (ExitProcess, e.g. "Exit Game" or Esc in the main menu): the app should close.
     pub guest_exited: AtomicBool,
-    /// UI -> engine: the RMB letterbox button was pressed (toggle s3-mods "next tap = right click").
-    pub rmb_toggle: AtomicBool,
-    /// Engine -> UI: "next tap = right click" is armed (button highlight).
-    pub rmb_armed: AtomicBool,
     /// Engine -> UI: a three-finger tap asked for the soft keyboard.
     pub keyboard_req: AtomicBool,
     /// Signalled (with `frame` locked) on every new frame / status / display change: the render thread waits here.
@@ -79,10 +75,8 @@ pub struct Shared {
     /// Presenter -> UI (touch mapping) and engine (mods): viewport of the shown frame, `viewport_seq` on change.
     pub viewport: Mutex<Option<Viewport>>,
     pub viewport_seq: AtomicU64,
-    /// Presenter -> UI: CPU fallback letterbox (only when EGL failed; buttons use its layout).
+    /// Presenter -> UI: CPU fallback letterbox (only when EGL failed; touch mapping uses it).
     pub letterbox: Mutex<Option<crate::layout::Letterbox>>,
-    /// UI -> presenter: state of the letterbox buttons.
-    pub buttons: Mutex<crate::overlay::OverlayState>,
     /// Presenter -> engine: display presents per second and the panel refresh rate (f32 bits; 0 = unknown).
     pub host_fps: AtomicU32,
     pub refresh_hz: AtomicU32,
@@ -104,8 +98,6 @@ impl Shared {
             paused_since: AtomicU64::new(0),
             delivered: AtomicU64::new(0),
             guest_exited: AtomicBool::new(false),
-            rmb_toggle: AtomicBool::new(false),
-            rmb_armed: AtomicBool::new(false),
             keyboard_req: AtomicBool::new(false),
             frame_cv: Condvar::new(),
             display: Mutex::new(DisplaySettings::default()),
@@ -113,7 +105,6 @@ impl Shared {
             viewport: Mutex::new(None),
             viewport_seq: AtomicU64::new(0),
             letterbox: Mutex::new(None),
-            buttons: Mutex::new(crate::overlay::OverlayState::default()),
             host_fps: AtomicU32::new(0),
             refresh_hz: AtomicU32::new(0),
         })
@@ -439,6 +430,9 @@ fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
     shared.set_status(Phase::Running, "Running", "S3.EXE loaded; waiting for the first frame.");
     let mut last_report = Instant::now();
     let mut seen_viewport = u64::MAX;
+    // CPU boost hint for this thread (APerformanceHint, API 33+; no-op elsewhere).
+    let mut hint = crate::perf_hint::EngineHint::new(crate::perf_hint::target_ns(s3_dx::ddraw::fps_cap()));
+    let mut presents_seen = engine.machine.stats.presents;
     loop {
         if shared.quit.load(Ordering::Acquire) {
             log::info!("engine: quit requested\n{}", engine.summary());
@@ -451,6 +445,9 @@ fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
         if engine.run_for_ms(16) == SliceResult::Stopped {
             return Ok(engine.summary());
         }
+        let p = engine.machine.stats.presents;
+        hint.slice_done(p - presents_seen, crate::perf_hint::target_ns(s3_dx::ddraw::fps_cap()));
+        presents_seen = p;
         sync_touch_flags(&shared, &mut engine.machine);
         sync_display(&shared, &mut engine.machine, &mut seen_viewport);
         if last_report.elapsed() > Duration::from_secs(10) {
@@ -484,20 +481,11 @@ fn sync_display(shared: &Shared, m: &mut s3_runtime::Machine, seen_viewport: &mu
     s3_mods::display::set_host_rates(m, f(&shared.host_fps), f(&shared.refresh_hz));
 }
 
-/// Exchange the touch flags between the UI thread and the mod layer (RMB button, three-finger keyboard request).
+/// Pass the mod layer's three-finger keyboard request to the UI thread.
 #[cfg(feature = "engine")]
 fn sync_touch_flags(shared: &Shared, m: &mut s3_runtime::Machine) {
-    if shared.rmb_toggle.swap(false, Ordering::AcqRel) {
-        let on = !s3_mods::right_next(m);
-        s3_mods::set_right_next(m, on);
-    }
-    let armed = s3_mods::right_next(m);
-    let mut wake = shared.rmb_armed.swap(armed, Ordering::AcqRel) != armed;
     if s3_mods::take_keyboard_request(m) {
         shared.keyboard_req.store(true, Ordering::Release);
-        wake = true;
-    }
-    if wake {
         (shared.wake)();
     }
 }

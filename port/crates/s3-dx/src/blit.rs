@@ -248,6 +248,13 @@ pub fn to_framebuffer_into(mem: &GuestMemory, s: &Surf, rgb555: bool, palette: O
         let out = &mut fb.pixels[y * w..(y + 1) * w];
         match s.bpp {
             16 if !rgb555 => {
+                // Guest RGB565 rows are little-endian u16: on a little-endian host this is a plain copy (perf-r2:
+                // the per-pixel loop was ~5 % of the engine thread on the phone).
+                #[cfg(target_endian = "little")]
+                unsafe {
+                    std::ptr::copy_nonoverlapping(row.as_ptr(), out.as_mut_ptr() as *mut u8, w * 2);
+                }
+                #[cfg(not(target_endian = "little"))]
                 for (x, o) in out.iter_mut().enumerate() {
                     *o = u16::from_le_bytes([row[2 * x], row[2 * x + 1]]);
                 }

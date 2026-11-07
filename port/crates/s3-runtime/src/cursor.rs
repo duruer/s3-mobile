@@ -227,10 +227,11 @@ pub struct CursorState {
     pub clip: Option<(i32, i32, i32, i32)>,
     /// Frontend switch: set to true to never draw the cursor.
     pub disabled: bool,
-    /// Copy of the last frame the guest presented (without cursor), for cursor-only refreshes.
+    /// Copy of the last frame the guest presented, with the cursor drawn in when `drawn` is set (one copy per
+    /// present; perf-r2: was two full-frame copies).
     src: Option<FrameBuffer>,
-    /// Frame with the cursor composed in.
-    scratch: Option<FrameBuffer>,
+    /// Pixels of `src` under the drawn cursor: (x0, y0, w, h, pixels), restored before the cursor moves.
+    under: Option<(i32, i32, i32, i32, Vec<u16>)>,
     /// What the host shows now: (x, y, HCURSOR) of the drawn cursor, `None` = no cursor drawn.
     drawn: Option<(i32, i32, u32)>,
 }
@@ -264,9 +265,27 @@ impl CursorState {
         let mut src = self.src.take().unwrap_or_else(|| FrameBuffer::new(0, 0));
         copy_frame(&mut src, fb);
         self.src = Some(src);
+        self.under = None;
         self.drawn = self.wanted(x, y);
         self.drawn?;
         self.recompose()
+    }
+
+    /// Like [`CursorState::compose`] but takes the frame (no copy) and returns the previous buffer for reuse.
+    /// The frame to show is then [`CursorState::shown`].
+    pub fn compose_owned(&mut self, fb: FrameBuffer, x: i32, y: i32) -> Option<FrameBuffer> {
+        let old = self.src.replace(fb);
+        self.under = None;
+        self.drawn = self.wanted(x, y);
+        if self.drawn.is_some() && self.recompose().is_none() {
+            self.drawn = None;
+        }
+        old
+    }
+
+    /// The frame last composed by [`CursorState::compose_owned`] (with the cursor if one is drawn).
+    pub fn shown(&self) -> Option<&FrameBuffer> {
+        self.src.as_ref()
     }
 
     /// Cursor-only update between guest presents (the game redraws nothing when only the mouse moves; a
@@ -277,6 +296,7 @@ impl CursorState {
         if want == self.drawn || self.src.is_none() {
             return None;
         }
+        self.restore_under();
         self.drawn = want;
         if want.is_none() {
             return self.src.as_ref();
@@ -284,14 +304,37 @@ impl CursorState {
         self.recompose()
     }
 
+    /// Put back the pixels the drawn cursor covered (`src` is then the plain guest frame again).
+    fn restore_under(&mut self) {
+        let (Some(src), Some((x0, y0, w, h, px))) = (self.src.as_mut(), self.under.take()) else { return };
+        let fw = src.width as usize;
+        for row in 0..h as usize {
+            let at = (y0 as usize + row) * fw + x0 as usize;
+            src.pixels[at..at + w as usize].copy_from_slice(&px[row * w as usize..(row + 1) * w as usize]);
+        }
+    }
+
+    /// Draw the cursor into `src` (saving what it covers).
     fn recompose(&mut self) -> Option<&FrameBuffer> {
         let (x, y, _) = self.drawn?;
         let img = self.visible_image()?.clone();
-        let mut out = self.scratch.take().unwrap_or_else(|| FrameBuffer::new(0, 0));
-        copy_frame(&mut out, self.src.as_ref()?);
-        draw_cursor(&mut out, &img, x, y);
-        self.scratch = Some(out);
-        self.scratch.as_ref()
+        let src = self.src.as_mut()?;
+        let (fw, fh) = (src.width as i32, src.height as i32);
+        if src.pixels.len() < (fw * fh) as usize {
+            return None;
+        }
+        let (ox, oy) = (x - img.hot_x, y - img.hot_y);
+        let (x0, y0) = (ox.clamp(0, fw), oy.clamp(0, fh));
+        let (x1, y1) = ((ox + img.width as i32).clamp(0, fw), (oy + img.height as i32).clamp(0, fh));
+        let (w, h) = (x1 - x0, y1 - y0);
+        let mut px = Vec::with_capacity((w.max(0) * h.max(0)) as usize);
+        for row in y0..y1 {
+            let at = (row * fw + x0) as usize;
+            px.extend_from_slice(&src.pixels[at..at + w as usize]);
+        }
+        self.under = Some((x0, y0, w.max(0), h.max(0), px));
+        draw_cursor(src, &img, x, y);
+        self.src.as_ref()
     }
 }
 
