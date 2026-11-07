@@ -2,6 +2,7 @@
 //! thread in `present` (EGL/GLES).
 //! Platform-independent logic lives in `frontend`, `touch`, `layout`, `screen`, `audio`, `keys`.
 
+use s3_mods::display::Viewport;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -116,6 +117,11 @@ fn android_main(app: AndroidApp) {
     let mut quit = false;
     let mut paused = false;
     let mut touches_logged = 0u32;
+    // Viewport frozen while two or more fingers are down: a pinch switches the render size every few frames, and
+    // mapping each finger move through the newest viewport made the measured finger distance (game pixels) jump
+    // with every switch, so the zoom went back and forth. With one mapping per gesture the distance ratio is the
+    // real one on screen.
+    let mut pinch_vp: Option<Viewport> = None;
 
     while !quit {
         let mut wait = 250;
@@ -175,7 +181,12 @@ fn android_main(app: AndroidApp) {
                 let read = iter.next(|event| match event {
                     InputEvent::MotionEvent(me) => {
                         // Screen -> game: the presenter's viewport (display mode), or the CPU fallback letterbox.
-                        let Some(vp) = *shared.viewport.lock().unwrap() else { return InputStatus::Handled };
+                        let Some(cur_vp) = *shared.viewport.lock().unwrap() else { return InputStatus::Handled };
+                        let vp = match me.action() {
+                            MotionAction::PointerDown => *pinch_vp.get_or_insert(cur_vp),
+                            MotionAction::Up | MotionAction::Cancel => pinch_vp.take().unwrap_or(cur_vp),
+                            _ => pinch_vp.unwrap_or(cur_vp),
+                        };
                         let lb = *shared.letterbox.lock().unwrap();
                         let to_game = |x: f32, y: f32| match &lb {
                             Some(l) => l.window_to_game(x, y),

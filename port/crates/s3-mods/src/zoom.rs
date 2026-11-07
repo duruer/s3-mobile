@@ -236,9 +236,7 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     }
     let now = m.now_ms();
     let (fw, fh) = m.last_frame_size();
-    // The touch positions were mapped to game pixels through the viewport of the frame on screen, which lags the
-    // newest guest frame by a frame or two while the size switches: correct with that frame's width, else the
-    // measured distance swings with every switch (the zoom went back and forth, 2026-11-08).
+    // Size of the frame on screen (the viewport the touches were mapped through at the gesture start).
     let (mapped_w, mapped_h) =
         crate::display::viewport(m).map(|v| (v.game_w, v.game_h)).filter(|&(w, h)| w > 0 && h > 0).unwrap_or((fw, fh));
     if phase == Phase::Begin || p.start_level.is_none() {
@@ -247,8 +245,9 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
         p.start_frame_h = mapped_h;
         p.dir = 0;
     }
-    // Distances measured in game pixels of different frame sizes: back to "window" scale.
-    let scale = if mapped_w > 0 && p.start_frame_w > 0 { scale * p.start_frame_w as f32 / mapped_w as f32 } else { scale };
+    // Pointer positions of one multi-finger gesture are all mapped through the viewport the gesture started on
+    // (frontends freeze it: s3-android pinch_vp; s3run injects fixed game coordinates), so `scale` is the real
+    // on-screen ratio and the centre is in pixels of the start frame.
     let ml = min_level(m);
     let (hmin, hmax) = (LEVEL_HEIGHTS[ml as usize], LEVEL_HEIGHTS[LEVEL_HEIGHTS.len() - 1]);
     let h0 = if p.start_frame_h > 0 { p.start_frame_h } else { LEVEL_HEIGHTS[level(m) as usize] };
@@ -256,7 +255,8 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     let want_h = if scale.is_finite() && scale > 0.0 { (h0 as f32 / scale).round() as u32 } else { h0 };
     let want_h = (want_h.clamp(hmin, hmax) / PINCH_STEP_H) * PINCH_STEP_H;
     let end = phase == Phase::End;
-    let anchor = (mapped_w > 0 && mapped_h > 0).then(|| (cx / mapped_w as f32, cy / mapped_h as f32));
+    let (sw, sh) = (p.start_frame_w, p.start_frame_h);
+    let anchor = (sw > 0 && sh > 0).then(|| ((cx / sw as f32).clamp(0.0, 1.0), (cy / sh as f32).clamp(0.0, 1.0)));
     let busy = res::switch_pending(m) || now.saturating_sub(p.last_switch_ms) < PINCH_SWITCH_MS;
     if end {
         // Stay exactly where the fingers stopped (snapping to the nearest 40 px level made a last jump, sometimes
