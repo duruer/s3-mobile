@@ -1138,6 +1138,7 @@ dependencies = [
  "jni 0.22.4",
  "log",
  "ndk 0.9.0",
+ "s3-dx",
  "s3-engine",
  "s3-mods",
  "s3-runtime",
@@ -1193,6 +1194,7 @@ name = "s3-mem"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

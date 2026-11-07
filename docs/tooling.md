@@ -23,7 +23,7 @@ calling `open_binary`. S3.EXE auto-analysis takes about 1-2 minutes.
 | Item | Value |
 | --- | --- |
 | SDK | `~/Android/Sdk` (emulator, cmdline-tools/latest, build-tools 35/36, platforms 34-37, NDK 27.2.12479018) |
-| adb | `/opt/android-sdk/platform-tools/adb` (on PATH) |
+| adb | Windows (since 2026-11-06): `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe` (not on PATH; SDK has build-tools 36.0.0, platforms 35/37, NDK 27.2). Old WSL: `/opt/android-sdk/platform-tools/adb` |
 | System images | android-30 and android-35 `google_apis` **x86_64** |
 | Existing AVDs | `bhmod_m7_api30`, `bhmod_m9_api30`, `bhwt_api30`, `fold_compat_30/35`, `kabuk_api35`, `pulsar_api35` — they belong to other projects; **do not reuse or kill them** |
 | Running now | `bhwt_api30` headless on `emulator-5600` (Blockheads world-tool). Leave it alone |
