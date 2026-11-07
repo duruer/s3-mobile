@@ -154,3 +154,12 @@ change) about 1-2 s on the desktop (display re-setup).
 640x480) kept its top-left corner, so on a 1944x760 view the castle sat in the upper-left part. The Mobile HUD
 removing / restoring the panel (`ui_hud_game::apply_layout`) moves the camera by half the panel width for the same
 reason. Verified on the phone.
+
+## Cheaper zoom steps (2026-11-07)
+
+Pinch stuttered: after every size switch `res::switch_hook` forced a full landscape redraw for **3** frames
+(`snap+0xc/+0x10` = 10 000 000); a full redraw runs the `0x54cbd0` triangle rasteriser (`0x54d382`) over the
+whole view (100-280 ms per frame). Now `redraw_frames_after`: 1 frame when the view grows, 0 when it only shrinks
+(zoom in; the landscape buffer already covers the smaller view). Desktop HUD 2316x904 uncapped, fps in the pinch
+seconds: in 181/158 -> 311/436, out 75/181 -> 290/273. Screenshots mid/end of in and out pinches: no black bands.
+(A presentation-only zoom during the pinch was tried first and reverted: the user wants the real zoom per step.)

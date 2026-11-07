@@ -299,6 +299,20 @@ pub struct ResState {
     pub last_frame_ms: u64,
 }
 
+/// Frames with a forced full landscape redraw after a switch `cur -> want`. Each such frame redraws the whole
+/// landscape (100-280 ms on the phone-size view), which made pinch zoom stutter: one frame is enough when the view
+/// grows, none when it only shrinks (the landscape buffer already holds the smaller view; verified with
+/// screenshots of in/out pinches, 2026-11-07). Env `S3_RES_REDRAW=N` / `S3_RES_REDRAW_SHRINK=N` override.
+fn redraw_frames_after(cur: (u32, u32), want: (u32, u32)) -> u32 {
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+    let shrink = want.0 <= cur.0 && want.1 <= cur.1;
+    if shrink {
+        env("S3_RES_REDRAW_SHRINK").unwrap_or(0)
+    } else {
+        env("S3_RES_REDRAW").unwrap_or(1)
+    }
+}
+
 fn trace() -> bool {
     std::env::var_os("S3_RES_TRACE").is_some()
 }
@@ -610,7 +624,7 @@ fn switch_hook(c: &mut HookCtx) -> HookFlow {
         s.mode = Some(want_mode);
         s.applied = (!is_standard(want.0, want.1) || target.is_some()).then_some(want);
         s.anchor = None;
-        s.redraw_frames = 3;
+        s.redraw_frames = redraw_frames_after(cur, want);
         s.settle_frames = if ack { 0 } else { 6 };
         s.switches += 1;
         s.last_switch_ms = now;
