@@ -163,3 +163,6 @@ whole view (100-280 ms per frame). Now `redraw_frames_after`: 1 frame when the v
 (zoom in; the landscape buffer already covers the smaller view). Desktop HUD 2316x904 uncapped, fps in the pinch
 seconds: in 181/158 -> 311/436, out 75/181 -> 290/273. Screenshots mid/end of in and out pinches: no black bands.
 (A presentation-only zoom during the pinch was tried first and reverted: the user wants the real zoom per step.)
+perf-landfull (2026-11-08): the remaining full redraw after a view-growing step is now cheap: native fast path
+`land_rows` for the rasteriser's row/pixel loop (performance.md, "perf-landfull"). Frame after a zoom-out step on
+the desktop: JIT off 37-117 ms -> 17-42 ms, `S3_JIT=1` 14-44 ms -> 14-17 ms (holds the 60 cap).

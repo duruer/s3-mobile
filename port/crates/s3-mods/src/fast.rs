@@ -9,7 +9,7 @@
 use s3_cpu::{NativeBlock, NativeBlocks};
 use s3_runtime::{LogLevel, Machine};
 
-use crate::{fast_blit, fast_land, fast_obj, fast_shadow, fast_snap, fast_sprite, fast_tile};
+use crate::{fast_blit, fast_land, fast_land_rows, fast_obj, fast_shadow, fast_snap, fast_sprite, fast_tile};
 
 /// All fast paths for the GOG exe: (start, end, block).
 pub fn gog_blocks() -> Vec<(u32, u32, NativeBlock)> {
@@ -23,6 +23,7 @@ pub fn gog_blocks() -> Vec<(u32, u32, NativeBlock)> {
         nb("dither", fast_blit::DITHER_START, fast_blit::DITHER_EXIT, fast_blit::DITHER_HASH, fast_blit::dither),
         nb("obj_empty", fast_obj::START, fast_obj::END, fast_obj::HASH, fast_obj::obj_empty),
         nb("land_clean", fast_land::START, fast_land::END, fast_land::HASH, fast_land::land_clean),
+        nb("land_rows", fast_land_rows::START, fast_land_rows::EXIT, fast_land_rows::HASH, fast_land_rows::land_rows),
         // shadow sprites (fast_shadow.rs): one function per loop, several entries (each hash covers entry..exit)
         nb("shadow_zero", fast_shadow::ZERO_ROW, fast_shadow::ZERO_EXIT, fast_shadow::ZERO_ROW_HASH, fast_shadow::shadow_zero),
         nb("shadow_zero_run", fast_shadow::ZERO_RUN, fast_shadow::ZERO_EXIT, fast_shadow::ZERO_RUN_HASH, fast_shadow::shadow_zero),
