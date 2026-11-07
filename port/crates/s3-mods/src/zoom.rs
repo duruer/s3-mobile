@@ -216,6 +216,8 @@ pub struct Pinch {
     start_frame_w: u32,
     start_frame_h: u32,
     last_switch_ms: u64,
+    /// Direction of the last switch in this pinch (+1 bigger, -1 smaller, 0 none).
+    dir: i8,
 }
 
 /// Handle a pinch event (game-pixel centre `cx, cy`). Returns true if zoom handled it (custom resolution on).
@@ -228,13 +230,19 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     }
     let now = m.now_ms();
     let (fw, fh) = m.last_frame_size();
+    // The touch positions were mapped to game pixels through the viewport of the frame on screen, which lags the
+    // newest guest frame by a frame or two while the size switches: correct with that frame's width, else the
+    // measured distance swings with every switch (the zoom went back and forth, 2026-11-08).
+    let (mapped_w, mapped_h) =
+        crate::display::viewport(m).map(|v| (v.game_w, v.game_h)).filter(|&(w, h)| w > 0 && h > 0).unwrap_or((fw, fh));
     if phase == Phase::Begin || p.start_level.is_none() {
         p.start_level = Some(level(m));
-        p.start_frame_w = fw;
-        p.start_frame_h = fh;
+        p.start_frame_w = mapped_w;
+        p.start_frame_h = mapped_h;
+        p.dir = 0;
     }
     // Distances measured in game pixels of different frame sizes: back to "window" scale.
-    let scale = if fw > 0 && p.start_frame_w > 0 { scale * p.start_frame_w as f32 / fw as f32 } else { scale };
+    let scale = if mapped_w > 0 && p.start_frame_w > 0 { scale * p.start_frame_w as f32 / mapped_w as f32 } else { scale };
     let ml = min_level(m);
     let (hmin, hmax) = (LEVEL_HEIGHTS[ml as usize], LEVEL_HEIGHTS[LEVEL_HEIGHTS.len() - 1]);
     let h0 = if p.start_frame_h > 0 { p.start_frame_h } else { LEVEL_HEIGHTS[level(m) as usize] };
@@ -242,7 +250,7 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     let want_h = if scale.is_finite() && scale > 0.0 { (h0 as f32 / scale).round() as u32 } else { h0 };
     let want_h = (want_h.clamp(hmin, hmax) / PINCH_STEP_H) * PINCH_STEP_H;
     let end = phase == Phase::End;
-    let anchor = (fw > 0 && fh > 0).then(|| (cx / fw as f32, cy / fh as f32));
+    let anchor = (mapped_w > 0 && mapped_h > 0).then(|| (cx / mapped_w as f32, cy / mapped_h as f32));
     let busy = res::switch_pending(m) || now.saturating_sub(p.last_switch_ms) < PINCH_SWITCH_MS;
     if end {
         let l = nearest_level(want_h, ml);
@@ -256,7 +264,9 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
         update_target(m);
         p.start_level = None;
         p.last_switch_ms = now;
-    } else if !busy && want_h.abs_diff(fh) >= PINCH_STEP_H {
+    } else if !busy && want_h.abs_diff(fh) >= PINCH_STEP_H * if (want_h as i64 - fh as i64).signum() as i8 == -p.dir { 3 } else { 1 } {
+        // Reversing the direction needs a bigger change (no back-and-forth on finger jitter).
+        p.dir = (want_h as i64 - fh as i64).signum() as i8;
         m.state::<PinchState>().borrow_mut().height = Some(want_h);
         m.state::<res::ResState>().borrow_mut().anchor = Some(anchor.unwrap_or((0.5, 0.5)));
         update_target(m);
