@@ -415,6 +415,7 @@ fn cc_eval<const CC: u8>(f: u32) -> bool {
 }
 
 /// [`cc_eval`] with a run-time condition code (iced `ConditionCode as u8`; JIT helper).
+#[cfg_attr(not(all(feature = "jit", target_arch = "aarch64")), allow(dead_code))]
 pub(crate) fn cc_eval_rt(f: u32, cc: u8) -> bool {
     use ConditionCode as C;
     macro_rules! m {

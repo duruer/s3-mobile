@@ -414,7 +414,12 @@ impl C<'_> {
 
     /// `acc |= SF | ZF | PF` of the 32-bit result `r`. Clobbers T0.
     fn szp_or(&mut self, acc: R, r: R) {
-        self.a.ubfx_w(T0, r, 31, 1);
+        self.szp_or_n(acc, r, 4);
+    }
+
+    /// `acc |= SF | ZF | PF` of the masked `sz`-byte result `r`. Clobbers T0.
+    fn szp_or_n(&mut self, acc: R, r: R, sz: u32) {
+        self.a.ubfx_w(T0, r, 8 * sz - 1, 1);
         self.a.orr_w_lsl(acc, acc, T0, 7);
         self.a.cmp_wi(r, 0);
         self.a.cset_w(T0, Cond::Eq);
@@ -729,7 +734,7 @@ impl C<'_> {
     fn native(&mut self, ins: &Instruction, op: &Op) -> bool {
         use Mnemonic as Mn;
         if op.h as usize == fast::generic as fast::Handler as usize {
-            return false;
+            return self.native_generic(ins);
         }
         let m = ins.mnemonic();
         match m {
@@ -825,15 +830,37 @@ impl C<'_> {
             }
             Mn::Nop => true,
             Mn::Shl | Mn::Sal | Mn::Shr | Mn::Sar if ins.op1_kind() == OpKind::Immediate8 => {
-                let Some(r) = fast::reg_op(ins, 0, 4) else {
-                    return false;
-                };
                 let kind = match m {
                     Mn::Shr => 1,
                     Mn::Sar => 2,
                     _ => 0,
                 };
-                self.shift_ri(r, kind, ins.immediate8() as u32 & 31);
+                if let Some(r) = fast::reg_op(ins, 0, 4) {
+                    self.shift_ri(r, kind, ins.immediate8() as u32 & 31);
+                    return true;
+                }
+                let sz = size0(ins);
+                let Some(r) = fast::reg_op(ins, 0, sz) else {
+                    return false;
+                };
+                if !matches!(sz, 1 | 2) {
+                    return false;
+                }
+                self.shift_ri_n(r, kind, sz, ins.immediate8() as u32 & 31);
+                true
+            }
+            Mn::Shl | Mn::Sal | Mn::Shr | Mn::Sar
+                if ins.op1_kind() == OpKind::Register && ins.op1_register() == iced_x86::Register::CL =>
+            {
+                let kind = match m {
+                    Mn::Shr => 1,
+                    Mn::Sar => 2,
+                    _ => 0,
+                };
+                let Some(r) = fast::reg_op(ins, 0, 4) else {
+                    return false;
+                };
+                self.shift_rc32(r, kind);
                 true
             }
             Mn::Imul | Mn::Mul => self.mul(ins),
@@ -1240,5 +1267,319 @@ fn size0(ins: &Instruction) -> u32 {
         OpKind::Register => ins.op0_register().size() as u32,
         OpKind::Memory => ins.memory_size().size() as u32,
         _ => 0,
+    }
+}
+
+// ----------------------------------------------------------------------------------------- more natives
+
+impl C<'_> {
+    /// `cur_ip` = this instruction (only the interpreter's generic path maintains it; the x87 code reads it).
+    fn cur_ip(&mut self, ins: &Instruction) {
+        self.a.mov_wi(T0, ins.ip32());
+        self.a.str_w(T0, CPU, OFF_CURIP);
+    }
+
+    /// Native translations of forms the interpreter runs through its generic path (`exec::step`); each mirrors
+    /// the `exec.rs` semantics, faults go to the interpreter through side exits.
+    fn native_generic(&mut self, ins: &Instruction) -> bool {
+        if ins.has_lock_prefix() || ins.has_rep_prefix() || ins.has_repne_prefix() {
+            return false;
+        }
+        match ins.code() {
+            Code::Loop_rel8_32_ECX => {
+                self.cur_ip(ins);
+                self.a.sub_wi(g(1), g(1), 1);
+                self.end_block();
+                let l = self.a.label();
+                self.a.cbnz_w(g(1), l);
+                self.link(ins.next_ip32());
+                self.a.bind(l);
+                self.link(ins.near_branch_target() as u32);
+                true
+            }
+            Code::Jecxz_rel8_32 | Code::Jcxz_rel8_32 => {
+                self.cur_ip(ins);
+                self.end_block();
+                let l = self.a.label();
+                if ins.code() == Code::Jecxz_rel8_32 {
+                    self.a.cbz_w(g(1), l);
+                } else {
+                    self.a.try_tst_wi(g(1), 0xFFFF);
+                    self.a.b_cond(Cond::Eq, l);
+                }
+                self.link(ins.next_ip32());
+                self.a.bind(l);
+                self.link(ins.near_branch_target() as u32);
+                true
+            }
+            Code::Div_rm32 | Code::Idiv_rm32 => self.div32(ins, ins.code() == Code::Idiv_rm32),
+            Code::Movzx_r16_rm8 => {
+                let Some(d) = fast::reg_op(ins, 0, 2) else { return false };
+                if let Some(s) = fast::reg_op(ins, 1, 1) {
+                    self.cur_ip(ins);
+                    let v = self.read(1, s, T1);
+                    self.a.bfi_w(g(d), v, 0, 16);
+                    return true;
+                }
+                let Some(mo) = fast::mem_op(ins, 1, 1) else { return false };
+                self.cur_ip(ins);
+                let Some(a) = self.addr(mo) else { return true };
+                self.a.ld_guest(T1, MEM, a, 1, false);
+                self.a.bfi_w(g(d), T1, 0, 16);
+                true
+            }
+            Code::Inc_rm8 | Code::Dec_rm8 | Code::Neg_rm8 => {
+                let Some(r) = fast::reg_op(ins, 0, 1) else { return false };
+                self.cur_ip(ins);
+                let k = match ins.code() {
+                    Code::Inc_rm8 => lk::INC,
+                    Code::Dec_rm8 => lk::DEC,
+                    _ => lk::SUB,
+                };
+                if k != lk::SUB {
+                    self.cf_into_fc();
+                    let a = self.read(1, r, T1);
+                    self.a.mov_w(FA, a);
+                    self.a.movz_w(FB, 1, 0);
+                    if k == lk::INC {
+                        self.a.add_wi(FR, FA, 1);
+                    } else {
+                        self.a.sub_wi(FR, FA, 1);
+                    }
+                } else {
+                    let a = self.read(1, r, T1);
+                    self.a.mov_w(FB, a);
+                    self.a.movz_w(FA, 0, 0);
+                    self.a.neg_w(FR, FB);
+                }
+                self.a.try_and_wi(FR, FR, 0xFF);
+                self.write(1, r, FR);
+                self.fl = Fl::Lazy(k, 1);
+                true
+            }
+            Code::Leaved => {
+                self.cur_ip(ins);
+                self.check(g(5));
+                self.a.ld_guest(T1, MEM, g(5), 4, false);
+                self.a.add_wi(g(4), g(5), 4);
+                self.a.mov_w(g(5), T1);
+                true
+            }
+            Code::Movsd_m32_m32 | Code::Movsb_m8_m8 | Code::Stosd_m32_EAX | Code::Stosb_m8_AL => {
+                let movs = matches!(ins.code(), Code::Movsd_m32_m32 | Code::Movsb_m8_m8);
+                let sz = if matches!(ins.code(), Code::Movsd_m32_m32 | Code::Stosd_m32_EAX) { 4 } else { 1 };
+                if ins.op0_kind() != OpKind::MemoryESEDI {
+                    return false;
+                }
+                if movs && (ins.op1_kind() != OpKind::MemorySegESI || ins.memory_segment() != iced_x86::Register::DS) {
+                    return false;
+                }
+                self.cur_ip(ins);
+                if movs {
+                    self.check(g(6));
+                }
+                self.check(g(7));
+                let v = if movs {
+                    self.a.ld_guest(T1, MEM, g(6), sz, false);
+                    T1
+                } else {
+                    g(0)
+                };
+                self.a.st_guest(v, MEM, g(7), sz);
+                // step = DF ? -sz : sz
+                self.a.ldr_w(T0, CPU, OFF_EF);
+                self.a.ubfx_w(T0, T0, 10, 1);
+                self.a.mov_wi(T3, sz);
+                self.a.sub_w_lsl(T3, T3, T0, if sz == 4 { 3 } else { 1 });
+                if movs {
+                    self.a.add_w(g(6), g(6), T3);
+                }
+                self.a.add_w(g(7), g(7), T3);
+                true
+            }
+            Code::Mov_r32_rm32 | Code::Mov_rm32_r32 if ins.memory_segment() == iced_x86::Register::FS => {
+                let load = ins.code() == Code::Mov_r32_rm32;
+                let (Some(r), true) = (fast::reg_op(ins, if load { 0 } else { 1 }, 4), self.fs_ea_ok(ins)) else {
+                    return false;
+                };
+                self.cur_ip(ins);
+                self.fs_ea(ins);
+                self.check(AD);
+                if load {
+                    self.a.ld_guest(g(r), MEM, AD, 4, false);
+                } else {
+                    self.a.st_guest(g(r), MEM, AD, 4);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// An FS-relative memory operand with 32-bit base/index registers only.
+    fn fs_ea_ok(&self, ins: &Instruction) -> bool {
+        let ok = |r: iced_x86::Register| r == iced_x86::Register::None || r.is_gpr32();
+        (ins.op_kind(0) == OpKind::Memory || ins.op_kind(1) == OpKind::Memory)
+            && ok(ins.memory_base())
+            && ok(ins.memory_index())
+    }
+
+    /// AD = fs_base + base + index * scale + disp.
+    fn fs_ea(&mut self, ins: &Instruction) {
+        let reg = |r: iced_x86::Register| (r as u32 - iced_x86::Register::EAX as u32) as u8;
+        self.a.ldr_w(AD, CPU, OFF_FS);
+        let b = ins.memory_base();
+        if b != iced_x86::Register::None {
+            self.a.add_w(AD, AD, g(reg(b)));
+        }
+        let x = ins.memory_index();
+        if x != iced_x86::Register::None {
+            self.a.add_w_lsl(AD, AD, g(reg(x)), ins.memory_index_scale().trailing_zeros());
+        }
+        let d = ins.memory_displacement32();
+        self.add_imm(AD, AD, d);
+    }
+
+    /// div / idiv r/m32 (EDX:EAX by the operand); #DE (zero divisor, quotient overflow) -> side exit.
+    fn div32(&mut self, ins: &Instruction, signed: bool) -> bool {
+        let src = if let Some(r) = fast::reg_op(ins, 0, 4) {
+            Some(g(r))
+        } else if fast::mem_op(ins, 0, 4).is_some() {
+            None
+        } else {
+            return false;
+        };
+        self.cur_ip(ins);
+        let d = match src {
+            Some(r) => r,
+            None => {
+                let mo = fast::mem_op(ins, 0, 4).unwrap();
+                let Some(a) = self.addr(mo) else { return true };
+                self.a.ld_guest(3, MEM, a, 4, false);
+                3
+            }
+        };
+        let side = self.side();
+        self.a.cbz_w(d, side);
+        // x0 = EDX:EAX, x1 = divisor (64-bit), x2 = quotient, x4 = remainder.
+        self.a.orr_x_lsl(0, g(0), g(2), 32);
+        if signed {
+            self.a.sxtw_x(1, d);
+            // INT64_MIN / -1 overflows (cannot reach here with a 32-bit check alone).
+            self.a.sdiv_x(2, 0, 1);
+            self.a.cmp_x_sxtw(2, 2);
+            self.a.b_cond(Cond::Ne, side);
+            // n == i64::MIN && d == -1: sdiv gives i64::MIN, which fails the range check above.
+        } else {
+            self.a.mov_w(1, d);
+            self.a.udiv_x(2, 0, 1);
+            self.a.lsr_xi(4, 2, 32);
+            self.a.cbnz_w(4, side);
+        }
+        self.a.msub_x(4, 2, 1, 0);
+        self.a.mov_w(g(0), 2);
+        self.a.mov_w(g(2), 4);
+        true
+    }
+
+    /// shl/shr/sar r8/r16, imm (count masked, 1..=31); flags as `fast::shift_val`.
+    fn shift_ri_n(&mut self, r: u8, kind: u8, sz: u32, c: u32) {
+        if c == 0 {
+            return;
+        }
+        let bits = 8 * sz;
+        let msk = crate::flags::mask(sz);
+        self.af_into(T1);
+        let a = self.read(sz, r, 6); // masked operand in w6
+                                     // w1 = CF, w2 = OF, w7 = result
+        match kind {
+            0 => {
+                if c < bits {
+                    self.a.ubfx_w(1, a, bits - c, 1);
+                    self.a.lsl_wi(7, a, c);
+                    self.a.try_and_wi(7, 7, msk);
+                } else {
+                    if c == bits {
+                        self.a.ubfx_w(1, a, 0, 1);
+                    } else {
+                        self.a.movz_w(1, 0, 0);
+                    }
+                    self.a.movz_w(7, 0, 0);
+                }
+                self.a.ubfx_w(2, 7, bits - 1, 1);
+                self.a.eor_w(2, 2, 1);
+            }
+            1 => {
+                if c < bits {
+                    self.a.ubfx_w(1, a, c - 1, 1);
+                    self.a.lsr_wi(7, a, c);
+                } else {
+                    if c == bits {
+                        self.a.ubfx_w(1, a, bits - 1, 1);
+                    } else {
+                        self.a.movz_w(1, 0, 0);
+                    }
+                    self.a.movz_w(7, 0, 0);
+                }
+                self.a.ubfx_w(2, a, bits - 1, 1);
+            }
+            _ => {
+                if sz == 1 {
+                    self.a.sxtb_w(8, a);
+                } else {
+                    self.a.sxth_w(8, a);
+                }
+                let cbit = (c.min(bits) - 1).min(31);
+                self.a.ubfx_w(1, 8, cbit, 1);
+                self.a.asr_wi(7, 8, c.min(31));
+                self.a.try_and_wi(7, 7, msk);
+                self.a.movz_w(2, 0, 0);
+            }
+        }
+        self.a.orr_w(FA, T1, 1);
+        self.a.orr_w_lsl(FA, FA, 2, 11);
+        self.szp_or_n(FA, 7, sz);
+        self.write(sz, r, 7);
+        self.fl = Fl::Eager;
+    }
+
+    /// shl/shr/sar r32, cl: count 0 leaves the flags alone, so the flags go through the `Cpu` on both paths.
+    fn shift_rc32(&mut self, r: u8, kind: u8) {
+        let f = self.fl;
+        self.flush(f);
+        self.fl = Fl::Cpu;
+        let x = g(r);
+        let skip = self.a.label();
+        self.a.try_and_wi(3, g(1), 31);
+        self.a.cbz_w(3, skip);
+        self.af_into(T1);
+        // w1 = CF, w2 = OF
+        match kind {
+            0 => {
+                self.a.neg_w(4, 3); // (32 - c) mod 32
+                self.a.lsrv_w(1, x, 4);
+                self.a.try_and_wi(1, 1, 1);
+                self.a.lslv_w(x, x, 3);
+                self.a.ubfx_w(2, x, 31, 1);
+                self.a.eor_w(2, 2, 1);
+            }
+            _ => {
+                self.a.sub_wi(4, 3, 1);
+                self.a.lsrv_w(1, x, 4);
+                self.a.try_and_wi(1, 1, 1);
+                if kind == 1 {
+                    self.a.ubfx_w(2, x, 31, 1);
+                    self.a.lsrv_w(x, x, 3);
+                } else {
+                    self.a.movz_w(2, 0, 0);
+                    self.a.asrv_w(x, x, 3);
+                }
+            }
+        }
+        self.a.orr_w(FA, T1, 1);
+        self.a.orr_w_lsl(FA, FA, 2, 11);
+        self.szp_or(FA, x);
+        self.flush(Fl::Eager);
+        self.a.bind(skip);
     }
 }

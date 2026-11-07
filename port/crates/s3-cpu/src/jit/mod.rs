@@ -70,6 +70,8 @@ pub(crate) const OFF_LSZ: u32 = offset_of!(Cpu, lsz) as u32;
 pub(crate) const OFF_LEFT: u32 = offset_of!(Cpu, jit_left) as u32;
 pub(crate) const OFF_BLK: u32 = offset_of!(Cpu, jit_blk) as u32;
 pub(crate) const OFF_IDX: u32 = offset_of!(Cpu, jit_idx) as u32;
+pub(crate) const OFF_CURIP: u32 = offset_of!(Cpu, cur_ip) as u32;
+pub(crate) const OFF_FS: u32 = offset_of!(Cpu, fs_base) as u32;
 
 const _: () = {
     assert!(OFF_REGS == 0);

@@ -217,6 +217,10 @@ impl Asm {
     pub fn cmp_w(&mut self, n: R, m: R) {
         self.subs_w(ZR, n, m);
     }
+    /// `sub wd, wn, wm, lsl #s`.
+    pub fn sub_w_lsl(&mut self, d: R, n: R, m: R, s: u32) {
+        self.addsub_reg(0x4B00_0000, d, n, m, 0, s);
+    }
     /// `cmp wn, wm, lsl #s`.
     pub fn cmp_w_lsl(&mut self, n: R, m: R, s: u32) {
         self.addsub_reg(0x6B00_0000, ZR, n, m, 0, s);
@@ -438,6 +442,30 @@ impl Asm {
     /// `smull xd, wn, wm`.
     pub fn smull(&mut self, d: R, n: R, m: R) {
         self.emit(0x9B20_0000 | (m << 16) | (ZR << 10) | (n << 5) | d);
+    }
+    /// `udiv xd, xn, xm`.
+    pub fn udiv_x(&mut self, d: R, n: R, m: R) {
+        self.emit(0x9AC0_0800 | (m << 16) | (n << 5) | d);
+    }
+    /// `sdiv xd, xn, xm`.
+    pub fn sdiv_x(&mut self, d: R, n: R, m: R) {
+        self.emit(0x9AC0_0C00 | (m << 16) | (n << 5) | d);
+    }
+    /// `msub xd, xn, xm, xa` (xd = xa - xn * xm).
+    pub fn msub_x(&mut self, d: R, n: R, m: R, a: R) {
+        self.emit(0x9B00_8000 | (m << 16) | (a << 10) | (n << 5) | d);
+    }
+    /// `sxtw xd, wn`.
+    pub fn sxtw_x(&mut self, d: R, n: R) {
+        self.emit(0x9340_7C00 | (n << 5) | d);
+    }
+    /// `orr xd, xn, xm, lsl #s`.
+    pub fn orr_x_lsl(&mut self, d: R, n: R, m: R, s: u32) {
+        self.logic_reg(0xAA00_0000, d, n, m, 0, s);
+    }
+    /// `cmp xn, xm`.
+    pub fn cmp_x(&mut self, n: R, m: R) {
+        self.addsub_reg(0xEB00_0000, ZR, n, m, 0, 0);
     }
     /// `umull xd, wn, wm`.
     pub fn umull(&mut self, d: R, n: R, m: R) {

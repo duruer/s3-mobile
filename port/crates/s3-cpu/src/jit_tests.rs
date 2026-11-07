@@ -313,6 +313,85 @@ impl Gen {
                 let l = self.subs[self.r.n(self.subs.len() as u64) as usize];
                 a.call(l).unwrap();
             }
+            // Forms the interpreter runs through its generic path (native in the JIT since perf-jit).
+            50 if depth < 2 => {
+                // loop / jecxz / jcxz with a bounded counter.
+                let guard = r.n(3);
+                let k = r.n(5) as u32 + (guard == 2) as u32;
+                a.mov(ecx, k).unwrap();
+                let mut top = a.create_label();
+                let mut out = a.create_label();
+                match guard {
+                    0 => a.jecxz(out).unwrap(),
+                    // `67 E3 06`: jcxz over the 6-byte loop below (iced would add a 0x66 prefix, i.e. 16-bit IP).
+                    1 => a.db(&[0x67, 0xE3, 0x06]).unwrap(),
+                    _ => a.nop().unwrap(),
+                }
+                a.set_label(&mut top).unwrap();
+                a.add(eax, ebx).unwrap();
+                a.xor(edx, eax).unwrap();
+                a.loop_(top).unwrap();
+                a.set_label(&mut out).unwrap();
+                a.nop().unwrap();
+            }
+            51 => match r.n(4) {
+                0 => a.idiv(pick(r, &AREG)).unwrap(),
+                1 => a.idiv(dword_ptr(mem(r))).unwrap(),
+                2 => a.div(dword_ptr(mem(r))).unwrap(),
+                _ => {
+                    a.cdq().unwrap();
+                    a.or(ecx, 0x100).unwrap();
+                    a.idiv(ecx).unwrap()
+                }
+            },
+            52 => match r.n(5) {
+                0 => a.movzx(pick(r, &R16), byte_ptr(mem(r))).unwrap(),
+                1 => a.movzx(pick(r, &R16), pick(r, &R8R)).unwrap(),
+                2 => a.inc(pick(r, &R8W)).unwrap(),
+                3 => a.dec(pick(r, &R8W)).unwrap(),
+                _ => a.neg(pick(r, &R8W)).unwrap(),
+            },
+            53 => match r.n(5) {
+                0 => {
+                    a.push(ebp).unwrap();
+                    a.mov(ebp, esp).unwrap();
+                    a.push(eax).unwrap();
+                    a.push(ecx).unwrap();
+                    a.leave().unwrap();
+                }
+                1 => {
+                    if r.n(2) == 0 {
+                        a.std().unwrap();
+                    }
+                    a.movsd().unwrap();
+                    a.cld().unwrap();
+                }
+                2 => {
+                    if r.n(2) == 0 {
+                        a.std().unwrap();
+                    }
+                    match r.n(3) {
+                        0 => a.movsb().unwrap(),
+                        1 => a.stosd().unwrap(),
+                        _ => a.stosb().unwrap(),
+                    }
+                    a.cld().unwrap();
+                }
+                3 => a.mov(pick(r, &DREG), dword_ptr(mem(r)).fs()).unwrap(),
+                _ => a.mov(dword_ptr(mem(r)).fs(), pick(r, &AREG)).unwrap(),
+            },
+            54 => {
+                let c = [0u32, 1, 2, 7, 8, 9, 15, 16, 17, 24, 31][r.n(11) as usize];
+                match r.n(7) {
+                    0 => a.shr(pick(r, &R16), c).unwrap(),
+                    1 => a.shl(pick(r, &R16), c).unwrap(),
+                    2 => a.sar(pick(r, &R16), c).unwrap(),
+                    3 => a.sar(pick(r, &R8W), c).unwrap(),
+                    4 => a.shl(pick(r, &R8W), c).unwrap(),
+                    5 => a.shr(pick(r, &DREG), cl).unwrap(),
+                    _ => a.sar(pick(r, &DREG), cl).unwrap(),
+                }
+            }
             _ => alu_all!(a, self, add),
         }
     }
@@ -420,6 +499,7 @@ fn machine(p: &Prog, seed: u64) -> (Cpu, GuestMemory) {
     cpu.push32(&mut mem, layout::MAGIC_RETURN);
     cpu.eip = CODE;
     cpu.set_eflags(0x202 | (r.next() as u32 & fl::STATUS));
+    cpu.fs_base = r.n(64) as u32 * 4;
     (cpu, mem)
 }
 
@@ -490,7 +570,8 @@ fn diff_one(seed: u64, thr: u64, slices: bool) -> (u64, usize) {
         if let Some(d) = compare_mem(&mi, &mj) {
             panic!("seed {seed} thr {thr} step {step}: {d}");
         }
-        if ei != CpuExit::Budget {
+        // Generator slips (e.g. a jump into zero-filled memory) can run forever; both sides agreed so far.
+        if ei != CpuExit::Budget || ci.instructions > 30_000_000 {
             break;
         }
     }
