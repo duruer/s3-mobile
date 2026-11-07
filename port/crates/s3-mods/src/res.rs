@@ -37,8 +37,8 @@ use crate::hooks::{self, HookCtx};
 pub const MAX_W: u32 = 2560;
 /// Largest height: the snapshot grid has 130 rows per column (`(H+255)/9 + 11 + 3 <= 129`).
 pub const MAX_H: u32 = 780;
-pub const MIN_W: u32 = 480;
-pub const MIN_H: u32 = 360;
+pub const MIN_W: u32 = 320;
+pub const MIN_H: u32 = 280;
 /// Columns of the enlarged snapshot grid (needs `cols + rows/2 + 3`; 2560x780 needs 237).
 pub const SNAP_COLS: u32 = 256;
 

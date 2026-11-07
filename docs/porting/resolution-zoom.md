@@ -172,3 +172,13 @@ no frame over 79 ms during in/out pinches, 51-61 fps.
 perf-landfull (2026-11-08): the remaining full redraw after a view-growing step is now cheap: native fast path
 `land_rows` for the rasteriser's row/pixel loop (performance.md, "perf-landfull"). Frame after a zoom-out step on
 the desktop: JIT off 37-117 ms -> 17-42 ms, `S3_JIT=1` 14-44 ms -> 14-17 ms (holds the 60 cap).
+
+## More zoom in, FPS counter size (2026-11-08)
+
+- `res::MIN_H` 360 -> 280, `MIN_W` 480 -> 320; `zoom::LEVEL_HEIGHTS` gained 280 and 320 (14 levels; default level
+  index 6 -> 8 = still 600 px; Classic minimum index 3 -> 5 = still 480). Tested in game with `S3_RES`: 816x320,
+  720x280, 616x240, 512x200 all run (60 fps, no crash, landscape fine), but the Mobile HUD is drawn into the frame:
+  below ~280 its icons vanish (top resource icons at 240, bottom bar icons at 200), so 280 is the limit until the
+  HUD is drawn at window resolution (multicore.md option B). Zoom out above 780: see the res-tall work.
+- FPS counter: font and padding scale with the frame height (11 px at 600), so it keeps its on-screen size at
+  every zoom level, like the HUD.

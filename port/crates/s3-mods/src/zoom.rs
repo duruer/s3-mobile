@@ -15,11 +15,12 @@ use crate::res;
 use crate::settings::UiMode;
 
 /// Render heights of the zoom levels (index 0 = most zoomed in). Max = [`res::MAX_H`].
-pub const LEVEL_HEIGHTS: [u32; 12] = [360, 400, 440, 480, 520, 560, 600, 640, 680, 720, 760, 780];
+/// 280 and 320 added 2026-11-08 (more zoom in; below ~280 the HUD drawn into the frame loses its icons).
+pub const LEVEL_HEIGHTS: [u32; 14] = [280, 320, 360, 400, 440, 480, 520, 560, 600, 640, 680, 720, 760, 780];
 /// Default level: 600 px high (like the game's 800x600).
-pub const DEFAULT_LEVEL: u32 = 6;
+pub const DEFAULT_LEVEL: u32 = 8;
 /// Lowest level in UI mode A (the original panel needs at least 480 px).
-pub const CLASSIC_MIN_LEVEL: u32 = 3;
+pub const CLASSIC_MIN_LEVEL: u32 = 5;
 /// Pinch scale factor per level (fingers apart by this factor = one level zoomed in).
 pub const PINCH_STEP: f32 = 1.12;
 /// Minimum time between two switches during a pinch (ms). The next switch also waits until the game finished
@@ -319,19 +320,19 @@ mod tests {
     #[test]
     fn sizes_for_levels() {
         // 4:3 reproduces the game's sizes at 480 / 600.
-        assert_eq!(size_for(3, 4.0 / 3.0, 0), (640, 480));
-        assert_eq!(size_for(6, 4.0 / 3.0, 0), (800, 600));
+        assert_eq!(size_for(5, 4.0 / 3.0, 0), (640, 480));
+        assert_eq!(size_for(8, 4.0 / 3.0, 0), (800, 600));
         // Phone cover screen 2229x904 (aspect 2.466): 600 high -> 1480x600 (the user's example).
         let a = 2229.0 / 904.0;
-        assert_eq!(size_for(6, a, 0), (1480, 600));
-        assert_eq!(size_for(9, a, 0), (1776, 720));
-        let (w, h) = size_for(11, a, 0);
+        assert_eq!(size_for(8, a, 0), (1480, 600));
+        assert_eq!(size_for(11, a, 0), (1776, 720));
+        let (w, h) = size_for(13, a, 0);
         assert_eq!(h, 780);
         assert_eq!(w, 1920);
         // Classic mode never goes below 480.
         assert_eq!(size_for(0, 4.0 / 3.0, CLASSIC_MIN_LEVEL), (640, 480));
         // Very wide: width capped, height follows.
-        let (w, h) = size_for(11, 4.0, 0);
+        let (w, h) = size_for(13, 4.0, 0);
         assert_eq!(w, res::MAX_W);
         assert_eq!(h, 640);
         // Every level of a few aspects fits the snapshot grid.
@@ -350,7 +351,7 @@ mod tests {
         assert_eq!(pinch_level(6, 1.12, 0), 5);
         assert_eq!(pinch_level(6, 1.12f32.powi(3), 0), 3);
         assert_eq!(pinch_level(6, 1.0 / 1.12, 0), 7);
-        assert_eq!(pinch_level(6, 0.1, 0), 11);
+        assert_eq!(pinch_level(6, 0.1, 0), 13);
         assert_eq!(pinch_level(6, 10.0, 0), 0);
         assert_eq!(pinch_level(6, 10.0, 3), 3);
     }

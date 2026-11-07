@@ -137,14 +137,19 @@ impl Mod for FpsMod {
         };
         let lines = self.stats.lines(self.mode, host_fps, refresh);
         let (vx, vy, vw, _vh) = display::visible_game_rect(m);
-        let px = 11.0;
+        // Same size on screen at every zoom level (the frame is scaled to the window): 11 px at a 600 px high frame,
+        // like the HUD, which scales with the frame height.
+        let fh = m.last_frame_size().1.max(1) as f32;
+        let sk = (fh / 600.0).clamp(0.3, 4.0);
+        let px = 11.0 * sk;
+        let pad = (4.0 * sk).round().max(1.0) as i32;
         let lh = measure_text(px, Weight::Bold, "0").1.max(1);
-        let w = lines.iter().map(|l| measure_text(px, Weight::Bold, l).0).max().unwrap_or(0) + 8;
-        let h = lh * lines.len() as i32 + 4;
+        let w = lines.iter().map(|l| measure_text(px, Weight::Bold, l).0).max().unwrap_or(0) + 2 * pad;
+        let h = lh * lines.len() as i32 + pad;
         // Top right; in the Mobile HUD top centre (its full-screen map "Close" and "Back to HUD" sit top right).
         let hud = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode == crate::settings::UiMode::MobileHud;
         let x = if hud { vx + (vw - w) / 2 } else { (vx + vw - w - 2).max(vx) };
-        let y = vy + 2;
+        let y = vy + (2.0 * sk).round() as i32;
         c.fill_rect(x, y, w, h, Rgba::rgba(0, 0, 0, 150));
         let color = if !self.stats.have || self.stats.fps >= 55.0 {
             Rgba::rgb(140, 255, 140)
@@ -154,7 +159,7 @@ impl Mod for FpsMod {
             Rgba::rgb(255, 130, 110)
         };
         for (k, l) in lines.iter().enumerate() {
-            c.text(x + 4, y + 2 + k as i32 * lh, px, Weight::Bold, if k == 0 { color } else { Rgba::WHITE }, l);
+            c.text(x + pad, y + pad / 2 + k as i32 * lh, px, Weight::Bold, if k == 0 { color } else { Rgba::WHITE }, l);
         }
     }
 }
