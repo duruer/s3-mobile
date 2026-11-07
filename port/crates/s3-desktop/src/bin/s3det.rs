@@ -5,6 +5,7 @@
 //!       [--ipms N (150000 guest instructions per virtual ms)] [--hash-every MS (1000)] [--hash-out <file>]
 //!       [--dump-at VMS --dump <file>]  (raw dump of the hashed memory: repeated [u32 addr][4096 bytes])
 //!       [--inject "t_vms:cmd args;..."]   (click x y | rclick x y | move x y | key VK | shot file.png | quit)
+//!       [--write-trace FROM-TO --write-trace-out <file>]  (which memory each thread writes, see write_trace.rs)
 //! ```
 //! Everything the guest can observe about time comes from a **virtual clock** derived from the number of guest
 //! instructions executed (plus 1 ms per idle slice), never from the host clock:
@@ -18,6 +19,9 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[path = "../write_trace.rs"]
+mod write_trace;
 
 use s3_engine::Engine;
 use s3_runtime::{FrameBuffer, Host, HostEvent, LogLevel, Machine, MouseButton, SliceResult, ThunkResult};
@@ -338,6 +342,8 @@ fn main() {
     let mut verbose = false;
     let mut dump_at: Option<u64> = None;
     let mut dump: Option<PathBuf> = None;
+    let mut write_trace: Option<String> = None;
+    let mut write_trace_out: Option<PathBuf> = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| usage());
@@ -352,6 +358,8 @@ fn main() {
             "--inject" => inject = val(),
             "--dump-at" => dump_at = Some(val().parse().unwrap_or_else(|_| usage())),
             "--dump" => dump = Some(val().into()),
+            "--write-trace" => write_trace = Some(val()),
+            "--write-trace-out" => write_trace_out = Some(val().into()),
             "-v" => verbose = true,
             _ => usage(),
         }
@@ -378,6 +386,12 @@ fn main() {
         }
     };
     install_time_overrides(&mut engine.machine);
+    if let Some(w) = &write_trace {
+        if let Err(e) = write_trace::install(&mut engine.machine, w) {
+            eprintln!("s3det: {e}");
+            std::process::exit(2);
+        }
+    }
 
     let mut out: Box<dyn std::io::Write> = match &hash_out {
         Some(p) => Box::new(std::fs::File::create(p).unwrap_or_else(|e| {
@@ -396,6 +410,9 @@ fn main() {
         let now_us = idle_us + engine.machine.stats.instructions * 1000 / ipms;
         VCLOCK_US.store(now_us, Ordering::Relaxed);
         let now = now_us / 1000;
+        if write_trace.is_some() {
+            write_trace::set_now(now);
+        }
         while shots.front().map(|(t, _)| *t <= now).unwrap_or(false) {
             let (_, p) = shots.pop_front().unwrap();
             match frame.lock().unwrap().as_ref().map(|f| write_png(&p, f)) {
@@ -449,6 +466,11 @@ fn main() {
         engine.machine.stats.instructions, engine.machine.stats.presents
     )
     .ok();
+    if let Some(p) = &write_trace_out {
+        if let Err(e) = write_trace::report(&engine.machine, p) {
+            eprintln!("s3det: write trace report: {e}");
+        }
+    }
     eprintln!(
         "s3det: {} virtual ms in {:.1} s wall, {} instructions, stop: {:?}",
         VCLOCK_US.load(Ordering::Relaxed) / 1000,

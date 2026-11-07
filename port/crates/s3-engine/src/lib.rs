@@ -77,7 +77,7 @@ impl Engine {
             last = self.machine.run_slice(SLICE_INSTRUCTIONS);
             match last {
                 SliceResult::Stopped => return last,
-                SliceResult::Idle => self.machine.host.idle(1),
+                SliceResult::Idle => self.machine.idle(1),
                 SliceResult::Ran(_) => {}
             }
         }
@@ -94,12 +94,24 @@ impl Engine {
         s.push_str(&format!("guest exceptions: {}\n", m.stats.exceptions));
         s.push_str(&format!("mod hooks dispatched: {}\n", m.stats.hooks));
         s.push_str(&format!("threads: {}\n", m.threads.len()));
+        for (i, t) in m.threads.iter().enumerate() {
+            if t.cpu_ns > 0 {
+                s.push_str(&format!(
+                    "  t{i}: {} M instr in {} ms Cpu::run ({} M/s)\n",
+                    t.cpu.instructions / 1_000_000,
+                    t.cpu_ns / 1_000_000,
+                    t.cpu.instructions * 1000 / t.cpu_ns.max(1)
+                ));
+            }
+        }
         let mut calls: Vec<_> = m.registry.entries().iter().filter(|e| e.calls > 0).collect();
         calls.sort_by(|a, b| b.calls.cmp(&a.calls));
         s.push_str(&format!("distinct HLE functions called: {}\n", calls.len()));
         for e in calls.iter().take(40) {
             s.push_str(&format!("  {:>10}  {}!{}\n", e.calls, e.dll, e.name));
         }
+        s.push_str(&m.host_prof_report(30));
+        s.push_str(&m.mt_report());
         if let Some(t) = m.threads.get(m.cur) {
             s.push_str(&format!("current thread {} eip={:#x} esp={:#x}\n", m.cur, t.cpu.eip, t.cpu.regs[4]));
         }

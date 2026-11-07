@@ -932,12 +932,16 @@ pub fn present_primary(m: &mut Machine) {
     }
     let palette = if surf.bpp == 8 { s.palettes.get(&pal).cloned() } else { None };
     let mut fb = std::mem::take(&mut s.fb);
+    let t0 = m.stats.host_prof_start();
     blit::to_framebuffer_into(&m.mem, &surf, rgb555, palette.as_deref(), &mut fb);
+    m.stats.host_prof_section("ddraw primary -> framebuffer", t0);
     s.presents += 1;
     // The state borrow must end before the host/mods run (they may call back into ddraw).
     drop(s);
     // Ownership round trip: the runtime keeps this frame and hands back the previous buffer (no copy).
+    let t1 = m.stats.host_prof_start();
     let back = m.present_owned(fb);
+    m.stats.host_prof_section("ddraw present_owned (overlay, cursor, host)", t1);
     state(m).borrow_mut().fb = back;
 }
 
@@ -1362,7 +1366,9 @@ fn surf_blt(m: &mut Machine) -> ThunkResult {
             o.mirror_lr = ddfx & DDBLTFX_MIRRORLEFTRIGHT != 0;
             o.mirror_ud = ddfx & DDBLTFX_MIRRORUPDOWN != 0;
         }
+        let t0 = m.stats.host_prof_start();
         blit::blt(&mut m.mem, &d.surf, drect, &s.surf, srect, &o);
+        m.stats.host_prof_section(blt_section(&o), t0);
     } else {
         return ret(DDERR_INVALIDPARAMS, 6);
     }
@@ -1386,7 +1392,9 @@ fn surf_blt_fast(m: &mut Machine) -> ThunkResult {
         dst_key: if trans & DDBLTFAST_DESTCOLORKEY != 0 { d.ck_dst } else { None },
         ..Default::default()
     };
+    let t0 = m.stats.host_prof_start();
     blit::blt(&mut m.mem, &d.surf, drect, &s.surf, srect, &o);
+    m.stats.host_prof_section(blt_section(&o), t0);
     if is_visible(m, this) {
         present_primary(m);
     }
@@ -1486,4 +1494,13 @@ fn clip_set_hwnd(m: &mut Machine) -> ThunkResult {
     let (this, hwnd) = (m.arg_u32(0), m.arg_u32(2));
     state(m).borrow_mut().clippers.insert(this, hwnd);
     ret(DD_OK, 3)
+}
+
+/// Host-profile section name of a blit (`S3_HOST_PROF`).
+fn blt_section(o: &BltOpts) -> &'static str {
+    match (o.src_key.is_some(), o.dst_key.is_some(), o.mirror_lr || o.mirror_ud) {
+        (false, false, false) => "ddraw blit plain",
+        (true, false, false) => "ddraw blit src colour key",
+        _ => "ddraw blit dst key / mirror",
+    }
 }

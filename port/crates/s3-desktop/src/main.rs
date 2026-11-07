@@ -542,6 +542,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // S3_MT=1: multi-core mode (draw thread on its own host thread, docs/porting/multicore.md). Not deterministic.
+    if std::env::var("S3_MT").is_ok_and(|v| v == "1") {
+        engine.machine.enable_mt();
+    }
     if std::env::var_os("S3_GAME_LOG").is_some() {
         mp_hash::install_game_log(&mut engine.machine);
     }

@@ -124,6 +124,8 @@ pub struct GuestMemory {
     /// Guest heaps (HeapCreate & co).
     pub heaps: Heaps,
     process_heap: u32,
+    /// False for an alias view ([`GuestMemory::alias_view`]): it does not release the window on drop.
+    owns_window: bool,
 }
 
 // The raw pointer is only an address; `GuestMemory` owns its mapping exclusively.
@@ -154,9 +156,21 @@ impl GuestMemory {
     /// Reserve the 4 GiB window and create the process heap.
     pub fn new() -> Result<Self, MemError> {
         let base = sys::reserve_window((layout::WINDOW_SIZE + layout::GUARD_SIZE) as usize)?;
-        let mut m = GuestMemory { base, regions: Regions::new(), heaps: Heaps::new(), process_heap: 0 };
+        let mut m =
+            GuestMemory { base, regions: Regions::new(), heaps: Heaps::new(), process_heap: 0, owns_window: true };
         m.process_heap = m.heap_create(0x10_0000, 0)?;
         Ok(m)
+    }
+
+    /// A second handle on the same guest window for a CPU running on another host thread (multi-core mode,
+    /// docs/porting/multicore.md): same base pointer, **empty** `regions`/`heaps` (the bookkeeping stays with the
+    /// owner), and it never unmaps the window.
+    ///
+    /// # Safety
+    /// The view must not outlive `self`, and it may only be used for plain guest loads/stores (what `Cpu::run`
+    /// does). Concurrent accesses through both handles race exactly like guest threads on a real multi-core PC.
+    pub unsafe fn alias_view(&self) -> GuestMemory {
+        GuestMemory { base: self.base, regions: Regions::new(), heaps: Heaps::new(), process_heap: 0, owns_window: false }
     }
 
     /// Host pointer of guest address 0.
@@ -411,6 +425,9 @@ impl GuestMemory {
 
 impl Drop for GuestMemory {
     fn drop(&mut self) {
+        if !self.owns_window {
+            return;
+        }
         sys::release_window(self.base, (layout::WINDOW_SIZE + layout::GUARD_SIZE) as usize);
     }
 }

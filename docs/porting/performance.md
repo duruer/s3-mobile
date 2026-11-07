@@ -303,7 +303,11 @@ Ideas for more fast paths: the masked (fog) sprite loop `0x5fc41a..0x5fc4af`, th
 ## Profiling tools
 
 - `S3_SAMPLE=1 s3run ...`: per second `fps:N cpu:Mms` (presents, host ms inside the interpreter) and per-thread
-  millions of instructions.
+  millions of instructions. The run summary lists per-thread `Cpu::run` time and M instr/s (perf-mt).
+- `S3_HOST_PROF=1 s3run ...` (perf-mt): host time per HLE handler, hook and service plus named sections (ddraw
+  blits, primary conversion, overlay compose, cursor + `Host::present`) in the run summary
+  (`Stats::host_prof_start/host_prof_section` to add sections). Fps comparisons on random maps are noisy (the map
+  changes per run); `tools/perf/fps-bench.ps1` (Windows, throttling off through `tools/perf/fast.ps1`) picks the fixed map Artokia.
 - `S3_PROFILE=<file> [S3_PROFILE_FROM_MS=<ms>] s3run ...`: at exit writes per-thread decoded-block entry counts
   (`<file>`), the 60 hottest blocks per thread disassembled with generic-path instructions marked `*`
   (`<file>.disasm`) and the executed instruction forms weighted by count (`<file>.forms`).
@@ -378,8 +382,10 @@ at the cap (~85 fps worth of work), enough for higher zoom levels or a 90 Hz cap
 
 ## Not done / next
 
-- Multi-core: all guest threads share one host core. Running the draw thread on its own host thread would give
-  the logic thread (and audio) a core of their own, but the machine (HLE state, memory) is single-threaded today.
+- Multi-core: see [multicore.md](multicore.md) (perf-mt, 2026-11-07). The draw thread on its own host thread
+  (`S3_MT=1`, experimental) works but gives no reliable gain: the logic thread is only ~15 % of a frame and the HUD
+  overlay compose (0.48 ms of ~2.9 ms per frame at 1944x760) runs under the one HLE lock. Next: overlay display list
+  rasterised outside the machine / on a presenter thread (also +15-20 % in the default mode).
 - ~~Measure on the phone~~: done (verify-fps1, table above). Phone profiling recipe: `adb shell su -c "simpleperf
   record -p PID -f 4000 --duration 8 -o /data/local/tmp/s3perf.data"`, pull, `simpleperf report --sort
   vaddr_in_file` (NDK `simpleperf/bin/linux/x86_64`) and symbolize the addresses with `llvm-symbolizer

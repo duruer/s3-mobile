@@ -15,6 +15,7 @@ pub mod hosttime;
 pub mod input;
 pub mod machine;
 pub mod mapfile;
+pub mod mt;
 pub mod process;
 pub mod registry;
 pub mod resources;
