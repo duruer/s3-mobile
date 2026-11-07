@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use s3_runtime::Machine;
 
+use crate::menu_layout::{self, MenuLayout};
+
 /// How the game frame is placed in the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DisplayMode {
@@ -156,6 +158,10 @@ pub struct Viewport {
     pub dst_y: f32,
     pub dst_w: f32,
     pub dst_h: f32,
+    /// Full-screen menu layout ([`crate::menu_layout`]): the frame is shown re-arranged on a canvas. Then
+    /// `dst_*` describe the canvas placement (origin, frame size times the canvas scale) and the window is fully
+    /// covered (no bars).
+    pub layout: Option<&'static MenuLayout>,
 }
 
 impl Viewport {
@@ -179,7 +185,26 @@ impl Viewport {
         };
         let dx = ((ww as f64 - dw) / 2.0).round();
         let dy = ((wh as f64 - dh) / 2.0).round();
-        Viewport { mode, game_w: gw, game_h: gh, win_w: ww, win_h: wh, dst_x: dx as f32, dst_y: dy as f32, dst_w: dw as f32, dst_h: dh as f32 }
+        Viewport { mode, game_w: gw, game_h: gh, win_w: ww, win_h: wh, dst_x: dx as f32, dst_y: dy as f32, dst_w: dw as f32, dst_h: dh as f32, layout: None }
+    }
+
+    /// Viewport for this frame: a full-screen menu layout when the frame is a known menu screen and the mode
+    /// fills the screen (`NativeWide`, `Fill`), else [`Viewport::new`].
+    pub fn for_frame(mode: DisplayMode, pixels: &[u16], game_w: u32, game_h: u32, win_w: u32, win_h: u32) -> Viewport {
+        if matches!(mode, DisplayMode::NativeWide | DisplayMode::Fill) {
+            if let Some(l) = menu_layout::detect(pixels, game_w, game_h) {
+                return Viewport::with_layout(mode, l, win_w, win_h);
+            }
+        }
+        Viewport::new(mode, game_w, game_h, win_w, win_h)
+    }
+
+    /// Viewport showing the frame through a menu layout.
+    pub fn with_layout(mode: DisplayMode, l: &'static MenuLayout, win_w: u32, win_h: u32) -> Viewport {
+        let (ww, wh) = (win_w.max(1), win_h.max(1));
+        let (ox, oy, sc) = menu_layout::canvas_placement(l, ww, wh);
+        let (gw, gh) = (l.frame[0] as u32, l.frame[1] as u32);
+        Viewport { mode, game_w: gw, game_h: gh, win_w: ww, win_h: wh, dst_x: ox, dst_y: oy, dst_w: gw as f32 * sc, dst_h: gh as f32 * sc, layout: Some(l) }
     }
 
     /// Window pixel -> game pixel, clamped to the frame.
@@ -193,6 +218,10 @@ impl Viewport {
 
     /// Window pixel -> game coordinates (unclamped, fractional).
     pub fn window_to_game_f(&self, x: f32, y: f32) -> (f32, f32) {
+        if let Some(l) = self.layout {
+            let (sx, sy) = self.scale();
+            return l.canvas_to_game((x - self.dst_x) / sx, (y - self.dst_y) / sy);
+        }
         (
             ((x as f64 - self.dst_x as f64) * self.game_w as f64 / self.dst_w as f64) as f32,
             ((y as f64 - self.dst_y as f64) * self.game_h as f64 / self.dst_h as f64) as f32,
@@ -201,6 +230,12 @@ impl Viewport {
 
     /// Game pixel -> window pixel (top-left corner of that game pixel).
     pub fn game_to_window(&self, gx: f32, gy: f32) -> (f32, f32) {
+        if let Some(l) = self.layout {
+            // Game pixels not shown by any piece go far off screen.
+            let (u, v) = l.game_to_canvas(gx, gy).unwrap_or((-1.0e6, -1.0e6));
+            let (sx, sy) = self.scale();
+            return (self.dst_x + u * sx, self.dst_y + v * sy);
+        }
         (self.dst_x + gx * self.dst_w / self.game_w as f32, self.dst_y + gy * self.dst_h / self.game_h as f32)
     }
 
@@ -211,6 +246,9 @@ impl Viewport {
 
     /// Part of the game frame that is on screen, in game pixels (x, y, w, h). The whole frame except in `Fill`.
     pub fn visible_game_rect(&self) -> (i32, i32, i32, i32) {
+        if self.layout.is_some() {
+            return (0, 0, self.game_w as i32, self.game_h as i32);
+        }
         let (x0, y0) = self.window_to_game_f(0.0, 0.0);
         let (x1, y1) = self.window_to_game_f(self.win_w as f32, self.win_h as f32);
         let x0 = (x0.max(0.0).ceil() as i32).min(self.game_w as i32);
@@ -222,6 +260,9 @@ impl Viewport {
 
     /// Destination rectangle clipped to the window: (x, y, w, h) in whole window pixels.
     pub fn dst_rect_clipped(&self) -> (i32, i32, i32, i32) {
+        if self.layout.is_some() {
+            return (0, 0, self.win_w as i32, self.win_h as i32);
+        }
         let x0 = self.dst_x.max(0.0).round() as i32;
         let y0 = self.dst_y.max(0.0).round() as i32;
         let x1 = (self.dst_x + self.dst_w).min(self.win_w as f32).round() as i32;
@@ -304,6 +345,10 @@ pub fn scale_to_xrgb(vp: &Viewport, filter: ScaleFilter, src: &[u16], dst: &mut 
     let (ww, wh) = (vp.win_w as usize, vp.win_h as usize);
     let (gw, gh) = (vp.game_w as usize, vp.game_h as usize);
     if dst.len() < ww * wh || src.len() < gw * gh {
+        return;
+    }
+    if let Some(l) = vp.layout {
+        menu_layout::render_xrgb(l, src, gw, gh, dst, ww, wh);
         return;
     }
     let (rx, ry, rw, rh) = vp.dst_rect_clipped();

@@ -248,9 +248,10 @@ pub fn pinch_zoom_key(scale: f32, res_index: i32) -> Option<u32> {
 
 /// Camera bounds (clamp `0x51b4d0`): `x <= 24*W + 0x167 - mapW`, `y <= 9*W + 0x176 - mapW` (sic: the game
 /// uses the view width for both).
-pub fn clamp_camera(x: f32, y: f32, world: i32, map_w: i32) -> (f32, f32) {
+pub fn clamp_camera(x: f32, y: f32, world: i32, map_w: i32, map_h: i32) -> (f32, f32) {
     let mx = (24 * world + 0x167 - map_w).max(0) as f32;
-    let my = (9 * world + 0x176 - map_w).max(0) as f32;
+    // The game uses map_w here too (bug); gog-base patches 0x51b528 to use the view height, so do we.
+    let my = (9 * world + 0x176 - map_h).max(0) as f32;
     (x.clamp(0.0, mx), y.clamp(0.0, my))
 }
 
@@ -492,9 +493,11 @@ mod tests {
 
     #[test]
     fn camera_clamp() {
-        assert_eq!(clamp_camera(-5.0, -1.0, 384, 504), (0.0, 0.0));
-        assert_eq!(clamp_camera(1e6, 1e6, 384, 504), ((24 * 384 + 0x167 - 504) as f32, (9 * 384 + 0x176 - 504) as f32));
-        assert_eq!(clamp_camera(100.0, 200.0, 384, 504), (100.0, 200.0));
+        assert_eq!(clamp_camera(-5.0, -1.0, 384, 504, 480), (0.0, 0.0));
+        assert_eq!(clamp_camera(1e6, 1e6, 384, 504, 480), ((24 * 384 + 0x167 - 504) as f32, (9 * 384 + 0x176 - 480) as f32));
+        assert_eq!(clamp_camera(100.0, 200.0, 384, 504, 480), (100.0, 200.0));
+        // Wide view on a small map: the y range must not collapse (tutorial bug, 2026-11-07).
+        assert!(clamp_camera(0.0, 1e6, 128, 2000, 780).1 > 300.0);
     }
 
     #[test]

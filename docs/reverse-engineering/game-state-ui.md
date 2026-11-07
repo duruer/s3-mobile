@@ -53,6 +53,10 @@ Names used below:
 
 - **Clamp** `0x51b4d0` (thiscall gd, no args): `x` into `[0, 24*W + 0x167 - mapW]`, `y` into `[0, 9*W + 0x176 - mapW]`
   where `mapW = [0x730f18]` (yes, the y limit also uses the view width in this build). Call it after writing the camera.
+  **Patched 2026-11-07** (gog-base, `0x51b528` `mov edi,[0x730f18]` -> `[0x730f1c]`): with our wide custom
+  resolutions (mapW ~1400-2500) the y limit collapsed; on the small tutorial map the camera could not go below
+  the upper half (user report). Now `y` into `[0, 9*W + 0x176 - mapH]` (VERIFIED on the phone: tutorial pans to
+  the south coast). The host clamp `touch_logic::clamp_camera` uses `map_h` the same way.
 - **Center on tile** `0x51b560` (thiscall gd, `(tx, ty)`, `ret 8`): `x = (W + 2*tx + 24 - ty)*8 - mapW/2`,
   `y = 9*ty + 200 - mapH/2 - height(tx,ty)` with `height` = byte `gd+0x67448 + (tx*768+ty)*0x18` (tile +4) and
   `mapH = [0x730f1c]`; then calls the clamp. Callers: minimap click (`0x525438`), `0x4fef2d`, `0x51b6d4`, `0x526a90`,

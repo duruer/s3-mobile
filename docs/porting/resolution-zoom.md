@@ -146,3 +146,11 @@ change) about 1-2 s on the desktop (display re-setup).
   displacements); not attempted.
 - Classic mode: paint the area below the panel art (heights between the variants).
 - EnumDisplayModes still lists only the three original sizes (the game does not need the custom ones listed).
+
+## Camera on a size switch (2026-11-07)
+
+`res::switch_hook` keeps a screen point over the same world point (`zoom::anchor_camera`): the pinch anchor, or
+**the view centre when there is none** (game start, F1-F3). Before, the start view (castle centred by the game for
+640x480) kept its top-left corner, so on a 1944x760 view the castle sat in the upper-left part. The Mobile HUD
+removing / restoring the panel (`ui_hud_game::apply_layout`) moves the camera by half the panel width for the same
+reason. Verified on the phone.

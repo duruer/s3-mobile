@@ -325,6 +325,8 @@ fn write_png(path: &Path, fb: &FrameBuffer) -> Result<(), String> {
     w.write_image_data(&fb.to_rgb888()).map_err(|e| e.to_string())
 }
 
+mod layout_tool;
+
 mod window {
     //! minifb window frontend (X11).
     use minifb::{Key, MouseButton as MfButton, MouseMode, ScaleMode, Window, WindowOptions};
@@ -422,7 +424,7 @@ mod window {
             let (ww, wh) = w.get_size();
             let (ww, wh) = (ww.max(1), wh.max(1));
             self.size = (ww, wh);
-            let vp = Viewport::new(self.display.mode, fb.width, fb.height, ww as u32, wh as u32);
+            let vp = Viewport::for_frame(self.display.mode, &fb.pixels, fb.width, fb.height, ww as u32, wh as u32);
             self.buf.resize(ww * wh, 0);
             s3_mods::display::scale_to_xrgb(&vp, self.display.filter, &fb.pixels, &mut self.buf);
             self.viewport = Some(vp);
@@ -498,6 +500,14 @@ mod window {
 }
 
 fn main() {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(r) = layout_tool::run(&raw) {
+        if let Err(e) = r {
+            eprintln!("s3run: {e}");
+            std::process::exit(2);
+        }
+        return;
+    }
     let args = parse_args();
     std::fs::create_dir_all(&args.data_dir).ok();
     if let Some(d) = &args.shots_dir {

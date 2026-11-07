@@ -57,5 +57,11 @@ fn gog_base(m: &mut Machine) -> Result<(), String> {
         crate::add_safe_point(m, a);
     }
     m.log(LogLevel::Info, "mods: gog-base: safe points 0x60d9e0, 0x60d740");
+    // Camera clamp 0x51b4d0: the y limit `9*W + 0x176 - mapW` uses the map view WIDTH (game bug, harmless at
+    // 640/800 px). With our wide custom resolutions (~2000 px) it shrinks the y range, on small maps (tutorial) to
+    // the top half or nothing. Use the view HEIGHT [0x730f1c] instead (docs/reverse-engineering/game-state-ui.md).
+    // View-only state (camera), not simulation: lockstep MP is unaffected.
+    patch_bytes(m, 0x0051_b528, &[0x8b, 0x3d, 0x18, 0x0f, 0x73, 0x00], &[0x8b, 0x3d, 0x1c, 0x0f, 0x73, 0x00])?;
+    m.log(LogLevel::Info, "mods: gog-base: camera y clamp uses the view height (0x51b528)");
     Ok(())
 }

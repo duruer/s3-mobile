@@ -535,9 +535,11 @@ fn switch_hook(c: &mut HookCtx) -> HookFlow {
         fix_map_width(c.m, want.0);
         return HookFlow::Continue;
     }
-    // Camera: keep the anchored screen point over the same world point.
+    // Camera: keep the anchored screen point over the same world point. Without an anchor (game start, F1-F3)
+    // keep the view centre: the game centres the castle for the old (narrow) view, and keeping the camera's
+    // top-left corner put it in the upper-left part of a wide view (user report 2026-11-07).
     let gd = crate::ui_hud_game::gd(c.m);
-    if let (Some(g), Some((fx, fy))) = (gd, anchor) {
+    if let (Some(g), Some((fx, fy))) = (gd, anchor.or(Some((0.5, 0.5)))) {
         let old_pw = c.m.mem.read_u32(L_PANEL_W) as f32;
         let new_pw = if old_pw == 0.0 { 0.0 } else { variant_for(want.1).panel_w as f32 };
         let (cx, cy) = (c.m.mem.read_u32(g + GD_CAM_X) as i32, c.m.mem.read_u32(g + GD_CAM_Y) as i32);
@@ -690,8 +692,9 @@ fn clamp_camera(m: &mut Machine, gd: Option<u32>) {
     let Some(g) = gd else { return };
     let world = m.mem.read_u32(g + 0x2d2d0) as i32;
     let mw = m.mem.read_u32(L_MAP_W) as i32;
+    let mh = m.mem.read_u32(L_MAP_H) as i32;
     let (x, y) = (m.mem.read_u32(g + GD_CAM_X) as i32 as f32, m.mem.read_u32(g + GD_CAM_Y) as i32 as f32);
-    let (nx, ny) = crate::touch_logic::clamp_camera(x, y, world, mw);
+    let (nx, ny) = crate::touch_logic::clamp_camera(x, y, world, mw, mh);
     m.mem.write_u32(g + GD_CAM_X, nx as i32 as u32);
     m.mem.write_u32(g + GD_CAM_Y, ny as i32 as u32);
 }

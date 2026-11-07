@@ -142,7 +142,7 @@ impl ContextTouch {
     fn write_camera(&mut self, m: &mut Machine) {
         let Some(gd) = game::gd(m) else { return };
         let l = self.layout();
-        let (x, y) = logic::clamp_camera(self.cam.pos.0, self.cam.pos.1, game::world_size(m, gd), l.map_w);
+        let (x, y) = logic::clamp_camera(self.cam.pos.0, self.cam.pos.1, game::world_size(m, gd), l.map_w, l.map_h);
         if (x, y) != self.cam.pos {
             self.cam.set_pos((x, y));
         }

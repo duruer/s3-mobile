@@ -14,6 +14,7 @@
 //! exe patch sets, `S3_MODS_DEBUG=1` turns on the touch debug overlay.
 
 pub mod call;
+pub mod menu_layout; // full-screen layouts of the 800x600 menus (docs/porting/menu-layout.md)
 pub mod display; // display modes + shared screen<->game transform (docs/porting/display.md)
 pub mod fps; // FPS counter overlay
 pub mod fallback;

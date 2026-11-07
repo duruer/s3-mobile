@@ -308,6 +308,17 @@ fn panel_hook(c: &mut HookCtx) -> HookFlow {
     HookFlow::Continue
 }
 
+/// Move the camera by `dx` world pixels (clamped at 0; the game clamps the far edge when it next scrolls).
+fn shift_camera_x(m: &mut Machine, dx: i32) {
+    if dx == 0 {
+        return;
+    }
+    if let Some(g) = gd(m) {
+        let x = m.mem.read_u32(g + GD_CAM_X) as i32;
+        m.mem.write_u32(g + GD_CAM_X, (x + dx).max(0) as u32);
+    }
+}
+
 /// Write (or undo) the full-screen map layout. Returns true if the layout is now full screen.
 pub fn apply_layout(m: &mut Machine, full: bool) -> bool {
     let Some((pw, mw)) = current_original_layout(m) else { return false };
@@ -320,6 +331,9 @@ pub fn apply_layout(m: &mut Machine, full: bool) -> bool {
         if cur_pw != 0 || m.mem.read_u32(L_MAP_W) != sw {
             m.mem.write_u32(L_PANEL_W, 0);
             m.mem.write_u32(L_MAP_W, sw);
+            // The map view now starts at x 0 instead of after the panel: keep the world point at the view centre
+            // (else the game start, centred on the castle for the narrow view, showed it off-centre).
+            shift_camera_x(m, -(cur_pw as i32) / 2);
         }
         s.applied_panel_w = Some(pw);
         true
@@ -328,6 +342,7 @@ pub fn apply_layout(m: &mut Machine, full: bool) -> bool {
             if cur_pw == 0 {
                 m.mem.write_u32(L_PANEL_W, pw);
                 m.mem.write_u32(L_MAP_W, mw);
+                shift_camera_x(m, pw as i32 / 2);
             }
             drop(s);
             // The panel is only redrawn when dirty; without this the panel area keeps map pixels (VERIFIED).

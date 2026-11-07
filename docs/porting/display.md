@@ -11,12 +11,12 @@ Everything here is **presentation only**: it never changes guest-visible memory,
 
 | Mode | What it does | Touch mapping |
 | --- | --- | --- |
-| `Fit` | aspect kept, whole frame visible, black bars (old behaviour); letterbox buttons ESC/ABC/RMB in the bars | bars clamp to the frame edge |
+| `Fit` | aspect kept, whole frame visible, black bars (old behaviour) | bars clamp to the frame edge |
 | `Fill` | aspect kept, fills the screen, overflow cropped (centred) | cropped strip is unreachable; mods anchor UI with `visible_game_rect` |
 | `Stretch` | fills the screen, aspect distorted | linear per axis |
-| `Native wide` (default) | the game renders at a custom resolution with the screen's aspect (res-zoom picks it with `Viewport::native_wide_size`), shown like `Fit` → no bars. Frames of another aspect (menus 800x600) are shown like `Fit` | like `Fit` |
+| `Native wide` (default) | the game renders at a custom resolution with the screen's aspect (res-zoom picks it with `Viewport::native_wide_size`), shown like `Fit` → no bars. Known 800x600 menu screens use a full-screen menu layout ([menu-layout.md](menu-layout.md)); other frames of another aspect are shown like `Fit` | like `Fit` / through the layout pieces |
 
-There are no bars in Fill / Stretch / Native wide, so the letterbox buttons are not shown there; both UI modes have
+The old ESC/ABC/RMB letterbox buttons were removed 2026-11-07; both UI modes have
 their own menu buttons (Classic: floating Menu, HUD: menu sheet), and the RMB/keyboard functions are gestures
 (two-finger tap = cancel, three-finger tap = keyboard), see [touch.md](touch.md).
 
