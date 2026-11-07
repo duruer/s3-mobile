@@ -596,3 +596,61 @@ fn jit_respects_hooks_natives_and_invalidation() {
         assert_eq!(c.regs[EAX], expect, "jit={jit}");
     }
 }
+
+/// A native fast path that sometimes accepts: JIT (native stub at the block entry) and interpreter agree after
+/// every budget slice, including slices that end right before the native block.
+#[test]
+fn jit_native_stub_matches_interpreter() {
+    fn add_native(cpu: &mut Cpu, _: &mut GuestMemory, budget: u64) -> Option<u64> {
+        if std::env::var_os("JIT_VERBOSE").is_some() {
+            eprintln!(
+                "  native jit={} insns={} budget={budget} ecx={:#x}",
+                cpu.cache.jit_mode, cpu.instructions, cpu.regs[ECX]
+            );
+        }
+        if cpu.regs[ECX] % 3 != 0 {
+            return None;
+        }
+        cpu.regs[EAX] = cpu.alu_add(cpu.regs[EAX], cpu.regs[ECX], 0, 4);
+        cpu.eip += 2;
+        Some(1)
+    }
+    let mut a = CodeAssembler::new(32).unwrap();
+    let mut top = a.create_label();
+    a.mov(ecx, 3000).unwrap();
+    a.set_label(&mut top).unwrap();
+    a.add(eax, ecx).unwrap();
+    a.xor(edx, eax).unwrap();
+    a.dec(ecx).unwrap();
+    a.jne(top).unwrap();
+    a.ret().unwrap();
+    let res = a.assemble_options(CODE as u64, iced_x86::BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS).unwrap();
+    let top_ip = res.label_ip(&top).unwrap() as u32;
+    let p = Prog { bytes: res.inner.code_buffer.clone(), sub_bytes: vec![0x90] };
+    let mut cpus = Vec::new();
+    for jit in [false, true] {
+        let (mut c, m) = machine(&p, 11);
+        c.set_jit(Some(jit));
+        c.set_jit_threshold(Some(0));
+        let mut nb = NativeBlocks::new();
+        nb.insert(top_ip, NativeBlock { name: "add", len: 2, hash: code_hash(m.slice(top_ip, 2)), f: add_native });
+        c.set_native_blocks(Some(std::sync::Arc::new(nb)));
+        cpus.push((c, m));
+    }
+    let mut r = Rng(99);
+    loop {
+        let budget = 1 + r.n(30);
+        let (a, b) = cpus.split_at_mut(1);
+        let e0 = a[0].0.run(&mut a[0].1, budget);
+        let e1 = b[0].0.run(&mut b[0].1, budget);
+        if std::env::var_os("JIT_VERBOSE").is_some() {
+            eprintln!("budget {budget}: {e0:?} {}\n           {e1:?} {}", state(&a[0].0), state(&b[0].0));
+        }
+        assert_eq!(e0, e1);
+        assert_eq!(state(&a[0].0), state(&b[0].0));
+        if e0 != CpuExit::Budget {
+            break;
+        }
+    }
+    assert!(cpus[1].0.cache.jit_blocks() > 0);
+}

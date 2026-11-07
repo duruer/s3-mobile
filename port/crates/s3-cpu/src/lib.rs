@@ -278,15 +278,14 @@ impl DecodeCache {
                 b.succ_blk = [std::ptr::null_mut(); 2];
             }
             self.l1.clear();
-            // JIT: unlink everything, then make the surviving compiled blocks reachable again.
+            // JIT: compiled blocks branch to each other directly, so drop all JIT code (rare: S3.EXE has no
+            // self-modifying code).
             #[cfg(all(feature = "jit", target_arch = "aarch64"))]
             if let Some(j) = &mut self.jit {
-                j.unlink_all();
-                for b in &self.blocks {
-                    if b.jit > 1 {
-                        j.register(b.start, b.jit);
-                    }
+                for b in self.blocks.iter_mut() {
+                    b.jit = 0;
                 }
+                j.reset();
             }
         }
     }
@@ -405,7 +404,7 @@ impl DecodeCache {
 }
 
 /// Profile key of one instruction form: `*` (generic handler) or ` `, mnemonic, operand kinds.
-fn form_key(ins: &Instruction, op: &fast::Op) -> String {
+pub(crate) fn form_key(ins: &Instruction, op: &fast::Op) -> String {
     let g = if op.h as usize == fast::generic as fast::Handler as usize { "*" } else { " " };
     let mut k = format!("{g}{:?}", ins.mnemonic());
     for i in 0..ins.op_count() {
@@ -519,7 +518,7 @@ unsafe fn jit_compile(cache: &mut DecodeCache, bp: *mut Block) -> usize {
         blk.jit = 1;
         return 0;
     };
-    let code = match j.compile(blk) {
+    let (entry, body) = match j.compile(blk) {
         Some(c) => c,
         None => {
             // Arena full: drop all JIT code (no JIT code is running now) and start over.
@@ -536,9 +535,9 @@ unsafe fn jit_compile(cache: &mut DecodeCache, bp: *mut Block) -> usize {
             }
         }
     };
-    blk.jit = code;
-    j.register(blk.start, code);
-    code
+    blk.jit = body;
+    j.register(blk.start, entry);
+    body
 }
 
 /// Switch the JIT on or off for all CPUs (overrides env `S3_JIT`; takes effect at the next `Cpu::run`). Does
@@ -548,6 +547,27 @@ pub fn set_jit_enabled(on: bool) {
     jit::set_enabled(on);
     #[cfg(not(all(feature = "jit", target_arch = "aarch64")))]
     let _ = on;
+}
+
+/// `S3_CPU_TIME=1`: measure the host time spent in [`Cpu::run`] (see [`cpu_run_seconds`]).
+fn run_timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("S3_CPU_TIME").is_some())
+}
+
+static RUN_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Host seconds spent in [`Cpu::run`] by all CPUs (only measured with env `S3_CPU_TIME=1`, else 0).
+pub fn cpu_run_seconds() -> f64 {
+    RUN_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9
+}
+
+/// JIT counters of this process (one line of text; empty without JIT).
+pub fn jit_stats() -> String {
+    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    return jit::stats();
+    #[cfg(not(all(feature = "jit", target_arch = "aarch64")))]
+    String::new()
 }
 
 /// Whether this build has the JIT (cargo feature `jit` on aarch64).
@@ -591,6 +611,8 @@ pub struct Cpu {
     pub(crate) jit_left: u64,
     pub(crate) jit_blk: usize,
     pub(crate) jit_mem: usize,
+    /// `instructions` = `jit_total - left` while JIT code runs (for native fast paths).
+    pub(crate) jit_total: u64,
     pub(crate) jit_idx: u32,
     /// Address of the instruction currently executing (valid during `run`).
     pub cur_ip: u32,
@@ -636,6 +658,7 @@ impl Cpu {
             jit_left: 0,
             jit_blk: 0,
             jit_mem: 0,
+            jit_total: 0,
             jit_idx: 0,
         }
     }
@@ -723,7 +746,11 @@ impl Cpu {
     pub fn run(&mut self, mem: &mut GuestMemory, max_instructions: u64) -> CpuExit {
         // Move the cache out so instructions can be borrowed from it while `self` is mutated.
         let mut cache = std::mem::take(&mut self.cache);
+        let t = run_timing().then(std::time::Instant::now);
         let exit = self.run_with(&mut cache, mem, max_instructions);
+        if let Some(t) = t {
+            RUN_NS.fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         self.cache = cache;
         exit
     }
@@ -804,7 +831,7 @@ impl Cpu {
             let n = blk.n as u64;
             if n <= left {
                 #[cfg(all(feature = "jit", target_arch = "aarch64"))]
-                if jit_on && blk.jit != 1 && !blk.special {
+                if jit_on && blk.jit != 1 && !blk.hooked {
                     let code = if blk.jit != 0 {
                         blk.jit
                     } else if blk.entries >= jit_thr {
@@ -864,6 +891,7 @@ impl Cpu {
     ) -> Option<CpuExit> {
         let enter = cache.jit.as_ref().map(|j| j.enter).unwrap_or(0);
         self.jit_left = *left;
+        self.jit_total = base + max_instructions;
         self.jit_mem = mem as *mut GuestMemory as usize;
         // SAFETY: `enter` is the trampoline emitted by `Jit::new` (`jit::EnterFn` ABI); the code it jumps to only
         // touches this `Cpu`, guest memory and the JIT's own tables, all alive for the call.
@@ -872,7 +900,12 @@ impl Cpu {
             f(self, mem.base_ptr(), code)
         };
         *left = self.jit_left;
+        jit::count(jit::ST_ENTER);
+        jit::count(jit::ST_ENTER + 1 + r as usize);
         if r == jit::EXIT_EIP {
+            if jit::fallback_profile() {
+                jit::exit_reason(cache, self.eip);
+            }
             return None;
         }
         // SAFETY: the JIT code stored a pointer to its (live) block.

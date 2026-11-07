@@ -442,4 +442,10 @@ fn main() {
         engine.machine.stats.instructions,
         engine.machine.stop_reason()
     );
+    if s3_runtime::cpu::jit_enabled() {
+        eprintln!("s3det: {}", s3_runtime::cpu::jit_stats());
+    }
+    if std::env::var_os("S3_CPU_TIME").is_some() {
+        eprintln!("s3det: {:.2} s in Cpu::run", s3_runtime::cpu::cpu_run_seconds());
+    }
 }

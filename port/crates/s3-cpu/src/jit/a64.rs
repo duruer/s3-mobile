@@ -550,6 +550,10 @@ impl Asm {
         self.fix(l, Fix::B19);
         self.emit(0x3400_0000 | t);
     }
+    pub fn cbz_x(&mut self, t: R, l: Label) {
+        self.fix(l, Fix::B19);
+        self.emit(0xB400_0000 | t);
+    }
     pub fn cbnz_w(&mut self, t: R, l: Label) {
         self.fix(l, Fix::B19);
         self.emit(0x3500_0000 | t);

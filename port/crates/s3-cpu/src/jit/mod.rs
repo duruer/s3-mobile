@@ -44,7 +44,9 @@ pub(crate) const THRESHOLD: u64 = 8;
 const ARENA: usize = 16 << 20;
 
 /// Entries of the indirect-branch table (power of two).
-pub(crate) const JTAB: usize = 4096;
+pub(crate) const JTAB: usize = 1 << JTAB_BITS;
+/// log2 of [`JTAB`]; the hash is `(eip ^ (eip >> JTAB_BITS)) & (JTAB - 1)`.
+pub(crate) const JTAB_BITS: u32 = 15;
 
 /// Exit codes of the trampoline.
 pub(crate) const EXIT_EIP: u32 = 0;
@@ -98,6 +100,86 @@ pub(crate) fn set_enabled(on: bool) {
     MODE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
 }
 
+// ------------------------------------------------------------------------------------------------- stats
+
+/// Counters (all CPUs): trampoline entries, exits by kind (EIP / side / fail), fallback calls, condition
+/// helper calls, compiled blocks. Cheap: only the slow paths count.
+pub(crate) static STATS: [std::sync::atomic::AtomicU64; 7] = [const { std::sync::atomic::AtomicU64::new(0) }; 7];
+pub(crate) const ST_ENTER: usize = 0;
+// 1..=3: exits by code (`ST_ENTER + 1 + EXIT_*`).
+pub(crate) const ST_FALLBACK: usize = 4;
+pub(crate) const ST_COND: usize = 5;
+pub(crate) const ST_COMPILED: usize = 6;
+
+#[inline]
+pub(crate) fn count(i: usize) {
+    STATS[i].fetch_add(1, Ordering::Relaxed);
+}
+
+/// `S3_JIT_FBPROF=1`: count fallback calls per instruction form (slow; profiling only).
+pub(crate) fn fallback_profile() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("S3_JIT_FBPROF").is_some())
+}
+
+static FB_FORMS: std::sync::Mutex<std::collections::BTreeMap<usize, (String, u64)>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Fallback calls per instruction form (with `S3_JIT_FBPROF=1`), most frequent first.
+pub(crate) fn fallback_forms() -> Vec<(String, u64)> {
+    let mut m: HashMap<String, u64> = HashMap::new();
+    for (k, n) in FB_FORMS.lock().unwrap().values() {
+        *m.entry(k.clone()).or_default() += n;
+    }
+    let mut v: Vec<_> = m.into_iter().collect();
+    v.sort_by_key(|e| std::cmp::Reverse(e.1));
+    v
+}
+
+/// Why JIT code exited to the run loop (profiling with `S3_JIT_FBPROF=1`): thunk/magic, special block (hook or
+/// native fast path), compiled block (table miss), not compiled, not decoded.
+static EXITS: [std::sync::atomic::AtomicU64; 5] = [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+
+pub(crate) fn exit_reason(cache: &crate::DecodeCache, eip: u32) {
+    let k = if eip >= crate::layout::THUNK_BASE {
+        0
+    } else {
+        match cache.get(eip) {
+            Some(b) if b.special => 1,
+            Some(b) if b.jit > 1 => 2,
+            Some(_) => 3,
+            None => 4,
+        }
+    };
+    EXITS[k].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Human-readable counters.
+pub(crate) fn stats() -> String {
+    let v: Vec<u64> = STATS.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    format!(
+        "jit: enters={} exit_eip={} exit_side={} exit_fail={} fallback_calls={} cond_calls={} compiled={}{}",
+        v[0],
+        v[1],
+        v[2],
+        v[3],
+        v[4],
+        v[5],
+        v[6],
+        {
+            let e: Vec<u64> = EXITS.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+            let mut s = format!(
+                "\n  exits: thunk {} special {} compiled(miss) {} uncompiled {} undecoded {}",
+                e[0], e[1], e[2], e[3], e[4]
+            );
+            for (k, n) in fallback_forms().iter().take(25) {
+                s.push_str(&format!("\n  fallback {n:>10} {k}"));
+            }
+            s
+        }
+    )
+}
+
 // ------------------------------------------------------------------------------------------------- helpers
 
 /// Called by JIT code for an instruction without a native translation: run the interpreter handler of one
@@ -105,6 +187,12 @@ pub(crate) fn set_enabled(on: bool) {
 pub(crate) unsafe extern "C" fn jit_op(cpu: *mut Cpu, op: *const Op) -> u32 {
     // SAFETY: called from JIT code with the running CPU (registers and flags spilled to it) and an op pair
     // owned by the JIT; `jit_mem` was set by `Cpu::run_jit` for this run.
+    count(ST_FALLBACK);
+    if fallback_profile() {
+        if let Some(e) = FB_FORMS.lock().unwrap().get_mut(&(op as usize)) {
+            e.1 += 1;
+        }
+    }
     unsafe {
         let cpu = &mut *cpu;
         let mem = &mut *(cpu.jit_mem as *mut crate::GuestMemory);
@@ -112,9 +200,29 @@ pub(crate) unsafe extern "C" fn jit_op(cpu: *mut Cpu, op: *const Op) -> u32 {
     }
 }
 
+/// Called by the native stub of a block with a native fast path (`compile.rs`): the run loop's block-entry
+/// call of the native function. 0 = declined (nothing changed), 1 = done (`jit_left`, registers, EIP updated).
+pub(crate) unsafe extern "C" fn jit_native(cpu: *mut Cpu, left: u64, blk: *const Block) -> u32 {
+    // SAFETY: called from JIT code with the running CPU (registers spilled) and its live block.
+    unsafe {
+        let cpu = &mut *cpu;
+        let mem = &mut *(cpu.jit_mem as *mut crate::GuestMemory);
+        let Some(f) = (*blk).native else { return 0 };
+        cpu.instructions = cpu.jit_total - left;
+        match f(cpu, mem, left) {
+            None => 0,
+            Some(k) => {
+                cpu.jit_left = left - k.min(left);
+                1
+            }
+        }
+    }
+}
+
 /// Condition `cc` (iced `ConditionCode as u8`) from the flags stored in the `Cpu`.
 pub(crate) unsafe extern "C" fn jit_cond(cpu: *const Cpu, cc: u32) -> u32 {
     // SAFETY: called from JIT code with the running CPU.
+    count(ST_COND);
     let f = unsafe { (*cpu).eflags() };
     crate::fast::cc_eval_rt(f, cc as u8) as u32
 }
@@ -146,7 +254,7 @@ pub(crate) struct Jit {
     slots: HashMap<u32, *mut u64>,
     slot_chunks: Vec<Box<[u64; 1024]>>,
     slot_used: usize,
-    pub(crate) jtab: Box<[JEntry; JTAB]>,
+    pub(crate) jtab: Box<[JEntry]>,
     /// `[op, block_end]` pairs for fallback calls (stable addresses).
     fallback: Vec<Box<[Op; 2]>>,
     /// Literal pool of the last compile (debugging).
@@ -159,7 +267,7 @@ unsafe impl Send for Jit {}
 /// Index of `eip` in the indirect-branch table (the generated lookup computes the same).
 #[inline]
 pub(crate) fn jtab_index(eip: u32) -> usize {
-    ((eip ^ (eip >> 12)) as usize) & (JTAB - 1)
+    ((eip ^ (eip >> JTAB_BITS)) as usize) & (JTAB - 1)
 }
 
 impl Jit {
@@ -175,7 +283,7 @@ impl Jit {
             slots: HashMap::new(),
             slot_chunks: Vec::new(),
             slot_used: 0,
-            jtab: Box::new([EMPTY; JTAB]),
+            jtab: vec![EMPTY; JTAB].into_boxed_slice(),
             fallback: Vec::new(),
             compiled: 0,
         });
@@ -240,16 +348,6 @@ impl Jit {
         self.fallback.clear();
     }
 
-    /// Unlink everything (blocks were dropped); the caller re-registers the surviving compiled blocks.
-    pub(crate) fn unlink_all(&mut self) {
-        let e = self.exit_eip as u64;
-        for &s in self.slots.values() {
-            // SAFETY: slots point into our chunks.
-            unsafe { *s = e };
-        }
-        self.jtab.fill(EMPTY);
-    }
-
     /// Make the compiled code of the block at `eip` reachable from other JIT blocks.
     pub(crate) fn register(&mut self, eip: u32, code: usize) {
         let s = self.slot(eip);
@@ -286,13 +384,18 @@ impl Jit {
         let b = Box::new([op, end]);
         let p = b.as_ptr() as usize;
         self.fallback.push(b);
+        if fallback_profile() {
+            let key = crate::form_key(ins, &op);
+            FB_FORMS.lock().unwrap().entry(p).or_insert((key, 0));
+        }
         p
     }
 
-    /// Compile `blk`; returns its code address, or `None` if the arena is full (caller resets and retries).
-    pub(crate) fn compile(&mut self, blk: &Block) -> Option<usize> {
+    /// Compile `blk`; returns (entry for links, body entry for the run loop), or `None` if the arena is full
+    /// (caller resets and retries). Both are the same unless the block has a native fast path.
+    pub(crate) fn compile(&mut self, blk: &Block) -> Option<(usize, usize)> {
         let base = self.mem.ptr() as usize + self.used;
-        let code = compile::compile(self, blk, base);
+        let (code, body) = compile::compile(self, blk, base);
         let bytes = words_to_bytes(&code);
         if self.used + bytes.len() > self.mem.len() {
             return None;
@@ -300,10 +403,11 @@ impl Jit {
         self.mem.write(self.used, &bytes);
         self.used = (self.used + bytes.len() + 15) & !15;
         self.compiled += 1;
+        count(ST_COMPILED);
         if std::env::var_os("S3_JIT_DUMP").is_some() {
             dump(blk, base, &code);
         }
-        Some(base)
+        Some((base, base + body * 4))
     }
 }
 

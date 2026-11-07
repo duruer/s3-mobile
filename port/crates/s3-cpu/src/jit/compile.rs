@@ -72,8 +72,10 @@ struct C<'a> {
     ended: bool,
 }
 
-/// Compile `blk` for execution at address `base`.
-pub(super) fn compile(jit: &mut Jit, blk: &Block, base: usize) -> Vec<u32> {
+/// Compile `blk` for execution at address `base`. Returns the code and the offset (in instructions) of the
+/// block body; for a native-fast-path block the code starts with a stub that calls the native function first
+/// (what the run loop does at a block entry) and continues in the body when it declines.
+pub(super) fn compile(jit: &mut Jit, blk: &Block, base: usize) -> (Vec<u32>, usize) {
     let mut c = C {
         a: Asm::new_at(base),
         jit,
@@ -88,8 +90,12 @@ pub(super) fn compile(jit: &mut Jit, blk: &Block, base: usize) -> Vec<u32> {
         ended: false,
     };
     let n = blk.n;
-    // Budget: the whole block must fit, else the run loop runs it partially through the interpreter.
     let budget = c.a.label();
+    if blk.native.is_some() {
+        c.native_stub(budget);
+    }
+    let body = c.a.pos();
+    // Budget: the whole block must fit, else the run loop runs it partially through the interpreter.
     c.a.cmp_xi(LEFT, n);
     c.a.b_cond(Cond::Lo, budget);
     for i in 0..n as usize {
@@ -131,7 +137,7 @@ pub(super) fn compile(jit: &mut Jit, blk: &Block, base: usize) -> Vec<u32> {
         c.a.literal64(l, v);
     }
     c.a.finish();
-    c.a.code
+    (c.a.code, body)
 }
 
 impl C<'_> {
@@ -613,8 +619,44 @@ impl C<'_> {
         self.ended = true;
     }
 
-    /// Continue at the static guest address `eip` (linked through its slot).
+    /// Native fast path at a block entry (as in the run loop): exit if the budget is used up, else call it;
+    /// declined -> fall into the block body, done -> continue at the EIP it left.
+    fn native_stub(&mut self, budget: Label) {
+        let body = self.a.label();
+        self.a.cbz_x(LEFT, budget);
+        // The run loop has EIP = block start when it calls a native function.
+        self.a.mov_wi(T0, self.blk.start);
+        self.a.str_w(T0, CPU, OFF_EIP);
+        self.store_regs();
+        self.a.str_x(LEFT, SP, SAVE_LEFT);
+        self.a.mov_x(0, CPU);
+        self.a.mov_x(1, LEFT);
+        let lb = self.lit(self.blk as *const Block as u64);
+        self.a.ldr_x_lit(2, lb);
+        let lf = self.lit(jit_native as *const () as usize as u64);
+        self.a.ldr_x_lit(AD, lf);
+        self.a.blr(AD);
+        self.a.ldr_x(LEFT, SP, SAVE_LEFT);
+        self.load_regs();
+        self.a.cbz_w(0, body);
+        self.a.ldr_x(LEFT, CPU, OFF_LEFT);
+        self.a.ldr_w(0, CPU, OFF_EIP);
+        self.indirect();
+        self.a.bind(body);
+    }
+
+    /// Continue at the static guest address `eip`: a direct branch if its block is compiled already, else
+    /// through its slot.
     fn link(&mut self, eip: u32) {
+        if eip < layout::THUNK_BASE {
+            let s = self.jit.slot(eip);
+            // SAFETY: slots point into the JIT's chunks.
+            let v = unsafe { *s } as usize;
+            if v != self.jit.exit_eip {
+                self.a.b_abs(v);
+                return;
+            }
+        }
         self.a.mov_wi(0, eip);
         if eip >= layout::THUNK_BASE {
             self.a.b_abs(self.jit.exit_eip);
@@ -640,7 +682,7 @@ impl C<'_> {
             }
         };
         self.a.ldr_x_lit(AD, l);
-        self.a.eor_w_lsr(T3, 0, 0, 12);
+        self.a.eor_w_lsr(T3, 0, 0, JTAB_BITS);
         self.a.try_and_wi(T3, T3, (JTAB - 1) as u32);
         self.a.add_x_lsl(AD, AD, T3, 4);
         self.a.ldr_w(T3, AD, 0);
