@@ -6,12 +6,24 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["jit"]
+# Optional AArch64 JIT (src/jit/, compiled only on aarch64; switched on at run time with S3_JIT=1). Leave it out
+# for iOS (no JIT allowed): `--no-default-features`.
+jit = []
+
 [dependencies]
 s3-mem.workspace = true
 iced-x86.workspace = true
 # Deterministic transcendentals for the x87 (pure Rust musl/fdlibm port, MIT). Pinned exactly: a version bump can
 # change results and desync multiplayer peers (see docs/porting/determinism.md, golden-vector test in fpu_math.rs).
 libm = { version = "=0.2.16", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_Diagnostics_Debug", "Win32_System_Threading"] }
 
 [dev-dependencies]
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "intel", "code_asm"] }

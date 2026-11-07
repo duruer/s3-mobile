@@ -81,10 +81,10 @@ impl Op {
 }
 
 // EA forms.
-const E_DISP: u8 = 0;
-const E_BASE: u8 = 1;
-const E_BI: u8 = 2;
-const E_IDX: u8 = 3;
+pub(crate) const E_DISP: u8 = 0;
+pub(crate) const E_BASE: u8 = 1;
+pub(crate) const E_BI: u8 = 2;
+pub(crate) const E_IDX: u8 = 3;
 
 /// Effective address (DS/ES/SS: segment base 0).
 #[inline(always)]
@@ -412,6 +412,20 @@ fn cc_eval<const CC: u8>(f: u32) -> bool {
         G => !zf && sf == of,
         _ => true,
     }
+}
+
+/// [`cc_eval`] with a run-time condition code (iced `ConditionCode as u8`; JIT helper).
+pub(crate) fn cc_eval_rt(f: u32, cc: u8) -> bool {
+    use ConditionCode as C;
+    macro_rules! m {
+        ($($c:ident),*) => {
+            match cc {
+                $(x if x == C::$c as u8 => cc_eval::<{ C::$c as u8 }>(f),)*
+                _ => true,
+            }
+        };
+    }
+    m!(o, no, b, ae, e, ne, be, a, s, ns, p, np, l, ge, le, g)
 }
 
 /// Condition from the lazy flag state where it is cheap; otherwise from the materialised EFLAGS. Same results
@@ -993,7 +1007,7 @@ fn reg_no(r: Register) -> Option<u8> {
 }
 
 /// Register operand `i` of size `sz` bytes.
-fn reg_op(ins: &Instruction, i: u32, sz: u32) -> Option<u8> {
+pub(crate) fn reg_op(ins: &Instruction, i: u32, sz: u32) -> Option<u8> {
     if ins.op_kind(i) != OpKind::Register {
         return None;
     }
@@ -1050,7 +1064,7 @@ macro_rules! by_e {
 }
 
 /// Memory operand `i` of exactly `sz` bytes (0 = any, for LEA): EA form etc.
-fn mem_op(ins: &Instruction, i: u32, sz: u32) -> Option<(u8, u8, u8, u8, u32)> {
+pub(crate) fn mem_op(ins: &Instruction, i: u32, sz: u32) -> Option<(u8, u8, u8, u8, u32)> {
     if ins.op_kind(i) != OpKind::Memory {
         return None;
     }
@@ -1061,7 +1075,7 @@ fn mem_op(ins: &Instruction, i: u32, sz: u32) -> Option<(u8, u8, u8, u8, u32)> {
 }
 
 /// Immediate operand `i` as a value of the operand size.
-fn imm_op(ins: &Instruction, i: u32) -> Option<u32> {
+pub(crate) fn imm_op(ins: &Instruction, i: u32) -> Option<u32> {
     Some(match ins.op_kind(i) {
         OpKind::Immediate8 => ins.immediate8() as u32,
         OpKind::Immediate16 => ins.immediate16() as u32,
