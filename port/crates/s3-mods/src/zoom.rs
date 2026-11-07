@@ -22,13 +22,21 @@ pub const DEFAULT_LEVEL: u32 = 6;
 pub const CLASSIC_MIN_LEVEL: u32 = 3;
 /// Pinch scale factor per level (fingers apart by this factor = one level zoomed in).
 pub const PINCH_STEP: f32 = 1.12;
-/// Minimum time between two switches during a pinch (ms).
-pub const PINCH_SWITCH_MS: u64 = 120;
+/// Minimum time between two switches during a pinch (ms). The next switch also waits until the game finished
+/// the previous one.
+pub const PINCH_SWITCH_MS: u64 = 33;
+/// During a pinch the render height follows the fingers continuously in steps of this many pixels (the levels
+/// of [`LEVEL_HEIGHTS`] are 40 px apart, which looked like jumps); the end of the pinch snaps to the nearest level.
+pub const PINCH_STEP_H: u32 = 8;
 
 /// Size for a level: height from the table, width = height * aspect (multiple of 8), clamped to the limits.
 pub fn size_for(level: u32, aspect: f32, min_level: u32) -> (u32, u32) {
     let l = level.clamp(min_level, LEVEL_HEIGHTS.len() as u32 - 1) as usize;
-    let h = LEVEL_HEIGHTS[l];
+    size_for_height(LEVEL_HEIGHTS[l], aspect)
+}
+
+/// Size for a render height: width = height * aspect (multiple of 8), clamped to the limits.
+pub fn size_for_height(h: u32, aspect: f32) -> (u32, u32) {
     let aspect = if aspect.is_finite() && aspect > 0.3 { aspect } else { 4.0 / 3.0 };
     let w = ((h as f32 * aspect / 8.0).round() as u32) * 8;
     // Wider than MAX_W: keep the width, lower the height (same aspect).
@@ -150,8 +158,22 @@ pub fn target_size(m: &mut Machine) -> Option<(u32, u32)> {
         return Some(res::clamp_size(w, h));
     }
     let a = aspect(m);
+    if let Some(h) = m.state::<PinchState>().borrow_mut().height {
+        return Some(size_for_height(h, a));
+    }
     let ml = min_level(m);
     Some(size_for(level(m), a, ml))
+}
+
+/// Render height a pinch in progress asks for (overrides the level until the pinch ends).
+#[derive(Default)]
+struct PinchState {
+    height: Option<u32>,
+}
+
+/// Level whose height is nearest to `h`.
+fn nearest_level(h: u32, min_level: u32) -> u32 {
+    (min_level..level_count()).min_by_key(|&l| (LEVEL_HEIGHTS[l as usize] as i32 - h as i32).abs()).unwrap_or(min_level)
 }
 
 /// Display mode for the current aspect: the largest zoom size (zoom steps then only change the presented
@@ -192,10 +214,14 @@ pub struct Pinch {
     /// Frame width when the pinch began: pointer positions are in game pixels of the current frame, so the
     /// recognizer's scale must be corrected after each resolution switch (else zooming feeds back on itself).
     start_frame_w: u32,
+    start_frame_h: u32,
     last_switch_ms: u64,
 }
 
 /// Handle a pinch event (game-pixel centre `cx, cy`). Returns true if zoom handled it (custom resolution on).
+///
+/// While the fingers move the render height follows them continuously ([`PINCH_STEP_H`] px steps, one switch at a
+/// time); the end snaps to the nearest level (saved). Each switch keeps the map point under the fingers fixed.
 pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, scale: f32) -> bool {
     if !enabled(m) {
         return false;
@@ -205,30 +231,39 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     if phase == Phase::Begin || p.start_level.is_none() {
         p.start_level = Some(level(m));
         p.start_frame_w = fw;
+        p.start_frame_h = fh;
     }
     // Distances measured in game pixels of different frame sizes: back to "window" scale.
     let scale = if fw > 0 && p.start_frame_w > 0 { scale * p.start_frame_w as f32 / fw as f32 } else { scale };
-    let start = p.start_level.unwrap_or(DEFAULT_LEVEL);
     let ml = min_level(m);
-    let want = pinch_level(start, scale, ml);
+    let (hmin, hmax) = (LEVEL_HEIGHTS[ml as usize], LEVEL_HEIGHTS[LEVEL_HEIGHTS.len() - 1]);
+    let h0 = if p.start_frame_h > 0 { p.start_frame_h } else { LEVEL_HEIGHTS[level(m) as usize] };
+    // Fingers apart (scale > 1) = zoom in = smaller render height.
+    let want_h = if scale.is_finite() && scale > 0.0 { (h0 as f32 / scale).round() as u32 } else { h0 };
+    let want_h = (want_h.clamp(hmin, hmax) / PINCH_STEP_H) * PINCH_STEP_H;
     let end = phase == Phase::End;
-    let cur = level(m);
-    // One switch at a time: wait until the game finished the previous one, and not too often.
+    let anchor = (fw > 0 && fh > 0).then(|| (cx / fw as f32, cy / fh as f32));
     let busy = res::switch_pending(m) || now.saturating_sub(p.last_switch_ms) < PINCH_SWITCH_MS;
-    if want != cur && (!busy || end) {
-        let anchor = (fw > 0 && fh > 0).then(|| (cx / fw as f32, cy / fh as f32));
-        set_level_anchored(m, want, anchor, end);
-        p.last_switch_ms = now;
-    } else if end {
-        // Persist the final level.
-        let s = crate::settings(m);
-        let _ = crate::set_settings(m, s);
-    }
     if end {
+        let l = nearest_level(want_h, ml);
+        m.state::<PinchState>().borrow_mut().height = None;
+        let mut s = crate::settings(m);
+        s.res.zoom_level = l;
+        let _ = crate::set_settings(m, s);
+        if target_size(m) != Some((fw, fh)) {
+            m.state::<res::ResState>().borrow_mut().anchor = Some(anchor.unwrap_or((0.5, 0.5)));
+        }
+        update_target(m);
         p.start_level = None;
+        p.last_switch_ms = now;
+    } else if !busy && want_h.abs_diff(fh) >= PINCH_STEP_H {
+        m.state::<PinchState>().borrow_mut().height = Some(want_h);
+        m.state::<res::ResState>().borrow_mut().anchor = Some(anchor.unwrap_or((0.5, 0.5)));
+        update_target(m);
+        p.last_switch_ms = now;
     }
     if std::env::var_os("S3_TOUCH_TRACE").is_some() {
-        eprintln!("zoom: pinch {phase:?} scale {scale:.2} start {start} want {want} cur {cur} busy {busy}");
+        eprintln!("zoom: pinch {phase:?} scale {scale:.2} want_h {want_h} cur_h {fh} busy {busy}");
     }
     true
 }

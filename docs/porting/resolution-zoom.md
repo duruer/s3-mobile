@@ -163,3 +163,9 @@ whole view (100-280 ms per frame). Now `redraw_frames_after`: 1 frame when the v
 (zoom in; the landscape buffer already covers the smaller view). Desktop HUD 2316x904 uncapped, fps in the pinch
 seconds: in 181/158 -> 311/436, out 75/181 -> 290/273. Screenshots mid/end of in and out pinches: no black bands.
 (A presentation-only zoom during the pinch was tried first and reverted: the user wants the real zoom per step.)
+
+Pinch follows the fingers continuously (2026-11-07): `zoom::pinch` asks for the render height `h_start / scale`
+(8 px steps, `PinchState` overrides the level in `target_size`), one switch at a time (`res::switch_pending`, at
+least 33 ms apart, so the step size adapts to how fast the game finishes a switch); the end snaps to the nearest
+level and saves it. Before: 40 px level steps, at least 120 ms apart, levels skipped. Desktop JIT, 2316x904, cap 60:
+no frame over 79 ms during in/out pinches, 51-61 fps.
