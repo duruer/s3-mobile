@@ -1149,8 +1149,10 @@ name = "s3-cpu"
 version = "0.1.0"
 dependencies = [
  "iced-x86",
+ "libc",
  "libm",
  "s3-mem",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

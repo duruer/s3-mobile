@@ -6,6 +6,25 @@ Newest first. One entry per session: what was done, what was learned, links to d
 
 After items 1-5 (e8042b2): Fold4 HUD zoom 10 holds the 60 fps cap (was 48-56), engine thread 70 % of a core.
 Items 6 (arm64 JIT) and 7 (multi-core) running. → [performance](porting/performance.md)
+## 2026-11-07 — perf-jit: optional AArch64 JIT
+
+- New `port/crates/s3-cpu/src/jit/` (cargo feature `jit`, aarch64 only, run-time switch `S3_JIT=1`, default off):
+  block compiler with guest registers in x19..x26, lazy flags in host registers inside a block and in the
+  interpreter's format between blocks, NULL-guard side exits into the interpreter, per-instruction fallback to the
+  interpreter handler, direct links + slots + a 32768-entry indirect table, native fast-path stubs, W^X code
+  memory (VirtualProtect / mprotect + I-cache maintenance), hand-written encoder. Design: [cpu](porting/cpu.md).
+- Results: `bench_mips` ~1.1 G -> ~4-4.8 G instr/s; s3det 90 000 vms `Cpu::run` 6.9 -> 2.8 s (with fast paths),
+  13.7 -> 3.1 s without; s3run HUD 2316x904 ~1.3x fps (now host-side bound). [performance](porting/performance.md).
+- Determinism: s3det 90 000 vms JIT vs baseline interpreter IDENTICAL (91 lines, `insns=11886929367`), also with
+  the new `S3DET_HASH_FULL=1` (EFLAGS, FS, x87 tags / last IP / DP) [determinism](porting/determinism.md).
+- Tests: random-program differential tests JIT vs interpreter with random budget slices (1000 programs), hooks /
+  natives / invalidation, native stub; they caught a missing EIP store before native calls and a generator issue
+  (iced assembles `jcxz` with a 0x66 prefix = 16-bit IP).
+- Interpreter bug found: block chaining treated EIP 0 as an empty successor slot, so a guest jump to address 0
+  crashed the host (null block pointer) instead of faulting. Fixed (empty = `u32::MAX`).
+- Measured: the remaining fallbacks are almost all one x87 qword copy loop at `0x5c3e40` (fild/fistp m64).
+- The arm64 APK builds with the JIT compiled in (off by default). Android switch: `<data dir>/jit.txt` = `1`
+  (`adb push`; read at engine start, logged `jit: true`); not tested on the phone yet.
 
 ## 2026-11-07 — perf-shadow: native row loops of the shadow sprite functions
 

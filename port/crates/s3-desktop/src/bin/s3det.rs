@@ -230,6 +230,11 @@ fn for_each_page(m: &Machine, mut f: impl FnMut(u32, &[u8])) {
     }
 }
 
+fn full_hash() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("S3DET_HASH_FULL").is_some())
+}
+
 /// Hash of all guest-writable committed memory (not file mappings) plus every thread's CPU + x87 state.
 /// Returns (memory hash, cpu hash, bytes hashed).
 fn state_hash(m: &Machine) -> (u64, u64, u64) {
@@ -253,6 +258,15 @@ fn state_hash(m: &Machine) -> (u64, u64, u64) {
         c.word(t.cpu.fpu.status_word() as u64);
         c.word(t.cpu.fpu.control as u64);
         c.word(t.cpu.instructions);
+        // S3DET_HASH_FULL=1 (perf-jit): also EFLAGS, FS base, x87 tags / last IP / last data pointer, so
+        // CPU-core changes (JIT, interpreter rework) are checked on every observable register.
+        if full_hash() {
+            c.word(t.cpu.eflags() as u64);
+            c.word(t.cpu.fs_base as u64);
+            c.word(t.cpu.fpu.tag_word() as u64);
+            c.word(t.cpu.fpu.last_ip as u64);
+            c.word(t.cpu.fpu.last_dp as u64);
+        }
     }
     (h.0, c.0, n)
 }
@@ -442,4 +456,10 @@ fn main() {
         engine.machine.stats.instructions,
         engine.machine.stop_reason()
     );
+    if s3_runtime::cpu::jit_enabled() {
+        eprintln!("s3det: {}", s3_runtime::cpu::jit_stats());
+    }
+    if std::env::var_os("S3_CPU_TIME").is_some() {
+        eprintln!("s3det: {:.2} s in Cpu::run", s3_runtime::cpu::cpu_run_seconds());
+    }
 }

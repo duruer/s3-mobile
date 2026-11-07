@@ -128,7 +128,8 @@ instruction count. It overrides (registry re-registration after load, no change 
 
 Every `--hash-every` virtual ms it prints `vms= insns= presents= mem= cpu= bytes=`: `mem` hashes all committed
 guest-writable pages (not file mappings: GFX/maps are read-only data), `cpu` hashes every thread's registers,
-EIP, x87 registers/status/control and instruction count. `--dump-at V --dump f` writes the hashed pages raw;
+EIP, x87 registers/status/control and instruction count (env `S3DET_HASH_FULL=1` adds EFLAGS, FS base and the
+x87 tag word / last IP / last data pointer; perf-jit). `--dump-at V --dump f` writes the hashed pages raw;
 `python3 -I tools/memdiff.py a b` lists differing byte ranges.
 
 ```sh
@@ -157,6 +158,20 @@ test lockstep MP itself (two peers with independent wall clocks) — that is W5'
 (56 MB of writable guest memory hashed per line), 60.7 s wall each. The final frame shows the game with the
 build menu open (the placement click at 420 300 did not create a site — choose a free spot when extending the
 script).
+
+### JIT (perf-jit, 2026-11-07)
+
+The optional AArch64 JIT ([cpu.md](cpu.md#jit-optional-aarch64-perf-jit-2026-11-07)) must not change any of the
+above: same registers, EFLAGS (as the lazy model materialises them), memory, EIP, retired counts and the same
+budget stop points. Checked on the Windows 11 ARM64 PC with the 90 000 vms inject of `tools/determinism-test.sh`:
+
+- `s3det` at the JIT commit, `S3_JIT=1` vs the baseline binary of `e8042b2` (interpreter): all 91 per-second
+  hash lines **IDENTICAL**, `insns=11886929367 mem=6e141c4900044d20 cpu=028473e586e3d37e`.
+- Same binary `S3_JIT=0` vs `S3_JIT=1` with **`S3DET_HASH_FULL=1`** (new: the CPU hash then also covers EFLAGS,
+  FS base, x87 tag word, last IP and last data pointer): **IDENTICAL**, 91 lines, `cpu=e584fa62bd32339a`.
+- `S3_FAST=0` (no native fast paths) with the JIT: same `insns`/hashes as the interpreter.
+
+Every JIT change must repeat this (and `cargo test -p s3-cpu jit` on an aarch64 host).
 
 ## Open items / recommendations
 

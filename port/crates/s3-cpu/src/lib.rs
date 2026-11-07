@@ -17,11 +17,15 @@ pub mod fpu;
 mod exec;
 mod fast;
 mod flags;
+#[cfg(all(feature = "jit", target_arch = "aarch64"))]
+mod jit;
 
-#[cfg(test)]
-mod tests;
 #[cfg(all(test, target_arch = "x86_64"))]
 mod diff_tests;
+#[cfg(all(test, feature = "jit", target_arch = "aarch64"))]
+mod jit_tests;
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -159,8 +163,9 @@ pub struct Context {
 #[derive(Debug)]
 #[repr(C, align(64))]
 pub struct Block {
-    /// Block chaining: the last two successors seen after this block, start EIP (0 = empty) and block
-    /// (pointer into the owning cache's arena). Cleared whenever blocks are dropped (`invalidate_range`).
+    /// Block chaining: the last two successors seen after this block, start EIP (`u32::MAX` = empty; it was 0
+    /// before 2026-11-07, so a jump to EIP 0 matched an empty slot and dereferenced a null block pointer) and
+    /// block (pointer into the owning cache's arena). Cleared whenever blocks are dropped (`invalidate_range`).
     succ_eip: [u32; 2],
     succ_blk: [*mut Block; 2],
     /// Times this block was entered (profiling; see [`DecodeCache::profile`]).
@@ -184,6 +189,8 @@ pub struct Block {
     pub insns: Vec<Instruction>,
     /// End of the guest code covered by `native` (for invalidation; 0 = none).
     native_end: u32,
+    /// JIT code address (0 = not compiled yet, 1 = never compile; see `jit/mod.rs`).
+    jit: usize,
 }
 
 // SAFETY: the raw pointers (`succ_blk`, `op0`) only point into the cache that owns this block (its arena and its
@@ -228,6 +235,13 @@ pub struct DecodeCache {
     hooks: Option<std::sync::Arc<HookAddrs>>,
     /// Native fast paths (looked up when a block is decoded).
     natives: Option<std::sync::Arc<NativeBlocks>>,
+    /// JIT state (code arena, links), created on the first compile.
+    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    jit: Option<Box<jit::Jit>>,
+    /// Per-CPU JIT switch: 0 = global setting (`S3_JIT` / [`set_jit_enabled`]), 1 = off, 2 = on.
+    jit_mode: u8,
+    /// Block entries before compiling (`None` = default `jit::THRESHOLD`).
+    jit_thr: Option<u64>,
 }
 
 impl DecodeCache {
@@ -245,6 +259,10 @@ impl DecodeCache {
         self.blocks.clear();
         self.map.clear();
         self.l1.clear();
+        #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+        if let Some(j) = &mut self.jit {
+            j.reset();
+        }
     }
 
     /// Drop blocks overlapping `[start, start+len)`.
@@ -256,11 +274,25 @@ impl DecodeCache {
             self.map.clear();
             for (i, b) in self.blocks.iter_mut().enumerate() {
                 self.map.insert(b.start, i as u32);
-                b.succ_eip = [0; 2];
+                b.succ_eip = [u32::MAX; 2];
                 b.succ_blk = [std::ptr::null_mut(); 2];
             }
             self.l1.clear();
+            // JIT: compiled blocks branch to each other directly, so drop all JIT code (rare: S3.EXE has no
+            // self-modifying code).
+            #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+            if let Some(j) = &mut self.jit {
+                for b in self.blocks.iter_mut() {
+                    b.jit = 0;
+                }
+                j.reset();
+            }
         }
+    }
+
+    /// Number of blocks with JIT code (statistics).
+    pub fn jit_blocks(&self) -> usize {
+        self.blocks.iter().filter(|b| b.jit > 1).count()
     }
 
     /// Arena index of the block starting at `eip`, decoding it if needed.
@@ -372,7 +404,7 @@ impl DecodeCache {
 }
 
 /// Profile key of one instruction form: `*` (generic handler) or ` `, mnemonic, operand kinds.
-fn form_key(ins: &Instruction, op: &fast::Op) -> String {
+pub(crate) fn form_key(ins: &Instruction, op: &fast::Op) -> String {
     let g = if op.h as usize == fast::generic as fast::Handler as usize { "*" } else { " " };
     let mut k = format!("{g}{:?}", ins.mnemonic());
     for i in 0..ins.op_count() {
@@ -463,12 +495,99 @@ fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool, hooks: Option<&
         entries: 0,
         native: None,
         native_end: 0,
-        succ_eip: [0; 2],
+        jit: 0,
+        succ_eip: [u32::MAX; 2],
         succ_blk: [std::ptr::null_mut(); 2],
     })
 }
 
+/// Compile the block `bp` (JIT); its code address, or 0 if it will not be compiled.
+///
+/// # Safety
+/// `bp` must be a block of `cache`.
+#[cfg(all(feature = "jit", target_arch = "aarch64"))]
+#[cold]
+#[inline(never)]
+unsafe fn jit_compile(cache: &mut DecodeCache, bp: *mut Block) -> usize {
+    // SAFETY: see the function contract.
+    let blk = unsafe { &mut *bp };
+    if cache.jit.is_none() {
+        cache.jit = jit::Jit::new();
+    }
+    let Some(j) = cache.jit.as_mut() else {
+        blk.jit = 1;
+        return 0;
+    };
+    let (entry, body) = match j.compile(blk) {
+        Some(c) => c,
+        None => {
+            // Arena full: drop all JIT code (no JIT code is running now) and start over.
+            for b in cache.blocks.iter_mut() {
+                b.jit = 0;
+            }
+            j.reset();
+            match j.compile(blk) {
+                Some(c) => c,
+                None => {
+                    blk.jit = 1;
+                    return 0;
+                }
+            }
+        }
+    };
+    blk.jit = body;
+    j.register(blk.start, entry);
+    body
+}
+
+/// Switch the JIT on or off for all CPUs (overrides env `S3_JIT`; takes effect at the next `Cpu::run`). Does
+/// nothing in builds without JIT ([`jit_available`]).
+pub fn set_jit_enabled(on: bool) {
+    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    jit::set_enabled(on);
+    #[cfg(not(all(feature = "jit", target_arch = "aarch64")))]
+    let _ = on;
+}
+
+/// `S3_CPU_TIME=1`: measure the host time spent in [`Cpu::run`] (see [`cpu_run_seconds`]).
+fn run_timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("S3_CPU_TIME").is_some())
+}
+
+static RUN_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Host seconds spent in [`Cpu::run`] by all CPUs (only measured with env `S3_CPU_TIME=1`, else 0).
+pub fn cpu_run_seconds() -> f64 {
+    RUN_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9
+}
+
+/// JIT counters of this process (one line of text; empty without JIT).
+pub fn jit_stats() -> String {
+    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    return jit::stats();
+    #[cfg(not(all(feature = "jit", target_arch = "aarch64")))]
+    String::new()
+}
+
+/// Whether this build has the JIT (cargo feature `jit` on aarch64).
+pub fn jit_available() -> bool {
+    cfg!(all(feature = "jit", target_arch = "aarch64"))
+}
+
+/// Whether the JIT is currently switched on (env `S3_JIT=1` or [`set_jit_enabled`]).
+pub fn jit_enabled() -> bool {
+    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    return jit::enabled();
+    #[cfg(not(all(feature = "jit", target_arch = "aarch64")))]
+    false
+}
+
 /// One guest CPU (one per guest thread).
+///
+/// `repr(C)`: the JIT's generated code addresses the first fields (registers, EIP, flag state, JIT exchange
+/// fields) by their offsets (`jit/mod.rs`).
+#[repr(C)]
 pub struct Cpu {
     /// General registers, see [`EAX`]..[`EDI`].
     pub regs: [u32; 8],
@@ -476,30 +595,37 @@ pub struct Cpu {
     /// EFLAGS storage: all bits when `lk == NONE`, else only the non-status bits are valid. Read with
     /// [`Cpu::eflags`], write with [`Cpu::set_eflags`] (lazy flags, see `flags.rs`).
     pub(crate) ef: u32,
-    /// Lazy-flag state: kind (`flags::lk`), operand size, operands, result, saved CF (inc/dec).
-    pub(crate) lk: u8,
-    pub(crate) lsz: u8,
+    /// Lazy-flag state: operands, result, saved CF (inc/dec), kind (`flags::lk`), operand size.
     pub(crate) la: u32,
     pub(crate) lb: u32,
     pub(crate) lr: u32,
     pub(crate) lcf: u32,
+    pub(crate) lk: u8,
+    pub(crate) lsz: u8,
     /// Linear base of FS (the thread's TEB).
     pub fs_base: u32,
     pub gs_base: u32,
-    /// x87 (and MMX) state.
-    pub fpu: Fpu,
     /// Instructions retired by this CPU.
     pub instructions: u64,
-    /// Decoded-block cache. Threads may share code, but each CPU keeps its own cache (simple, no locking).
-    pub cache: DecodeCache,
+    /// JIT exchange fields (remaining budget, block + instruction index of a side exit, guest memory).
+    pub(crate) jit_left: u64,
+    pub(crate) jit_blk: usize,
+    pub(crate) jit_mem: usize,
+    /// `instructions` = `jit_total - left` while JIT code runs (for native fast paths).
+    pub(crate) jit_total: u64,
+    pub(crate) jit_idx: u32,
     /// Address of the instruction currently executing (valid during `run`).
     pub cur_ip: u32,
     /// Hook address whose next block entry must not exit with [`CpuExit::Hook`] (0 = none).
     hook_skip: u32,
-    /// Exit produced by a handler that returned `false` (see `fast.rs`).
-    pending_exit: Option<CpuExit>,
     /// Address of the `fast::Op` whose handler failed (set together with `pending_exit`).
     fault_op: usize,
+    /// Exit produced by a handler that returned `false` (see `fast.rs`).
+    pending_exit: Option<CpuExit>,
+    /// x87 (and MMX) state.
+    pub fpu: Fpu,
+    /// Decoded-block cache. Threads may share code, but each CPU keeps its own cache (simple, no locking).
+    pub cache: DecodeCache,
 }
 
 impl Default for Cpu {
@@ -529,6 +655,11 @@ impl Cpu {
             hook_skip: 0,
             pending_exit: None,
             fault_op: 0,
+            jit_left: 0,
+            jit_blk: 0,
+            jit_mem: 0,
+            jit_total: 0,
+            jit_idx: 0,
         }
     }
 
@@ -582,6 +713,20 @@ impl Cpu {
         self.cache.natives = natives.filter(|n| !n.is_empty());
     }
 
+    /// Per-CPU JIT switch (`None` = follow the global setting, see [`set_jit_enabled`]). No effect without JIT.
+    pub fn set_jit(&mut self, on: Option<bool>) {
+        self.cache.jit_mode = match on {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        };
+    }
+
+    /// Block entries (through the run loop) before a block is compiled (tests; `None` = default).
+    pub fn set_jit_threshold(&mut self, n: Option<u64>) {
+        self.cache.jit_thr = n;
+    }
+
     /// The installed hook address set.
     pub fn hooks(&self) -> Option<&std::sync::Arc<HookAddrs>> {
         self.cache.hooks.as_ref()
@@ -601,7 +746,11 @@ impl Cpu {
     pub fn run(&mut self, mem: &mut GuestMemory, max_instructions: u64) -> CpuExit {
         // Move the cache out so instructions can be borrowed from it while `self` is mutated.
         let mut cache = std::mem::take(&mut self.cache);
+        let t = run_timing().then(std::time::Instant::now);
         let exit = self.run_with(&mut cache, mem, max_instructions);
+        if let Some(t) = t {
+            RUN_NS.fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         self.cache = cache;
         exit
     }
@@ -613,6 +762,14 @@ impl Cpu {
         let mut left = max_instructions;
         // Previous block (for chaining), null = none.
         let mut prev: *mut Block = std::ptr::null_mut();
+        #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+        let jit_on = match cache.jit_mode {
+            2 => true,
+            1 => false,
+            _ => jit::enabled(),
+        } && !cache.generic_only;
+        #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+        let jit_thr = cache.jit_thr.unwrap_or(jit::THRESHOLD);
         let exit = 'run: loop {
             let eip = self.eip;
             if eip >= layout::THUNK_BASE {
@@ -673,6 +830,26 @@ impl Cpu {
             }
             let n = blk.n as u64;
             if n <= left {
+                #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+                if jit_on && blk.jit != 1 && !blk.hooked {
+                    let code = if blk.jit != 0 {
+                        blk.jit
+                    } else if blk.entries >= jit_thr {
+                        // SAFETY: `bp` is a live block of `cache` (see above).
+                        unsafe { jit_compile(cache, bp) }
+                    } else {
+                        0
+                    };
+                    if code != 0 {
+                        match self.run_jit(cache, code, mem, &mut left, base, max_instructions) {
+                            None => {
+                                prev = std::ptr::null_mut();
+                                continue;
+                            }
+                            Some(e) => return e,
+                        }
+                    }
+                }
                 // Threaded code: the first handler runs the whole block (each handler tail-calls the next one,
                 // see `fast::next`). Inside a block only the last instruction can change EIP (blocks end at the
                 // first control-flow instruction) and no other instruction reads it, so EIP is set once to the
@@ -697,6 +874,58 @@ impl Cpu {
         };
         self.instructions = base + (max_instructions - left);
         exit
+    }
+
+    /// Enter JIT code at `code` (a compiled block whose instruction count fits `left`) and run until it exits.
+    /// `None` = continue the run loop at `self.eip`; `Some(exit)` = a failing instruction ended the run.
+    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    #[inline(never)]
+    fn run_jit(
+        &mut self,
+        cache: &mut DecodeCache,
+        code: usize,
+        mem: &mut GuestMemory,
+        left: &mut u64,
+        base: u64,
+        max_instructions: u64,
+    ) -> Option<CpuExit> {
+        let enter = cache.jit.as_ref().map(|j| j.enter).unwrap_or(0);
+        self.jit_left = *left;
+        self.jit_total = base + max_instructions;
+        self.jit_mem = mem as *mut GuestMemory as usize;
+        // SAFETY: `enter` is the trampoline emitted by `Jit::new` (`jit::EnterFn` ABI); the code it jumps to only
+        // touches this `Cpu`, guest memory and the JIT's own tables, all alive for the call.
+        let r = unsafe {
+            let f: jit::EnterFn = std::mem::transmute(enter);
+            f(self, mem.base_ptr(), code)
+        };
+        *left = self.jit_left;
+        jit::count(jit::ST_ENTER);
+        jit::count(jit::ST_ENTER + 1 + r as usize);
+        if r == jit::EXIT_EIP {
+            if jit::fallback_profile() {
+                jit::exit_reason(cache, self.eip);
+            }
+            return None;
+        }
+        // SAFETY: the JIT code stored a pointer to its (live) block.
+        let b = unsafe { &*(self.jit_blk as *const Block) };
+        let i = self.jit_idx as usize;
+        if r == jit::EXIT_SIDE {
+            // Continue the block from instruction `i` with the interpreter (e.g. a memory access that faults).
+            self.eip = b.end;
+            let op = &b.ops[i];
+            if (op.h)(self, mem, op) {
+                *left -= b.n as u64;
+                return None;
+            }
+            let k = (self.fault_op - b.ops.as_ptr() as usize) / std::mem::size_of::<fast::Op>();
+            self.instructions = base + (max_instructions - *left);
+            return Some(self.block_exit(b, k));
+        }
+        // EXIT_FAIL: a fallback instruction (interpreter handler called from JIT code) failed.
+        self.instructions = base + (max_instructions - *left);
+        Some(self.block_exit(b, i))
     }
 
     /// Execute the first `n` (< `blk.n`) instructions of `blk` one by one with the generic interpreter (same

@@ -157,13 +157,49 @@ Measure with throttling off: start the process, `SetProcessInformation(ProcessPo
 small PowerShell P/Invoke wrapper; the agent kept it in its scratchpad), and compare process CPU time or
 `Cpu::run` time, not wall time, with alternating runs.
 
-Notes for a later arm64 JIT (not started): the per-block structure (exact retired counts per block, budget stop via
+Notes for a later arm64 JIT (done since, see "perf-jit" below; kept for the reasoning): the per-block structure (exact retired counts per block, budget stop via
 the generic path, native blocks entered only at block starts, hooks at block starts) carries over unchanged; a JIT
 block can reuse the `Op` decode (EA forms, register numbers) and must keep the lazy-flag state layout
 (`lk/la/lb/lr/lsz/lcf`) or materialise exactly like `flags.rs`; the `cmp_jcc` fusion shows the gain of folding
 conditions into fresh operands. Next interpreter ideas: a return-address cache for `ret` (most of the 1.2 % L1
 lookups), fusing `mov` + `mov` chains, passing the guest memory base in a register instead of `&GuestMemory`.
 iOS forbids JIT, keep the interpreter as the base.
+
+### perf-jit (2026-11-07): optional AArch64 JIT
+
+Design and coverage: [cpu.md](cpu.md#jit-optional-aarch64-perf-jit-2026-11-07). Off by default (`S3_JIT=1`), cargo
+feature `jit` (aarch64 only; iOS builds leave it out). In short: one compiled block per decoded block (same `n`),
+guest registers in host registers, lazy flags in host registers inside a block and in the interpreter's format
+between blocks, NULL-guard checks with side exits into the interpreter, per-instruction fallback to the
+interpreter handler for the rest (x87, `rep` strings, `adc/sbb`), direct block links, an indirect-branch table and
+native-fast-path stubs, so JIT code returns to the run loop only for thunks, budget ends and hooks.
+
+Measured (Windows 11 ARM64 PC, throttling off; this PC was ~20 % slower in the afternoon than in the morning, so
+only same-session pairs are compared):
+
+| | interpreter | JIT |
+| --- | --- | --- |
+| `bench_mips` (same session, 3 runs) | 1074-1176 MIPS | **3976-4777 MIPS** (one earlier run 6364) |
+| `s3det` 90 000 vms, time in `Cpu::run` (`S3_CPU_TIME=1`, alternating runs, native fast paths on) | 6.87 / 6.93 / 9.56 s | **2.84 / 2.84 / 2.76 s** |
+| same, process CPU time | 8.84-11.9 s | **4.72 s** |
+| `s3det` with `S3_FAST=0` (pure guest code), time in `Cpu::run` (morning) | 13.68 s | **3.13 s** (4.4x) |
+| `s3run` HUD 2316x904 zoom 10 uncapped, samples 50-80 s, random map | 356 / 248 fps, 708 / 720 ms/s in the CPU | **443 / 328 fps**, 580 / 541 ms/s |
+
+`s3run` is now limited by host-side work (presentation, HLE): the guest CPU uses ~55-60 % of the engine thread
+with the JIT. Per presented frame the CPU time fell from ~2.0-2.9 ms to ~1.3-1.65 ms.
+
+JIT statistics for the 90 000 vms run (`s3det` prints them with the JIT on): 14 375 compiled blocks, 7.6 M JIT
+entries (exits: 4.7 M budget ends at a compiled block, 2.6 M hooked/special, 0.15 M thunks, 0.05 M uncompiled), no
+side exits and no failed fallbacks, 20.2 M fallback calls: x87 `fild m64` / `fistp m64` 7.7 M each and `fxch`
+3.8 M, all from one 16-byte copy loop at `0x5c3e40` (`fild [esi]; fild [esi+8]; fxch; fistp [edi]; fistp
+[edi+8]; add esi,16; add edi,16; loop`), then `rep movsd` 0.78 M. Natively translating that loop (or a native
+fast path for it in s3-mods: the f64 round trip per qword has to be reproduced exactly, our x87 keeps f64, so
+values above 2^53 are rounded; HYPOTHESIS: the game copies pixel/struct data with it, which then is not a bit copy
+under emulation either) is the next cheap step.
+
+Before/after the native fast paths: with the JIT, `S3_FAST=0` costs 3.13 s vs 2.25 s with fast paths in
+`Cpu::run` (same session), so the fast paths still pay off; switching single paths off (`S3_FAST_OFF`) changed
+the time by less than the run-to-run noise (±0.3 s), so no single path is clearly slower than JIT code.
 
 ## Native fast paths (s3-cpu `NativeBlock`, s3-mods `fast*.rs`)
 
@@ -314,7 +350,8 @@ Ranked ideas (estimated gain on the phone at zoom 10):
    `taskset` alone gave ~5 %). Small effort, possibly large gain.
 4. Shadow sprites `0x5fd120` / `0x5fd080` outer loops (15 %): +5-10 %.
 5. Interpreter: superinstructions (`cmp/test+jcc`, `mov+mov`), smaller `Op`; +10-20 %, medium.
-6. arm64 JIT (Android only, iOS forbids JIT): 2-4x guest speed, large effort.
+6. arm64 JIT (Android only, iOS forbids JIT): 2-4x guest speed, large effort. **Done (perf-jit, optional,
+   `S3_JIT=1`)**: 4.4x on pure guest code, 2.4x of `Cpu::run` time with fast paths, see "perf-jit" above.
 7. Draw and logic threads on separate host cores: large refactor (single-threaded machine).
 8. Lower default zoom (6 instead of 10 = 1536x600): immediate ~+25 %, but a UX choice.
 
