@@ -1,11 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Simple launcher icon (our own artwork): green field, brown roof house. -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="48dp" android:height="48dp"
-    android:viewportWidth="48" android:viewportHeight="48">
-    <path android:fillColor="#3E7D2E" android:pathData="M0,0h48v48h-48z" />
-    <path android:fillColor="#8BC34A" android:pathData="M0,34h48v14h-48z" />
-    <path android:fillColor="#F5DEB3" android:pathData="M14,24h20v14h-20z" />
-    <path android:fillColor="#8D4E2A" android:pathData="M10,25L24,12L38,25z" />
-    <path android:fillColor="#5D3A1A" android:pathData="M21,30h6v8h-6z" />
-</vector>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later. Launcher icon (our own artwork; minSdk 26 = adaptive icons everywhere).
+     A personal build can use the game's own icon instead: scripts/build-apk.sh with the game-icon flag. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_bg" />
+    <foreground android:drawable="@drawable/ic_launcher_fg" />
+    <monochrome android:drawable="@drawable/ic_launcher_mono" />
+</adaptive-icon>
