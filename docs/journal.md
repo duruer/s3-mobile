@@ -2,6 +2,11 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-07 — perf-r2 on the phone
+
+After items 1-5 (e8042b2): Fold4 HUD zoom 10 holds the 60 fps cap (was 48-56), engine thread 70 % of a core.
+Items 6 (arm64 JIT) and 7 (multi-core) running. → [performance](porting/performance.md)
+
 ## 2026-11-07 — perf-shadow: native row loops of the shadow sprite functions
 
 - New `port/crates/s3-mods/src/fast_shadow.rs` (see [performance](porting/performance.md), "perf-shadow"):

@@ -333,6 +333,12 @@ Ranked ideas (estimated gain on the phone at zoom 10):
   memcpy + 2 copies (overlay working copy, host slot). Phone simpleperf: host presentation work ~17 % -> ~10 % of
   the engine thread.
 
+### Phone after perf-r2 items 1-5 (2026-11-07, commit e8042b2)
+
+Fold4 cover, HUD, Native wide, zoom 10 (1944x760), cap 60: **60 fps in all 5 samples** (before: 48-56). Engine
+thread at **70 %** of one core (`top -H`; before 94-99 % while missing 60), presenter 13 %. So roughly 40 % headroom
+at the cap (~85 fps worth of work), enough for higher zoom levels or a 90 Hz cap.
+
 ## Not done / next
 
 - Multi-core: all guest threads share one host core. Running the draw thread on its own host thread would give

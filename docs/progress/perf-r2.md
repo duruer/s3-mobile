@@ -24,4 +24,8 @@ Done:
 - Windows Defender quarantines docs/reverse-engineering/wine-trace.md (Trojan:Python/RemoteShellExec.Z!MTB, false
   positive); restore with git restore; needs a user decision (exclusion).
 
-Next: phone measurement (phone was locked), then 6 JIT, 7 multi-core (need a base commit for worktree agents).
+- Committed on main (user approved): 73b7244, c2bc88b, 9e43283, d8e9903, e8042b2. Defender exclusion: user chose it
+  but the UAC prompt was cancelled -> not added; wine-trace.md restored in e8042b2 (Defender keeps deleting it).
+- Items 6 (perf-jit) and 7 (perf-mt) running as worktree agents from e8042b2.
+
+Next: phone measurement (phone locked at 14:47), merge 6/7 results.
