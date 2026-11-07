@@ -251,11 +251,13 @@ pub struct ResSettings {
     pub enabled: bool,
     /// Zoom level index into [`crate::zoom::LEVEL_HEIGHTS`] (0 = zoomed in, last = zoomed out).
     pub zoom_level: u32,
+    /// Exact render height a pinch ended on (between the levels); `None` = use `zoom_level`. Menu zoom steps clear it.
+    pub zoom_height: Option<u32>,
 }
 
 impl Default for ResSettings {
     fn default() -> Self {
-        ResSettings { enabled: true, zoom_level: crate::zoom::DEFAULT_LEVEL }
+        ResSettings { enabled: true, zoom_level: crate::zoom::DEFAULT_LEVEL, zoom_height: None }
     }
 }
 

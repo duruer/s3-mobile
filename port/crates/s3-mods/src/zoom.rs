@@ -112,10 +112,11 @@ pub fn enabled(m: &mut Machine) -> bool {
 pub fn set_level_anchored(m: &mut Machine, l: u32, anchor: Option<(f32, f32)>, persist: bool) {
     let l = l.clamp(min_level(m), level_count() - 1);
     let mut s = crate::settings(m);
-    if s.res.zoom_level == l {
+    if s.res.zoom_level == l && s.res.zoom_height.is_none() {
         return;
     }
     s.res.zoom_level = l;
+    s.res.zoom_height = None;
     if persist {
         let _ = crate::set_settings(m, s);
     } else {
@@ -162,6 +163,11 @@ pub fn target_size(m: &mut Machine) -> Option<(u32, u32)> {
         return Some(size_for_height(h, a));
     }
     let ml = min_level(m);
+    let saved = m.state::<crate::ModsState>().borrow_mut().settings.res.zoom_height;
+    if let Some(h) = saved {
+        let (lo, hi) = (LEVEL_HEIGHTS[ml as usize], LEVEL_HEIGHTS[LEVEL_HEIGHTS.len() - 1]);
+        return Some(size_for_height(h.clamp(lo, hi), a));
+    }
     Some(size_for(level(m), a, ml))
 }
 
@@ -253,10 +259,13 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     let anchor = (mapped_w > 0 && mapped_h > 0).then(|| (cx / mapped_w as f32, cy / mapped_h as f32));
     let busy = res::switch_pending(m) || now.saturating_sub(p.last_switch_ms) < PINCH_SWITCH_MS;
     if end {
+        // Stay exactly where the fingers stopped (snapping to the nearest 40 px level made a last jump, sometimes
+        // backwards); the level is kept as the nearest one for the menus' zoom steps.
         let l = nearest_level(want_h, ml);
-        m.state::<PinchState>().borrow_mut().height = None;
+        let end_h = m.state::<PinchState>().borrow_mut().height.take().unwrap_or(fh);
         let mut s = crate::settings(m);
         s.res.zoom_level = l;
+        s.res.zoom_height = Some(end_h);
         let _ = crate::set_settings(m, s);
         if target_size(m) != Some((fw, fh)) {
             m.state::<res::ResState>().borrow_mut().anchor = Some(anchor.unwrap_or((0.5, 0.5)));
