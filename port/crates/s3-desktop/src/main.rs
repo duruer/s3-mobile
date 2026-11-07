@@ -424,10 +424,12 @@ mod window {
             let (ww, wh) = w.get_size();
             let (ww, wh) = (ww.max(1), wh.max(1));
             self.size = (ww, wh);
-            let vp = Viewport::for_frame(self.display.mode, &fb.pixels, fb.width, fb.height, ww as u32, wh as u32);
+            // Mouse/touch map through the unzoomed viewport; only the drawing uses the pinch zoom.
+            let base = Viewport::for_frame(self.display.mode, &fb.pixels, fb.width, fb.height, ww as u32, wh as u32);
+            let vp = base.with_visual_zoom(self.display.visual_zoom);
             self.buf.resize(ww * wh, 0);
             s3_mods::display::scale_to_xrgb(&vp, self.display.filter, &fb.pixels, &mut self.buf);
-            self.viewport = Some(vp);
+            self.viewport = Some(base);
             let _ = w.update_with_buffer(&self.buf, ww, wh);
         }
 

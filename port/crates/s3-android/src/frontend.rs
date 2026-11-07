@@ -362,6 +362,12 @@ pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) {
         s3_runtime::cpu::set_jit_enabled(on);
         log::info!("jit: {} (from jit.txt; built in: {})", on, s3_runtime::cpu::jit_available());
     }
+    // Dev switch: `<data dir>/fps-cap.txt` = frame cap (0 = unlimited, for benchmarks; default 60).
+    #[cfg(feature = "engine")]
+    if let Some(cap) = std::fs::read_to_string(data_dir.join("fps-cap.txt")).ok().and_then(|s| s.trim().parse::<u32>().ok()) {
+        s3_dx::ddraw::set_fps_cap(cap);
+        log::info!("fps cap: {cap} (from fps-cap.txt)");
+    }
 
     // 1. Wait for the game files.
     let mut announced: Option<Vec<&str>> = None;

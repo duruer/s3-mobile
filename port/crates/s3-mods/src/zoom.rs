@@ -192,7 +192,10 @@ pub struct Pinch {
     /// Frame width when the pinch began: pointer positions are in game pixels of the current frame, so the
     /// recognizer's scale must be corrected after each resolution switch (else zooming feeds back on itself).
     start_frame_w: u32,
+    start_frame_h: u32,
     last_switch_ms: u64,
+    /// Frame point under the fingers when the pinch began (fractions), the fixed zoom centre.
+    anchor: Option<(f32, f32)>,
 }
 
 /// Handle a pinch event (game-pixel centre `cx, cy`). Returns true if zoom handled it (custom resolution on).
@@ -205,6 +208,8 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     if phase == Phase::Begin || p.start_level.is_none() {
         p.start_level = Some(level(m));
         p.start_frame_w = fw;
+        p.start_frame_h = fh;
+        p.anchor = (fw > 0 && fh > 0).then(|| (cx / fw as f32, cy / fh as f32));
     }
     // Distances measured in game pixels of different frame sizes: back to "window" scale.
     let scale = if fw > 0 && p.start_frame_w > 0 { scale * p.start_frame_w as f32 / fw as f32 } else { scale };
@@ -213,19 +218,35 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     let want = pinch_level(start, scale, ml);
     let end = phase == Phase::End;
     let cur = level(m);
-    // One switch at a time: wait until the game finished the previous one, and not too often.
-    let busy = res::switch_pending(m) || now.saturating_sub(p.last_switch_ms) < PINCH_SWITCH_MS;
-    if want != cur && (!busy || end) {
-        let anchor = (fw > 0 && fh > 0).then(|| (cx / fw as f32, cy / fh as f32));
-        set_level_anchored(m, want, anchor, end);
+    let busy = res::switch_pending(m);
+    m.state::<PinchClock>().borrow_mut().last_ms = now;
+    let anchor = p.anchor.or((fw > 0 && fh > 0).then(|| (cx / fw as f32, cy / fh as f32)));
+    if !end {
+        // While the fingers move only the shown frame is scaled (presentation, free); every render-size switch
+        // forces a full landscape redraw (100-300 ms), so the real zoom happens once at the end.
+        let aspect = aspect(m);
+        let h_of = |l: u32| size_for(l, aspect, ml).1.max(1) as f32;
+        let h0 = p.start_frame_h.max(1) as f32;
+        let (kmin, kmax) = (h0 / h_of(LEVEL_HEIGHTS.len() as u32 - 1), h0 / h_of(ml));
+        let k = if scale.is_finite() && scale > 0.0 { scale.clamp(kmin.min(1.0), kmax.max(1.0)) } else { 1.0 };
+        let (fx, fy) = anchor.unwrap_or((0.5, 0.5));
+        crate::display::set_visual_zoom(
+            m,
+            Some(crate::display::VisualZoom { k, fx, fy, w: p.start_frame_w, h: p.start_frame_h }),
+        );
+    } else if want != cur {
+        set_level_anchored(m, want, anchor, true);
         p.last_switch_ms = now;
-    } else if end {
+        // The visual zoom stays until the frame of the new size arrives (it only applies to the old size).
+    } else {
+        crate::display::set_visual_zoom(m, None);
         // Persist the final level.
         let s = crate::settings(m);
         let _ = crate::set_settings(m, s);
     }
     if end {
         p.start_level = None;
+        p.anchor = None;
     }
     if std::env::var_os("S3_TOUCH_TRACE").is_some() {
         eprintln!("zoom: pinch {phase:?} scale {scale:.2} start {start} want {want} cur {cur} busy {busy}");
@@ -237,13 +258,44 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
 #[derive(Default)]
 pub struct ZoomMod {
     last: (Option<(u32, u32)>, Option<(u32, u32)>),
+    /// When the current visual zoom was first seen (ms; 0 = none).
+    vz_since: u64,
+}
+
+impl ZoomMod {
+    /// A pinch is in progress (the touch layer keeps its state; approximated by "a visual zoom was updated
+    /// within the last 300 ms").
+    fn pinching(&self, m: &mut Machine) -> bool {
+        m.now_ms().saturating_sub(m.state::<PinchClock>().borrow_mut().last_ms) < 300
+    }
+}
+
+/// Time of the last pinch update (for [`ZoomMod`]).
+#[derive(Default)]
+struct PinchClock {
+    last_ms: u64,
 }
 
 impl crate::Mod for ZoomMod {
     fn name(&self) -> &str {
         "zoom"
     }
-    fn tick(&mut self, m: &mut Machine, _now: u64) {
+    fn tick(&mut self, m: &mut Machine, now: u64) {
+        // Drop a finished pinch's presentation zoom once the frame has the new size (or after 2 s anyway).
+        if let Some(z) = crate::display::visual_zoom(m) {
+            let size = m.last_frame_size();
+            if size != (z.w, z.h) {
+                crate::display::set_visual_zoom(m, None);
+                self.vz_since = 0;
+            } else if self.vz_since == 0 {
+                self.vz_since = now;
+            } else if now.saturating_sub(self.vz_since) > 2000 && !res::switch_pending(m) && !self.pinching(m) {
+                crate::display::set_visual_zoom(m, None);
+                self.vz_since = 0;
+            }
+        } else {
+            self.vz_since = 0;
+        }
         let t = target_size(m);
         let mode = mode_size(m);
         if (t, mode) != self.last {
