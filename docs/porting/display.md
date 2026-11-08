@@ -80,10 +80,22 @@ rows of the map part (centred, matching width) over the whole map area (`zoom::c
 scale; it costs a 480 high render and the crop is centred (pinching inside the crop zooms about the screen centre,
 and the outer rows of the 480 view cannot be shown at the map's edges). Verified desktop + phone (200 high, 60 fps).
 
+**Leaves at the panel edge (2026-11-08, second fix).** The leaves below the minimap reach up to x 144; the frame
+showed them a second time in the map part at the map's scale, at other heights than the panel's, so they seemed to
+move while zooming. Now only the minimap frame rows (< 156) are overhang bands; the map part starts at
+`PanelSplit::map_x0` (`w + 9`, `display::map_skip`; `zoom::classic_width` adds the 9 columns) and the leaf tips are
+cut at the panel edge. Phone recording: the edge is identical in all frames.
+
+**Native wide fills the window (2026-11-08).** The render width is a multiple of 8, so the frame's aspect differed
+from the window's by up to ~0.5 % and `Viewport::new` left 1-4 px bars whose width changed with every zoom step;
+everything anchored to the shown frame (Mobile HUD bars, ✕, FPS counter) shifted by a few px per step ("the HUD
+jitters"). Within 2 % `NativeWide` now stretches the frame to the whole window.
+
 **Cursor in the window layer (2026-11-08).** `s3_runtime::cursor` drew the game's Windows cursor into the presented
 frame, so it grew, shrank and moved with the zoom. With a window layer, `cursor_layer::CursorMod` sets
 `CursorState::disabled` and blits the same image (RGBA copy per HCURSOR, XOR pixels as their colour) at
 `game_to_window(mouse)` minus the hot spot, at `Layer::ui` scale (its size in a 600 px high frame), last (on top).
+The window position is kept while the game position does not change, so a zoom does not move it on screen.
 Without a window layer (old frontends) the frame cursor stays.
 
 `window_to_game` / `game_to_window` / `scale()` (= map part) / `quads()` (source -> destination rectangles: one, or

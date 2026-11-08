@@ -2,6 +2,16 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Cursor keeps its screen position, HUD jitter, panel leaves
+
+- Phone report: cursor still moved while zooming; panel edge effect still moved; Mobile HUD jittered. Screen
+  recordings (injected pinches) showed: the cursor followed its game position (other screen point after a zoom);
+  the HUD resource strip shifted 2-3 px between frames (Native wide left 1-4 px bars that changed per zoom step);
+  the panel's leaves were shown twice (panel + map part at the map's scale).
+- Fixes: cursor keeps its window position while its game position is unchanged; Native wide fills the window
+  within 2 %; map part starts right of the leaves (`PanelSplit::map_x0`), leaf bands dropped. Re-recorded on the
+  phone: HUD strip, cursor and panel edge constant.
+
 ## 2026-11-08 — Cursor in the window layer, Classic zoom below 480, exact panel edge
 
 - The game's cursor was drawn into the frame and scaled/moved with the zoom: now drawn in the window layer

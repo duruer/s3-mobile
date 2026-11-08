@@ -32,6 +32,9 @@ pub struct CursorMod {
     want: Option<Shown>,
     /// Cursor in the last recorded layer.
     drawn: Option<Shown>,
+    /// Window position the cursor was drawn at, for its game position: kept while the game position does not
+    /// change, so a zoom (other game px under the same screen point) does not move the cursor on screen.
+    win_pos: Option<((i32, i32), (f32, f32))>,
     /// The frontend shows the window layer (the frame cursor is turned off).
     active: bool,
 }
@@ -108,8 +111,14 @@ impl Mod for CursorMod {
         self.update(m);
         let Some(s) = self.want else { return };
         let Some((img, hx, hy)) = self.images.get(&s.handle).cloned() else { return };
-        let vp = crate::draw_viewport(m);
-        let (wx, wy) = vp.game_to_window(s.x as f32, s.y as f32);
+        let (wx, wy) = match self.win_pos {
+            Some((g, w)) if g == (s.x, s.y) => w,
+            _ => {
+                let w = crate::draw_viewport(m).game_to_window(s.x as f32, s.y as f32);
+                self.win_pos = Some(((s.x, s.y), w));
+                w
+            }
+        };
         let k = l.ui();
         let (w, h) = ((img.width as f32 * k).round() as i32, (img.height as f32 * k).round() as i32);
         let (x, y) = ((wx - hx as f32 * k).round() as i32, (wy - hy as f32 * k).round() as i32);

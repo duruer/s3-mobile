@@ -66,7 +66,7 @@ pub fn classic_width(h: u32, ww: u32, wh: u32) -> u32 {
     let v = if h >= res::CLASSIC_VARIANT.h { res::CLASSIC_VARIANT } else { res::variant_for(h) };
     let pw_win = (v.panel_w as f64 * wh as f64 / v.h as f64).round();
     let map = (ww as f64 - pw_win).max(64.0) * h as f64 / wh.max(1) as f64;
-    let w = v.panel_w as f64 + map;
+    let w = (v.panel_w + crate::display::map_skip(v.panel_w, v.h)) as f64 + map;
     ((((w / 8.0).round() as u32) * 8).clamp(res::MIN_W, res::MAX_W)).max(v.panel_w + 64)
 }
 
@@ -438,10 +438,10 @@ mod tests {
             let w = classic_width(h, 2316, 904);
             let v = res::CLASSIC_VARIANT;
             let pw_win = (v.panel_w as f32 * 904.0 / v.h as f32).round();
-            let map_scale_x = (2316.0 - pw_win) / (w - v.panel_w) as f32;
+            let map_scale_x = (2316.0 - pw_win) / (w - v.panel_w - crate::display::map_skip(v.panel_w, v.h)) as f32;
             let map_scale_y = 904.0 / h as f32;
             assert!((map_scale_x / map_scale_y - 1.0).abs() < 0.012, "{h}: {w} {map_scale_x} {map_scale_y}");
-            assert!(w <= size_for_height(h, 2316.0 / 904.0).0);
+            assert!(w <= size_for_height(h, 2316.0 / 904.0).0 + 16);
         }
         // Very wide: width capped, height follows.
         let (w, h) = size_for(level_count() - 1, 4.0, 0);

@@ -161,10 +161,14 @@ pub struct PanelSplit {
 /// Parts of the 640x480 panel art (`res::CLASSIC_VARIANT`) that reach past the panel width into the map view:
 /// the minimap frame's diagonal edge and leaves (`y0, y1, x_end` in game px; runs of rows with the same `x_end` =
 /// the rightmost art pixel + 1, measured from a game frame with a black map behind, 2026-11-08). Exact per row:
-/// 4-row bands also carried map pixels right of the art, which then moved during zoom (phone report). With a
+/// 4-row bands also carried map pixels right of the art, which then moved during zoom (phone report). Only the
+/// minimap frame (rows < 156): the leaves further down reach at most to x 144; they are cut at the panel edge
+/// instead, and the map part starts right of them ([`PanelSplit::map_x0`]), else the frame showed them a second
+/// time in the map part at the map's scale, at other heights than the panel's ("the effect at the panel's right
+/// edge moves while zooming", 2026-11-08). With a
 /// [`PanelSplit`] they are drawn at the panel's scale on top of the map part, else they scaled with the zoom
 /// like the map (user report: "the diagonal edge still moves"). Numbers only, no game art.
-const OVERHANG_136X480: [(u16, u16, u16); 119] = [
+const OVERHANG_136X480: [(u16, u16, u16); 84] = [
     (0, 6, 207), (6, 8, 206), (8, 10, 205), (10, 12, 204), (12, 14, 203), (14, 16, 202), (16, 18, 201), (18, 19, 199),
     (19, 20, 200), (20, 22, 199), (22, 24, 198), (24, 25, 196), (25, 26, 197), (26, 28, 196), (28, 30, 195), (30, 31, 193),
     (31, 32, 194), (32, 34, 193), (34, 36, 192), (36, 38, 191), (38, 40, 190), (40, 42, 189), (42, 44, 188), (44, 46, 187),
@@ -175,12 +179,18 @@ const OVERHANG_136X480: [(u16, u16, u16); 119] = [
     (107, 108, 157), (108, 109, 158), (109, 110, 159), (110, 113, 160), (113, 114, 157), (114, 118, 158), (118, 119, 151), (119, 120, 152),
     (120, 121, 154), (121, 124, 155), (124, 125, 153), (125, 126, 151), (126, 127, 148), (127, 128, 149), (128, 130, 150), (130, 131, 149),
     (131, 132, 148), (132, 134, 147), (134, 135, 146), (135, 136, 145), (136, 138, 144), (138, 140, 143), (140, 143, 142), (143, 145, 141),
-    (145, 148, 140), (148, 151, 139), (151, 152, 138), (152, 155, 137), (199, 200, 137), (200, 201, 138), (201, 204, 140), (204, 207, 139),
-    (207, 208, 138), (208, 209, 137), (211, 212, 138), (212, 214, 139), (214, 217, 140), (217, 218, 141), (218, 220, 142), (220, 224, 143),
-    (224, 225, 142), (225, 227, 137), (304, 306, 143), (306, 307, 142), (307, 308, 141), (308, 309, 140), (324, 325, 139), (325, 326, 140),
-    (326, 327, 141), (327, 330, 140), (330, 331, 139), (381, 386, 138), (386, 387, 141), (387, 390, 140), (390, 391, 139), (391, 393, 138),
-    (393, 394, 137), (460, 461, 139), (461, 463, 140), (463, 467, 141), (467, 475, 144), (475, 476, 143), (476, 480, 142),
+    (145, 148, 140), (148, 151, 139), (151, 152, 138), (152, 155, 137),
 ];
+
+/// Frame columns right of the panel width that are not shown in the map part (panel leaves, see
+/// `OVERHANG_136X480`): 9 for the 640x480 panel.
+pub const fn map_skip(w: u32, h: u32) -> u32 {
+    if w == 136 && h == 480 {
+        9
+    } else {
+        0
+    }
+}
 
 impl PanelSplit {
     /// The crop height, if any.
@@ -195,6 +205,11 @@ impl PanelSplit {
         } else {
             &[]
         }
+    }
+
+    /// Frame x where the shown map part starts: right of the panel art's leaves (`w + 9` for the 640x480 panel).
+    pub fn map_x0(&self) -> u32 {
+        self.w + map_skip(self.w, self.h)
     }
 
     /// Right edge (game x) of the panel art in row `y`: `w`, or further in an overhang band.
@@ -232,6 +247,15 @@ impl Viewport {
         let (ww, wh) = (win_w.max(1), win_h.max(1));
         let (sx, sy) = (ww as f64 / gw as f64, wh as f64 / gh as f64);
         let (dw, dh) = match mode {
+            // Native wide: the render size has the window's aspect up to the width rounding (multiple of 8), which
+            // left 1-4 px bars whose width changed with every zoom step; the whole UI anchored to the shown frame
+            // then shifted by a few px per step (Mobile HUD "jitter", 2026-11-08). Within 2 % fill the window.
+            DisplayMode::NativeWide
+                if ((gw as f64 * sy) - ww as f64).abs() <= ww as f64 * 0.02
+                    && ((gh as f64 * sx) - wh as f64).abs() <= wh as f64 * 0.02 =>
+            {
+                (ww as f64, wh as f64)
+            }
             DisplayMode::Fit | DisplayMode::NativeWide => {
                 let s = sx.min(sy);
                 // Snap to the window edge when within half a pixel (avoid 1 px bars from rounding).
@@ -295,13 +319,14 @@ impl Viewport {
     /// With a panel split: the source rectangle of the map part (game px: x, y, w, h); a centred crop when
     /// [`PanelSplit::crop_h`] is set.
     fn map_src(&self, p: PanelSplit) -> (f32, f32, f32, f32) {
-        let (mw, gh) = ((self.game_w - p.w.min(self.game_w)) as f32, self.game_h as f32);
+        let x0 = p.map_x0().min(self.game_w.saturating_sub(1));
+        let (mw, gh) = ((self.game_w - x0) as f32, self.game_h as f32);
         match p.crop().filter(|&c| c < self.game_h) {
             Some(c) => {
                 let (ch, cw) = (c as f32, mw * c as f32 / gh);
-                (p.w as f32 + (mw - cw) / 2.0, (gh - ch) / 2.0, cw, ch)
+                (x0 as f32 + (mw - cw) / 2.0, (gh - ch) / 2.0, cw, ch)
             }
-            None => (p.w as f32, 0.0, mw, gh),
+            None => (x0 as f32, 0.0, mw, gh),
         }
     }
 
@@ -850,7 +875,7 @@ mod tests {
         assert_eq!(v.quads().len(), 2);
         // The 640x480 panel: the minimap frame's diagonal edge stays at the panel scale.
         let v3 = Viewport::new_split(DisplayMode::NativeWide, 1600, 640, 2316, 904, Some(PanelSplit { w: 136, h: 480, crop_h: 0 }));
-        assert_eq!(v3.quads().len(), 2 + 119);
+        assert_eq!(v3.quads().len(), 2 + 84);
         let ps3 = 904.0 / 480.0;
         let (wx, wy) = v3.game_to_window(200.0, 2.0);
         assert!((wx - 200.0 * ps3).abs() < 0.01 && (wy - 2.0 * ps3).abs() < 0.01);
@@ -863,7 +888,7 @@ mod tests {
         let (sx, sy) = v4.scale();
         assert!((sy - 904.0 / 240.0).abs() < 0.01 && (sx / sy - 1.0).abs() < 0.02, "{sx} {sy}");
         // The map centre stays the window's map-part centre; round trip.
-        let mid = (136.0 + (1240.0 - 136.0) / 2.0, 240.0);
+        let mid = (145.0 + (1240.0 - 145.0) / 2.0, 240.0);
         let (wx, wy) = v4.game_to_window(mid.0, mid.1);
         let pww = (136.0f32 * 904.0 / 480.0).round();
         assert!((wx - (pww + (2316.0 - pww) / 2.0)).abs() < 1.0 && (wy - 452.0).abs() < 1.0, "{wx} {wy}");
