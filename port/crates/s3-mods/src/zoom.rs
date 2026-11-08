@@ -44,6 +44,10 @@ pub fn size_for_height(h: u32, aspect: f32) -> (u32, u32) {
     let w = ((h as f32 * aspect / 8.0).round() as u32) * 8;
     // Wider than MAX_W: keep the width, lower the height (same aspect).
     let (w, h) = if w > res::MAX_W { (res::MAX_W, ((res::MAX_W as f32 / aspect).round() as u32).max(res::MIN_H)) } else { (w, h) };
+    // Narrower than MIN_W (near-square windows zoomed far in, e.g. a foldable's inner screen at 1.2:1): keep the
+    // window's aspect with the minimum width and a taller frame. Clamping only the width made the frame wider
+    // than the window: black bars above and below (user report 2026-11-08).
+    let (w, h) = if w < res::MIN_W { (res::MIN_W, ((res::MIN_W as f32 / aspect).round() as u32).min(res::MAX_H)) } else { (w, h) };
     res::clamp_size(w, h)
 }
 
@@ -430,9 +434,10 @@ mod tests {
         assert_eq!(w, 1920);
         // Classic mode never goes below 480.
         assert_eq!(size_for(0, 4.0 / 3.0, CLASSIC_MIN_LEVEL), (640, 480));
-        // The new bottom (HUD): 200 high, at least MIN_W wide.
+        // The new bottom (HUD): 200 high, at least MIN_W wide; narrower windows keep their aspect (taller frame).
         assert_eq!(size_for(0, 2316.0 / 904.0, 0), (512, 200));
-        assert_eq!(size_for(0, 4.0 / 3.0, 0), (res::MIN_W, 200));
+        assert_eq!(size_for(0, 4.0 / 3.0, 0), (res::MIN_W, 240));
+        assert_eq!(size_for(0, 2176.0 / 1812.0, 0), (res::MIN_W, 266));
         // Classic panel split widths: map part keeps the window aspect.
         for h in [480u32, 520, 600, 700, 768, 900, 1200] {
             let w = classic_width(h, 2316, 904);

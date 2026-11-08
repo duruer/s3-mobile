@@ -2,6 +2,13 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Zoom on near-square screens: no bars
+
+- Fold4 inner screen (1.2:1) zoomed far in showed black bars above and below: the zoom size at 200 px height was
+  240 wide, clamped to `res::MIN_W` 320 -> a 1.6:1 frame in a 1.2:1 window. `zoom::size_for_height` now keeps the
+  window's aspect with the minimum width and a taller frame (320x266 there; the closest zoom is 266 instead of
+  200 on that screen). Verified desktop (2176x1812) and on the phone (full screen, 122 fps).
+
 ## 2026-11-08 — Responsive menu layouts (tablets, foldable inner screen)
 
 - Menu screens now show the whole original screen (all elements, bars in the menu's colour) when the window's
