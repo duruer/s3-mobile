@@ -33,6 +33,9 @@ pub struct TouchMouse {
     last_due: u64,
     drag: Option<(MouseButton, (i32, i32))>,
     pub right_next: bool,
+    /// Key (VK) held around the armed right click: a modifier order (Shift waypoint / Alt patrol / Ctrl no fight,
+    /// `crate::unit_orders`). 0 = a plain right click.
+    pub right_next_vk: u32,
     pub keyboard_request: bool,
     pub long_press_right_click: bool,
 }
@@ -55,8 +58,20 @@ impl TouchMouse {
         let pt = |x: f32, y: f32| (x.round() as i32, y.round() as i32);
         match *ev {
             TouchEvent::Tap { x, y } => {
-                let b = if std::mem::take(&mut self.right_next) { MouseButton::Right } else { MouseButton::Left };
-                self.click(now, pt(x, y), b);
+                let vk = std::mem::take(&mut self.right_next_vk);
+                if std::mem::take(&mut self.right_next) {
+                    if vk != 0 {
+                        // Modifier down before the click, up after its button-up (the game reads the modifier
+                        // byte of the button events, `0x45b370`).
+                        self.push(now, HostEvent::Key { vk, down: true });
+                        self.click(now + 10, pt(x, y), MouseButton::Right);
+                        self.push(now + 10 + CLICK_MS + 10, HostEvent::Key { vk, down: false });
+                    } else {
+                        self.click(now, pt(x, y), MouseButton::Right);
+                    }
+                } else {
+                    self.click(now, pt(x, y), MouseButton::Left);
+                }
             }
             TouchEvent::LongPress { x, y } if self.long_press_right_click => self.click(now, pt(x, y), MouseButton::Right),
             TouchEvent::TwoFingerTap { x, y } => self.click(now, pt(x, y), MouseButton::Right),
@@ -139,6 +154,15 @@ mod tests {
         t.handle(&TouchEvent::Tap { x: 1.0, y: 1.0 }, 200, (640, 480));
         assert!(t.drain_due(300).contains(&HostEvent::MouseButton { button: MouseButton::Right, down: true }));
         assert!(!t.right_next);
+        // Modifier order: Shift down, right click, Shift up.
+        t.right_next = true;
+        t.right_next_vk = 0x10;
+        t.handle(&TouchEvent::Tap { x: 5.0, y: 6.0 }, 400, (640, 480));
+        let ev = t.drain_due(1000);
+        assert_eq!(ev.first(), Some(&HostEvent::Key { vk: 0x10, down: true }));
+        assert_eq!(ev.last(), Some(&HostEvent::Key { vk: 0x10, down: false }));
+        assert!(ev.contains(&HostEvent::MouseButton { button: MouseButton::Right, down: true }));
+        assert!(!t.right_next && t.right_next_vk == 0);
     }
 
     #[test]

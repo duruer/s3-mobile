@@ -7,6 +7,18 @@ Newest first. One entry per session: what was done, what was learned, links to d
 - `gesture.rs`: a touch down within 300 ms after a nearby tap that then drags starts the box selection at once
   (`LongPress` + long-press pan). Test `tap_then_drag_is_box_select` → [touch](porting/touch.md).
 
+## 2026-11-08 — Unit orders (waypoint / patrol / no fight), unit paths, control-group buttons
+
+- RE (manual + static + s3run): Shift+RMB = waypoint queue at settler `+0x30..+0x3b` (3 slots, 0xffff empty),
+  Alt+RMB = patrol (start, end, `0xfffe` marker), Ctrl+RMB = move ignoring enemies; digits = `SelectGroup` `0x542660`
+  (twice = centre camera), Alt+digit = `AssignGroup` `0x542820`, groups = selection slots 1..9; Tab = keep wounded.
+  Exact map -> screen formula (verified on 14 units) → [game-state-units](reverse-engineering/game-state-units.md)
+  "Orders, waypoints, patrol, unit paths" / "Control groups".
+- `unit_orders.rs`: order buttons in both UIs (fallback right click with the modifier held), dotted marching paths
+  (selected units; all ordered units with `show_unit_paths`), group buttons 1..6 (`group_shortcuts`, tap select /
+  centre, long press assign). Fix: touch deselect no longer empties a group. `s3run` inject `kdown` / `kup`.
+  → [touch](porting/touch.md#unit-orders-paths-groups-unit-orders-2026-11-08), ui-classic, ui-hud.
+
 ## 2026-11-08 — Game time display, Classic Menu no longer opens Save / Quit
 
 - `game_time.rs`: `h:mm:ss` of the running game in the window layer (top left of the map; top right when the FPS

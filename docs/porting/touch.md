@@ -58,6 +58,33 @@ green/red for move/attack), a flag with a pulsing ground ring at move/attack tar
 map while panning (`world = screen + camera`), green rings under every selected own unit that is on screen (hit list
 ∩ UI selection), the long-press ring, the selection box, and the ✕ "Cancel" button in placement mode.
 
+## Unit orders, paths, groups (unit-orders, 2026-11-08)
+
+`port/crates/s3-mods/src/unit_orders.rs`, a mod below both UI modes plus a `HandleInput` hook. RE:
+[game-state-units.md](../reverse-engineering/game-state-units.md#orders-waypoints-patrol-unit-paths).
+
+- **Orders** = the PC's modifier + right click: **Waypoint** (Shift, stays armed for 4 taps: the first tap of an idle
+  group is a plain move, then the game's 3 waypoints; tap the button again to stop), **Patrol** (Alt), **No fight**
+  (Ctrl). Arming sets the fallback's "next tap = right click" plus `right_next_vk`; the tap then sends key down,
+  right click, key up, so the game builds command 0x0d / 0x0e / 0x0f itself (same path as a PC, MP-safe).
+  Mode B: second row of the selection card; mode A: a column below the Deselect ✕ (top right) with a hint above the
+  group row ("Tap the next waypoint (3 left)"). Disarmed when the selection goes away.
+- **Paths**: marching dots from each unit through target and waypoints, rings at waypoints, a green ring at the final
+  target, patrol routes as an amber loop. Always for the selected units (so tapping a unit / group shows its route);
+  for all own units walking on an order (job 0x35) or patrolling with **Settings `show_unit_paths`** (default off;
+  Classic menu column "Paths: selected / all units", HUD Settings "Unit paths").
+- **Group buttons 1..6** (**Settings `group_shortcuts`**, default off; Classic "Groups: on/off", HUD "Group buttons").
+  Tap = `SelectGroup(n)` (tap again while selected = centre the camera, like pressing the digit twice), long press
+  (the touch long-press time, progress bar) = `AssignGroup(n)` with the current selection. Non-empty groups show their
+  count, the current group is gold. Classic: bottom of the map right of the panel; HUD: above the bottom bar right of
+  the minimap card, or above the minimap card when that row would reach the selection card (tall / narrow windows).
+- Deselect (✕, two-finger tap, HUD Deselect) on a group now leaves the group (slot -1) instead of emptying it.
+- Desktop: `s3run --inject` has `kdown VK` / `kup VK` (hold a key, e.g. `kdown 0x12;rclick x y;kup 0x12`).
+
+Verified desktop 2026-11-08 (`scratch/unit-orders/c3/*.png` Classic 2316x904, `h1`/`h2` HUD 2176x1812, local only):
+box select -> long press 1 assigns 10 units, Waypoint + 2 taps draws the route through both waypoints, ✕ then tap
+1 reselects the group, second tap centres, Patrol draws the loop; same in the HUD card.
+
 ## Game state used (GOG `00a925cf…` only)
 
 | What | Address | Status |

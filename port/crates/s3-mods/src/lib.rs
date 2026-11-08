@@ -51,6 +51,7 @@ pub mod ui_hud; // UI mode B "Mobile HUD" (docs/porting/ui-hud.md)
 mod ui_hud_data;
 pub mod ui_hud_minimap; // HUD minimap widget + full-screen map (docs/porting/ui-hud.md)
 pub mod ui_hud_game;
+pub mod unit_orders; // waypoint / patrol / no-fight orders, unit paths, control groups (docs/porting/touch.md)
 
 mod debug_overlay;
 
@@ -245,6 +246,8 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
         messages::install(m);
         panel_text::install(m);
     }
+    // Unit orders, paths and group buttons: below the UI modes (their sheets cover the group row and get taps first).
+    unit_orders::install(m, applied == Some("gog-base"));
     ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
     ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
     add_mod(m, Box::new(game_time::GameTimeMod::default())); // game time, drawn on top of the UI modes
@@ -311,7 +314,25 @@ pub fn set_settings(m: &mut Machine, s: Settings) -> Result<(), String> {
 
 /// Arm "the next tap is a right click" (letterbox RMB button in the legacy UI).
 pub fn set_right_next(m: &mut Machine, on: bool) {
-    m.state::<ModsState>().borrow_mut().fallback.right_next = on;
+    let st = m.state::<ModsState>();
+    let mut s = st.borrow_mut();
+    s.fallback.right_next = on;
+    s.fallback.right_next_vk = 0;
+}
+
+/// Arm "the next tap is a right click with key `vk` held" (unit orders: Shift / Alt / Ctrl, [`unit_orders`]).
+pub fn set_order_next(m: &mut Machine, vk: u32) {
+    let st = m.state::<ModsState>();
+    let mut s = st.borrow_mut();
+    s.fallback.right_next = true;
+    s.fallback.right_next_vk = vk;
+}
+
+/// (right click armed, its modifier VK or 0).
+pub fn order_next(m: &mut Machine) -> (bool, u32) {
+    let st = m.state::<ModsState>();
+    let s = st.borrow_mut();
+    (s.fallback.right_next, s.fallback.right_next_vk)
 }
 
 /// Is "the next tap is a right click" armed? (Cleared by the next tap.)

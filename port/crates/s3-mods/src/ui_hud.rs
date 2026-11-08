@@ -98,6 +98,12 @@ pub(crate) enum Action {
     CancelBuild,
     Deselect,
     MoveUnits,
+    /// Selection card: modifier order for the next map tap (waypoint / patrol / no fight, `crate::unit_orders`).
+    Order(crate::unit_orders::Order),
+    /// Settings: unit paths of all ordered units on / off.
+    ToggleUnitPaths,
+    /// Settings: group buttons 1..6 on / off.
+    ToggleGroups,
     Destroy,
     /// Open the building sheet (replaces the original panel's page 4).
     BuildingDetails,
@@ -472,6 +478,23 @@ impl MobileHud {
             Action::MoveUnits => {
                 crate::set_right_next(m, true);
                 self.set_toast("Tap the target on the map");
+            }
+            Action::Order(o) => {
+                if crate::unit_orders::arm(m, o) {
+                    self.set_toast(o.hint());
+                } else {
+                    self.toast = None;
+                }
+            }
+            Action::ToggleUnitPaths => {
+                let mut s = crate::settings(m);
+                s.show_unit_paths = !s.show_unit_paths;
+                let _ = crate::set_settings(m, s);
+            }
+            Action::ToggleGroups => {
+                let mut s = crate::settings(m);
+                s.group_shortcuts = !s.group_shortcuts;
+                let _ = crate::set_settings(m, s);
             }
             Action::Destroy => {
                 if self.now < self.destroy_armed_ms {
@@ -861,7 +884,6 @@ impl MobileHud {
         let bh = self.u(40.0);
         let gap = self.u(7.0);
         let inner = self.dialog(c, 8, "Settings");
-        let full = Rect::new(inner.x, inner.y, inner.w, bh);
         let half = (inner.w - gap) / 2;
         let third = (inner.w - 2 * gap) / 3;
         let row = |i: i32| inner.y + i * (bh + gap);
@@ -885,10 +907,14 @@ impl MobileHud {
         self.button(c, Rect::new(inner.x, row(5), half, bh), fm, BTN_BG, Action::MenuToggleFullMap);
         let gt = if crate::game_time::enabled(m) { "Game time: on" } else { "Game time: off" };
         self.button(c, Rect::new(inner.x + half + gap, row(5), half, bh), gt, BTN_BG, Action::ToggleGameTime);
-        let mode = crate::settings(m).ui_mode;
-        let mode_label = if mode == UiMode::MobileHud { "UI: Mobile HUD  >  Classic Touch" } else { "UI: Classic  >  Mobile HUD" };
-        self.button(c, Rect { y: row(6), ..full }, mode_label, BTN_BG, Action::MenuToggleMode);
-        self.button(c, Rect { y: row(7), ..full }, "< Back", BTN_ACTIVE, Action::SettingsBack);
+        let st = crate::settings(m);
+        let mode_label = if st.ui_mode == UiMode::MobileHud { "UI: > Classic Touch" } else { "UI: > Mobile HUD" };
+        self.button(c, Rect::new(inner.x, row(6), half, bh), mode_label, BTN_BG, Action::MenuToggleMode);
+        let up = if st.show_unit_paths { "Unit paths: all" } else { "Unit paths: selected" };
+        self.button(c, Rect::new(inner.x + half + gap, row(6), half, bh), up, BTN_BG, Action::ToggleUnitPaths);
+        let gs = if st.group_shortcuts { "Group buttons: on" } else { "Group buttons: off" };
+        self.button(c, Rect::new(inner.x, row(7), half, bh), gs, BTN_BG, Action::ToggleGroups);
+        self.button(c, Rect::new(inner.x + half + gap, row(7), half, bh), "< Back", BTN_ACTIVE, Action::SettingsBack);
     }
 
     /// Resource strip (top left; the FPS counter uses the top-right corner): building materials, food and population, with the game's own goods icons.
@@ -958,7 +984,8 @@ impl MobileHud {
         let bh = self.u(36.0);
         if s.page == 5 && !s.selection.is_empty() {
             let lines: Vec<String> = s.sel_types.iter().take(3).map(|(t, n)| format!("{n} x {}", settler_label(self, m, *t))).collect();
-            let ch = self.u(34.0) + lines.len() as i32 * self.u(16.0) + bh + self.u(8.0);
+            // Two button rows: Move / Deselect, then the modifier orders (waypoint / patrol / no fight).
+            let ch = self.u(34.0) + lines.len() as i32 * self.u(16.0) + 2 * bh + self.u(14.0);
             let r = Rect::new(w - cw - self.u(6.0), h - self.u(BAR_H) - ch - self.u(6.0), cw, ch);
             c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(10.0) as f32, SHEET_BG);
             self.add(r, Action::Nothing);
@@ -966,10 +993,18 @@ impl MobileHud {
             for (i, l) in lines.iter().enumerate() {
                 c.text(r.x + self.u(10.0), r.y + self.u(28.0) + i as i32 * self.u(16.0), self.k() * 13.0, Weight::Regular, TEXT, l);
             }
-            let by = r.y + r.h - bh - self.u(6.0);
+            let by = r.y + r.h - 2 * bh - self.u(12.0);
             let half = (r.w - self.u(26.0)) / 2;
-            self.button(c, Rect::new(r.x + self.u(10.0), by, half, bh), "Move to...", BTN_ACTIVE, Action::MoveUnits);
+            let armed = crate::unit_orders::armed(m);
+            let plain_move = armed.is_none() && crate::right_next(m);
+            self.button(c, Rect::new(r.x + self.u(10.0), by, half, bh), "Move to...", if plain_move { CARD_HI } else { BTN_ACTIVE }, Action::MoveUnits);
             self.button(c, Rect::new(r.x + self.u(16.0) + half, by, half, bh), "Deselect", BTN_BG, Action::Deselect);
+            let by = by + bh + self.u(6.0);
+            let third = (r.w - self.u(32.0)) / 3;
+            for (i, o) in crate::unit_orders::Order::ALL.into_iter().enumerate() {
+                let bg = if armed == Some(o) { CARD_HI } else { BTN_BG };
+                self.button(c, Rect::new(r.x + self.u(10.0) + i as i32 * (third + self.u(6.0)), by, third, bh), o.label(), bg, Action::Order(o));
+            }
         } else if s.page == 4 && s.building != 0 {
             let name = self.building_name(m, s.building_type);
             let ch = self.u(40.0) + bh + self.u(8.0);

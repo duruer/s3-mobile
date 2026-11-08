@@ -69,6 +69,10 @@ pub struct Settings {
     pub fast_speed: u32,
     /// Show the game time (`crate::game_time`); on by default.
     pub show_game_time: bool,
+    /// Draw the paths of all own units under a move order (selected units always show theirs; `crate::unit_orders`).
+    pub show_unit_paths: bool,
+    /// Control-group buttons 1..6 (tap = select / centre, long press = assign; `crate::unit_orders`).
+    pub group_shortcuts: bool,
 }
 
 impl Default for Settings {
@@ -84,6 +88,8 @@ impl Default for Settings {
             res: crate::res::ResSettings::default(),
             fast_speed: crate::speed::DEFAULT_FAST,
             show_game_time: true,
+            show_unit_paths: false,
+            group_shortcuts: false,
         }
     }
 }

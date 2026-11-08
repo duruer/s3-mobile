@@ -59,12 +59,13 @@ Index 0 is unused (`owner = 0xff`). Iterate `1..=[gd+0x12a5e5c]`; entries with `
 | +0x06 | u16 | y (tile) | VERIFIED |
 | +0x08 | u16 | 0..5, direction (HYPOTHESIS) | |
 | +0x0c | u16 | animation step / counter (changes every dump) | HYPOTHESIS |
-| +0x0e | u16 | job / state ("job" in the `SnotThere` log, `0xab`, `0xac`, `0xad`, `0xb0`, `0x17` seen) | STATIC |
+| +0x0e | u16 | job / state ("job" in the `SnotThere` log, `0xab`, `0xac`, `0xad`, `0xb0`, `0x17` seen); soldiers: `0x37` idle, `0x35` walking on a player's move order | STATIC, 0x35/0x37 VERIFIED |
 | +0x10, +0x12 | u16 | neighbouring settler ids (HYPOTHESIS: links of a formation/list) | |
 | +0x15 | u8 | cleared on job change (`0x50dbdb`) | STATIC |
 | +0x22 | u16 | cleared on job change | STATIC |
 | +0x24, +0x26 | u16 | commanded target x, y (set by the move command; spread around the clicked tile) | VERIFIED |
 | +0x28, +0x2a | u16 | current destination x, y (next waypoint) | VERIFIED |
+| +0x30..+0x3b | 3 x (u16 x, u16 y) | waypoint queue (0xffff = empty; all 0 on never-commanded settlers). Patrol: +0x30 = start, +0x34 = far end, +0x38 = `0xfffe, 0xfffe` marker | VERIFIED (2026-11-08) |
 | +0x3c | u8/u16 | 0xff tested at `0x502599`; counter in soldiers | ? |
 
 Settlers inside a building have a position but are not on the tile (tile `+0` = 0).
@@ -218,9 +219,9 @@ switch at `0x535a9d`.
 | 0x01 | x(2), y(2), type(2), player(1) | `0x533065` (left click in build mode after `AddBuilding(...,0)` succeeded, sound 0x2e) | `0x535aa4` -> `gd::AddBuilding(x,y,type,player,1)` | place construction site | VERIFIED |
 | 0x03 | player(1), slot(1), count(2), ids (2 each, high byte first) ... ; byte +2 = `((count+1)/2 + 2) * 4` | `0x534541` (right-click, if dirty) and `0x52ece7`, `0x52f90d`.. | `0x535cb0` | copy the UI selection to the logic copy | VERIFIED (logic copy filled) |
 | 0x09 | player(1), slot(1), x(2), y(2) | `0x53487e` (right-click, no modifier) | `0x536045` (mode 0) | move selected units to tile; on an enemy building/unit this is the attack order (HYPOTHESIS: target classification inside the executor) | VERIFIED (units walked to the tile) |
-| 0x0d | same | `0x5345fc` (Shift + right-click) | `0x536045` (mode 1) | variant (HYPOTHESIS: add waypoint / patrol) | STATIC |
-| 0x0e | same | `0x534787` (Alt + right-click; a special case with a thief (settler type 0x17) on land of an allied player shows a text message `0x80174` instead) | `0x536045` (mode 2) | variant (HYPOTHESIS: patrol or steal) | STATIC |
-| 0x0f | same | `0x534814` (Ctrl + right-click) | `0x536045` (mode 3) | variant (HYPOTHESIS: forced march, no fighting) | STATIC |
+| 0x0d | same | `0x5345fc` (Shift + right-click) | `0x536045` (mode 1) | add a waypoint (see [Orders](#orders-waypoints-patrol-unit-paths)) | VERIFIED |
+| 0x0e | same | `0x534787` (Alt + right-click; a special case with a thief (settler type 0x17) on land of an allied player shows a text message `0x80174` instead) | `0x536045` (mode 2) | patrol between the current position and the target | VERIFIED |
+| 0x0f | same | `0x534814` (Ctrl + right-click) | `0x536045` (mode 3) | move ignoring enemies on the way (manual); not inspected further | STATIC + manual |
 | 0x06 | building id(2), player(1); length 8 | `0x52fee7` (destroy button in the building panel, mode 4, `[gd+0x2d298] == 1`) | `0x53729c` -> `gd::CrushBuilding` `0x4d9250` | destroy building | STATIC |
 | 0x04 | building id(2), new flag(1) = bit 0 of building +0x18 toggled, player(1); length 8 | `0x531d65` (building panel, sounds 0x35/0x36) | `0x536fbf` | Stop / Resume Working (Stop / Resume Building on sites) | VERIFIED (site, 2026-11-08) |
 | 0x0c | building id(2), player(1), action(1): 1 max garrison, 2/3/4 add sword/bow/spear, 5 min garrison, 6/7/8 remove | `0x531499..0x531ab6` (towers / castle) | | garrison wishes (game-state-ui.md section 8) | VERIFIED (1) |
@@ -241,6 +242,50 @@ How a mod issues a command (HYPOTHESIS until W1 tries it): build the bytes as ab
 For a move, first write the UI selection and send command 3, exactly like the right-click path. Alternative without
 calling game code: post synthetic **input events** (type 0x10..0x16, 20 bytes) to `[logic+0x3c0]` and let HandleInput
 do the work (this is what our window-message injection already does indirectly).
+
+## Orders, waypoints, patrol, unit paths
+
+Sources: the game's own manual (`MANUAL/in_keyb/keyb.htm`, `military/military.htm` in the GOG install, read as data)
+plus static RE and s3run runs (2026-11-08, `scratch/unit-orders/r2..r4`, local only).
+
+| PC input (units selected) | Command | Executor mode | Effect | Status |
+| --- | --- | --- | --- | --- |
+| RMB | 0x09 | 0 | move / attack | VERIFIED |
+| Shift + RMB | 0x0d | 1 | add a waypoint: written to the first free slot of the settler's queue `+0x30/+0x34/+0x38`; a settler that is not walking (job not one of the walking states) moves there directly (`0x503610`). Manual: "in addition to the normal move three waypoints"; any other move order cancels them | VERIFIED (target 278,248, queue (293,253), (298,276) after a move + 2 Shift clicks) |
+| Alt + RMB | 0x0e | 2 | patrol: `0x503610` move to the target, queue = (start = current position, target, `0xfffe` marker), job `0x35` | VERIFIED (queue (223,182), (237,159), (fffe,fffe)) |
+| Ctrl + RMB | 0x0f | 3 | move ignoring the enemy on the way (manual) | STATIC + manual |
+| Shift + LMB | | | add units to the current selection / group slot | STATIC (`0x533ae2`) |
+| Alt + LMB / Ctrl + LMB on a unit | | | select the same kind nearby / all nearby (manual; code `0x533f21..`) | STATIC |
+| Tab | | | keep only the wounded soldiers in the selection (`0x525788`) | STATIC + manual |
+
+Ships (types 0x16, 0x28) take a different branch (`+0x1c`, a table at `0x4a97a << 6`); not covered.
+
+Paths for a HUD: per settler, position `+4/+6` -> target `+0x24/+0x26` (when walking on an order, job `0x35`) ->
+waypoint queue. Map tile -> 640x480-style screen pixel (the unit's feet), the inverse of `gd::ScreenToMap`:
+
+    sx = 16 x - 8 y - [gd+0x2d254] + 8 W + 280 + 32 res        (W = [gd+0x2d2d0], res = [0x730f08] 1..3)
+    sy =  9 y - h  - [gd+0x2d258] + 182                         (h = byte tile(x, y) + 4)
+
+VERIFIED against the hit list for 14 of 14 units (dx 0, dy + h = 182 exactly). With the Mobile HUD's full-screen
+layout the shown map is shifted by the original panel width (calibrate against the hit list).
+
+## Control groups
+
+Key handler in `HandleInput`: `vk - 9` indexes the byte table `0x534cbc`, which selects a case of the jump table
+`0x534c00`. Digits 1..9 (`0x525ce1..`): with Alt (modifier bit 2) `CLogicThread::AssignGroup(n)` `0x542820`, else
+`CLogicThread::SelectGroup(n)` `0x542660` (both thiscall logic, ret 4). VERIFIED in s3run (Alt+1 -> slot 1 count 9;
+key 1 -> slot 1; key 1 again -> camera moved).
+
+- Groups are the UI selection slots 1..9 (`word [0x7ad620 + n*2]` count, ids at `0x7ad634 + n*200`); slot 0 is the
+  plain selection a click / box creates (`0x533b0d`, without Shift).
+- AssignGroup copies the current slot's ids to slot n, sets dirty `[0x7ad5f8 + n*4]`, calls `0x5428e0(id, n)` per
+  unit, makes n current and calls `0x542990(n)`.
+- SelectGroup(n): nothing if the group is empty. If n is not current: slot = n, building selection 0, panel page 5,
+  `0x542990(n)`. If n is already current (second press): average position of the group's own units ->
+  `gd::CenterOn` `0x51b560`, i.e. "press twice to centre" (manual).
+- The game's deselect click only sets slot -1 (`0x534178`), keeping the group. (Our touch deselect used to zero the
+  current slot's count, which emptied a group; fixed 2026-11-08.)
+- UI-local: groups are not commands (only the next move syncs the slot with command 3 via the dirty flag).
 
 ## Other game-state words seen in `gd+0x2d250..0x2d304`
 
@@ -290,6 +335,5 @@ Random maps differ per run (positions, races), so read positions from the dumps 
 ## Open questions
 
 - Names of settler types and building types (only 15 = Guard Tower, 2 = first building of the first category known).
-- Exact meaning of move modes 0xd/0xe/0xf and of commands 0x04, 0x05, 0x12..0x1c.
+- Commands 0x05, 0x12..0x1c; Ctrl move (0x0f) effect not traced in the executor.
 - Construction state bytes in the building entry.
-- Map -> screen formula (needed for drawing HUD markers on units).

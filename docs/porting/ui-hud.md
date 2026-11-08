@@ -257,3 +257,10 @@ trip, tiles, camera formula).
 Single-player game: the ">> Nx" pill right of the resource strip switches between normal speed and the chosen fast
 speed (accent colour while fast). Settings -> "Fast speed: Nx" cycles 2x..8x (`crate::speed`).
 Settings -> "Game time: on/off" shows the game time (`crate::game_time`) below the resource strip (default on).
+
+## Unit orders and group buttons (2026-11-08)
+
+The selection card has a second row **Waypoint / Patrol / No fight** (armed = highlighted, toast with the hint); the
+Settings dialog rows 6/7 are now halves: "UI: > Classic Touch" | "Unit paths: selected / all", "Group buttons: on /
+off" | "< Back". Group buttons 1..6 sit above the bottom bar (right of the minimap card, or above it on narrow
+windows). Details: [touch.md](touch.md#unit-orders-paths-groups-unit-orders-2026-11-08).

@@ -129,6 +129,11 @@ fn parse_inject_all(spec: &str) -> Result<(Vec<(u64, HostEvent)>, Vec<(u64, Path
                 out.push((t, HostEvent::Key { vk, down: true }));
                 out.push((t + 50, HostEvent::Key { vk, down: false }));
             }
+            // Hold / release one key (modifiers: Shift 0x10, Ctrl 0x11, Alt 0x12), e.g. `kdown 0x12;key 0x31;kup 0x12`.
+            Some(c @ ("kdown" | "kup")) => {
+                let vk = w.get(1).and_then(|s| parse_num(s)).ok_or(format!("missing vk in '{item}'"))? as u32;
+                out.push((t, HostEvent::Key { vk, down: c == "kdown" }));
+            }
             Some("text") => {
                 let txt = cmd.trim_start()["text".len()..].trim();
                 for (i, c) in txt.chars().enumerate() {

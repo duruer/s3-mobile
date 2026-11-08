@@ -207,6 +207,10 @@ enum FloatBtn {
     /// Shown while the menu is open: zoom in / out one level (render resolution, docs/porting/resolution-zoom.md).
     ZoomIn,
     ZoomOut,
+    /// Shown while the menu is open: paths of all ordered units / only the selected ones (`crate::unit_orders`).
+    UnitPaths,
+    /// Shown while the menu is open: group buttons 1..6 on / off.
+    Groups,
 }
 
 /// The mode A mod.
@@ -372,16 +376,22 @@ impl ClassicTouch {
         if self.float_open {
             let hw = self.q(150.0);
             let mut y = menu.1;
-            let mut ks = vec![FloatBtn::GameMenu, FloatBtn::GameTime, FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut];
+            let mut x = right - hw - self.q(8.0);
+            let mut ks = vec![FloatBtn::GameMenu, FloatBtn::GameTime, FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut, FloatBtn::UnitPaths, FloatBtn::Groups];
             if self.speed.is_some() {
                 ks.insert(1, FloatBtn::SpeedChoice);
             }
             for k in ks {
                 y -= h + self.q(12.0);
                 if y < vy + self.q(4.0) {
-                    break;
+                    // Next column to the left (short windows).
+                    y = menu.1 - h - self.q(12.0);
+                    x -= hw + self.q(10.0);
+                    if x < vx + self.q(4.0) {
+                        break;
+                    }
                 }
-                v.push((k, (right - hw - self.q(8.0), y, hw, h)));
+                v.push((k, (x, y, hw, h)));
             }
         }
         v
@@ -533,6 +543,8 @@ impl ClassicTouch {
                     crate::display::DisplayMode::NativeWide => "Screen: Wide",
                 }),
                 FloatBtn::Speed if self.speed.as_ref().is_some_and(|s| s.1) => (GOLD.fade(0.55), ""),
+                FloatBtn::UnitPaths => (BG, if crate::settings(m).show_unit_paths { "Paths: all units" } else { "Paths: selected" }),
+                FloatBtn::Groups => (BG, if crate::settings(m).group_shortcuts { "Groups: on" } else { "Groups: off" }),
                 FloatBtn::ZoomIn | FloatBtn::ZoomOut | FloatBtn::FpsLimit | FloatBtn::FpsPos | FloatBtn::Filter | FloatBtn::Speed | FloatBtn::SpeedChoice => (BG, ""),
             };
             let zoom_label;
@@ -695,6 +707,17 @@ impl Mod for ClassicTouch {
                                 }
                                 FloatBtn::GameTime => {
                                     crate::game_time::toggle(m);
+                                    self.dirty = true;
+                                    return ModEvent::Consumed;
+                                }
+                                FloatBtn::UnitPaths | FloatBtn::Groups => {
+                                    let mut s = crate::settings(m);
+                                    if k == FloatBtn::UnitPaths {
+                                        s.show_unit_paths = !s.show_unit_paths;
+                                    } else {
+                                        s.group_shortcuts = !s.group_shortcuts;
+                                    }
+                                    let _ = crate::set_settings(m, s);
                                     self.dirty = true;
                                     return ModEvent::Consumed;
                                 }

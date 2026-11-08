@@ -105,3 +105,11 @@ while fast). The fast speed (2x..8x) is chosen with "Fast speed: Nx" in the menu
 The floating Menu button opens only our button column (Save / Quit, Game time, Fast speed, UI mode, FPS, filter,
 screen, zoom); "Save / Quit" opens the game's own menu page. The game time (`crate::game_time`, `h:mm:ss` from the
 game clock) is shown top left of the map, on by default.
+
+## Unit orders and group buttons (2026-11-08)
+
+With units selected a column **Waypoint / Patrol / No fight** sits below the Deselect ✕ (top right); armed orders are
+gold and a hint shows above the group row. Optional group buttons **1..6** at the bottom of the map right of the panel
+(tap select / centre, long press assign). Menu column toggles "Paths: selected / all units" and "Groups: on / off";
+the column now continues in a second column to the left when the window is too short. Details:
+[touch.md](touch.md#unit-orders-paths-groups-unit-orders-2026-11-08).

@@ -503,9 +503,12 @@ fn run_action(m: &mut Machine, logic: u32, a: &LogicAction) -> Result<(), String
         }
         LogicAction::ClearSelection => {
             let slot = m.mem.read_i32(SEL_SLOT);
-            if (0..10).contains(&slot) {
-                m.mem.write_u16(SEL_COUNT + slot as u32 * 2, 0);
-                m.mem.write_u32(SEL_DIRTY + slot as u32 * 4, 1);
+            if slot == 0 {
+                m.mem.write_u16(SEL_COUNT, 0);
+                m.mem.write_u32(SEL_DIRTY, 1);
+            } else if (1..10).contains(&slot) {
+                // A control group: keep its members (the game's deselect click only sets slot -1, `0x534178`).
+                m.mem.write_u32(SEL_SLOT, u32::MAX);
             }
             m.mem.write_u32(SEL_BUILDING, 0);
             let page = m.mem.read_u32(g + GD_PAGE);

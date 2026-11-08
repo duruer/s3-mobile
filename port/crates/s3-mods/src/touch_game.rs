@@ -191,9 +191,13 @@ pub fn cancel_build(m: &mut Machine, gd: u32) {
 /// Clear the UI unit selection (count 0, dirty so the logic copy is re-synced by the next command, panel page 0).
 pub fn deselect(m: &mut Machine, gd: u32) {
     let slot = m.mem.read_u32(SEL_SLOT) as i32;
-    if (0..10).contains(&slot) {
-        m.mem.write_u16(SEL_COUNT + slot as u32 * 2, 0);
-        m.mem.write_u32(SEL_DIRTY + slot as u32 * 4, 1);
+    if slot == 0 {
+        m.mem.write_u16(SEL_COUNT, 0);
+        m.mem.write_u32(SEL_DIRTY, 1);
+    } else if (1..10).contains(&slot) {
+        // A control group (unit_orders): keep its members, only leave it, like the game's own deselect click
+        // (`0x534178`: slot = -1).
+        m.mem.write_u32(SEL_SLOT, u32::MAX);
     }
     if m.mem.read_u32(gd + PAGE) == 5 {
         m.mem.write_u32(gd + PAGE, 0);
