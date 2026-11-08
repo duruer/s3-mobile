@@ -345,6 +345,22 @@ pub fn variant_for(h: u32) -> Variant {
     *VARIANTS.iter().rev().find(|v| v.h <= h).unwrap_or(&VARIANTS[0])
 }
 
+/// The single variant UI mode A uses at every custom size (the 640x480 panel, the only one that fits the Classic
+/// zoom range from 480 up). With a variant per height the game swapped the panel art when the zoom crossed 600 /
+/// 768: the panel changed width and arrangement on screen and flickered while pinching around a border (phone
+/// report 2026-11-08). The panel is shown at a constant on-screen scale anyway (`display::PanelSplit`).
+pub const CLASSIC_VARIANT: Variant = VARIANTS[0];
+
+/// Variant for a custom size of height `h`: [`CLASSIC_VARIANT`] in UI mode A, else [`variant_for`].
+pub fn variant_for_mode(m: &mut Machine, h: u32) -> Variant {
+    let ui = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode;
+    if ui == crate::settings::UiMode::ClassicTouch && h >= CLASSIC_VARIANT.h {
+        CLASSIC_VARIANT
+    } else {
+        variant_for(h)
+    }
+}
+
 pub fn variant(index: u32) -> Option<Variant> {
     VARIANTS.iter().copied().find(|v| v.index == index)
 }
@@ -381,7 +397,11 @@ pub fn sprite_buckets_needed(map_h: u32) -> u32 {
 
 /// The layout globals `0x730f08..0x730f40` for a `w x h` screen (map view = screen minus the variant's panel).
 pub fn layout_values(w: u32, h: u32) -> [(u32, u32); 14] {
-    let v = variant_for(h);
+    layout_values_v(w, h, variant_for(h))
+}
+
+/// [`layout_values`] with the panel variant `v`.
+pub fn layout_values_v(w: u32, h: u32, v: Variant) -> [(u32, u32); 14] {
     [
         (L_RES, v.index),
         (L_SCREEN_W, w),
@@ -402,10 +422,11 @@ pub fn layout_values(w: u32, h: u32) -> [(u32, u32); 14] {
 
 /// Write the layout globals for `w x h` (also `[0x730f40]` grid y and `[0x7dfd58] = 0`).
 pub fn write_layout(m: &mut Machine, w: u32, h: u32) {
-    for (a, v) in layout_values(w, h) {
+    let var = variant_for_mode(m, h);
+    for (a, v) in layout_values_v(w, h, var) {
         m.mem.write_u32(a, v);
     }
-    m.mem.write_u32(0x0073_0f40, variant_for(h).grid_y);
+    m.mem.write_u32(0x0073_0f40, var.grid_y);
     m.mem.write_u32(0x007d_fd58, 0);
 }
 
@@ -530,6 +551,28 @@ pub fn in_game(m: &mut Machine) -> bool {
     let s = m.state::<ResState>();
     let s = s.borrow_mut();
     s.frames > 0 && now.saturating_sub(s.last_frame_ms) < 1000
+}
+
+/// [`in_game`] for showing the last frame: also true for up to 10 s without a new game frame while the shown
+/// frame has a custom (non-standard) size. A big zoom step can keep the render thread busy for over a second
+/// (full landscape redraw; the layout globals already have the next size while the old frame is still shown);
+/// the 1 s rule then dropped the Classic panel split for that time and the panel jumped to the frame's scale
+/// (flicker, 2026-11-08). Menus use standard sizes.
+pub fn in_game_frame(m: &mut Machine) -> bool {
+    if in_game(m) {
+        return true;
+    }
+    let now = m.now_ms();
+    let (frames, last) = {
+        let s = m.state::<ResState>();
+        let s = s.borrow_mut();
+        (s.frames, s.last_frame_ms)
+    };
+    let size = m.last_frame_size();
+    frames > 0
+        && now.saturating_sub(last) < 10_000
+        && size.0 > 0
+        && !is_standard(size.0, size.1)
 }
 
 /// Is a resolution switch still being processed by the game (`[0x7dfd44] != 0`)?
@@ -744,7 +787,7 @@ fn switch_hook(c: &mut HookCtx) -> HookFlow {
     let gd = crate::ui_hud_game::gd(c.m);
     if let (Some(g), Some((fx, fy))) = (gd, anchor.or(Some((0.5, 0.5)))) {
         let old_pw = c.m.mem.read_u32(L_PANEL_W) as f32;
-        let new_pw = if old_pw == 0.0 { 0.0 } else { variant_for(want.1).panel_w as f32 };
+        let new_pw = if old_pw == 0.0 { 0.0 } else { variant_for_mode(c.m, want.1).panel_w as f32 };
         let (cx, cy) = (c.m.mem.read_u32(g + GD_CAM_X) as i32, c.m.mem.read_u32(g + GD_CAM_Y) as i32);
         let (nx, ny) = if anchor_map && anchor.is_some() {
             crate::zoom::anchor_camera_map((cx, cy), (fx, fy), cur, want, old_pw, new_pw)
@@ -769,7 +812,7 @@ fn switch_hook(c: &mut HookCtx) -> HookFlow {
         set_logical(c.m, want);
         // The logic acknowledgement (0x53db67) rebuilds the minimap (size depends on the variant), clamps the
         // camera and forces a redraw; only needed when the variant changes.
-        ack = variant_for(want.1).index != old_variant;
+        ack = variant_for_mode(c.m, want.1).index != old_variant;
         if !ack {
             clamp_camera(c.m, gd);
         }

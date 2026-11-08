@@ -63,7 +63,7 @@ pub fn pinch_level(start: u32, scale: f32, min_level: u32) -> u32 {
 /// window `ww` x `wh`): panel width + the map part that fills the rest of the window at the map's scale
 /// (`wh / h`), a multiple of 8.
 pub fn classic_width(h: u32, ww: u32, wh: u32) -> u32 {
-    let v = res::variant_for(h);
+    let v = if h >= res::CLASSIC_VARIANT.h { res::CLASSIC_VARIANT } else { res::variant_for(h) };
     let pw_win = (v.panel_w as f64 * wh as f64 / v.h as f64).round();
     let map = (ww as f64 - pw_win).max(64.0) * h as f64 / wh.max(1) as f64;
     let w = v.panel_w as f64 + map;
@@ -411,7 +411,7 @@ mod tests {
         // Classic panel split widths: map part keeps the window aspect.
         for h in [480u32, 520, 600, 700, 768, 900, 1200] {
             let w = classic_width(h, 2316, 904);
-            let v = res::variant_for(h);
+            let v = res::CLASSIC_VARIANT;
             let pw_win = (v.panel_w as f32 * 904.0 / v.h as f32).round();
             let map_scale_x = (2316.0 - pw_win) / (w - v.panel_w) as f32;
             let map_scale_y = 904.0 / h as f32;

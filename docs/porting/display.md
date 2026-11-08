@@ -41,7 +41,7 @@ pixel, a one-screen-pixel linear band at the pixel edges → crisp but evenly si
 
 UI mode A shows the original left panel. With zoom it used to scale with the render size (big when zoomed in, tiny
 zoomed out). Now, in `NativeWide` with the custom resolution on, in game (`display::panel_split`), the scene
-published with each frame carries `PanelSplit { w: [0x730f24], h: art height of the layout variant (480 / 600 / 768) }`
+published with each frame carries `PanelSplit { w: [0x730f24], h: art height of the layout variant }`
 and `Viewport::new_split` draws:
 
 - the panel part (frame `x < w`, `y < h`) at `win_h / h`: the art always fills the screen height (Fold4 cover:
@@ -50,6 +50,19 @@ and `Viewport::new_split` draws:
 - the map part (`x >= w`) in the rest of the window. The zoom picks render widths so this part keeps the map's
   aspect (`zoom::classic_width`: `w + (win_w - w*win_h/h) * H / win_h`, multiple of 8; < 1.2 % off), and pinch / menu
   zoom anchor in map-view fractions (`zoom::anchor_camera_map`, `ResState::anchor_map`).
+
+**One panel variant at every size (2026-11-08, phone report "the panel flickers while zooming").** Two causes,
+both fixed and verified on the phone (screen recording of injected pinches, 1045 frames, panel unchanged):
+
+1. With a variant per height the game swapped the panel art when the zoom crossed 600 / 768 (256 / 265 / 254 px on
+   screen and a different arrangement), so pinching around a border made the panel jump. UI mode A now uses the
+   640x480 panel at every custom size (`res::CLASSIC_VARIANT`, `res::variant_for_mode`; the only one that fits the
+   whole Classic range from 480 up). Costs some sharpness (136 px art scaled to 256 px on the Fold4 cover).
+2. Single frames without the split: the presenter only used the split when the latest scene was made for the
+   frame's size (a frame of a new size often arrives first: now `display::panel_for_frame` carries the split over),
+   and `panel_split` needed a game frame within the last second (`res::in_game`), which a big zoom step (full
+   landscape redraw) can exceed: now `res::in_game_frame` (up to 10 s while the shown frame has a custom size).
+   `S3_PANEL_TRACE=1` prints why `panel_split` returned none.
 
 `window_to_game` / `game_to_window` / `scale()` (= map part) / `quads()` (source -> destination rectangles: one, or
 panel + map) handle it, so touch mapping, the GPU presenter (one quad per part, sharp-bilinear scale per part), the

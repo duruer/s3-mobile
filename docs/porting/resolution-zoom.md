@@ -29,9 +29,11 @@ pinch hook in `touch.rs`. RE details: [game-state-ui.md](../reverse-engineering/
 | Persisted | `mods-settings.json` `"res": {"enabled": true, "zoom_level": 6}`; `enabled: false` = the game's own sizes (F1-F3 work again) |
 | Mode A minimum | 480 high (the original panel art needs it); levels 0-2 are skipped in Classic Touch |
 
-Panel in UI mode A: the panel art, minimap and panel button grid of the largest original layout whose height fits
-("variant": < 600 -> 640x480 art, < 768 -> 800x600 art, else 1024x768 art); the map view takes the rest of the
-width. Below the panel art (heights between the variants) the area stays black.
+Panel at custom sizes: the panel art, minimap and panel button grid of the largest original layout whose height
+fits ("variant": < 600 -> 640x480 art, < 768 -> 800x600 art, else 1024x768 art); the map view takes the rest of the
+width. Below the panel art (heights between the variants) the area stays black. **UI mode A uses the 640x480
+variant at every size** (`res::CLASSIC_VARIANT`, since 2026-11-08): switching the art at 600 / 768 made the panel
+jump on screen while pinching ([display.md](display.md) "Classic panel at a constant size").
 
 ## Why the limits (the render snapshot grid)
 

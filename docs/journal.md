@@ -8,8 +8,14 @@ Newest first. One entry per session: what was done, what was learned, links to d
 - Cause: the presenter used the panel split only when the latest window-layer scene was made for the same frame
   size; the frame of a new size often arrives first, so that frame was shown without the split (whole frame
   scaled). The mods side also dropped the split when the layout globals were already switched.
-- Fix: `display::panel_for_frame` derives the split from the frame height (layout variant) while the scene says
-  Classic is on; `panel_split` does the same on a globals mismatch. Android + desktop presenters use it.
+- Fix 1: `display::panel_for_frame` carries the split over to frames of a new size (Android + desktop presenters).
+- Still flickering on the phone. Screen recording with pinches injected as raw multi-touch events (rooted phone,
+  `cat` of prebuilt `input_event` chunks into `/dev/input/event16` = cover touchscreen, `screenrecord
+  --display-id`) showed the real cause: the game swaps the panel art (variants 480 / 600 / 768) when the zoom crosses
+  600 / 768, and the panel changes width and arrangement. Desktop wshot series also caught single frames without
+  the split: `res::in_game` (frame within 1 s) failed during a long zoom step.
+- Fix 2: UI mode A uses the 640x480 variant at every custom size (`res::CLASSIC_VARIANT`); `panel_split` uses
+  `res::in_game_frame`. Phone recording after the fix: panel identical in all 1045 frames of 4 pinches.
 
 ## 2026-11-08 — re-messages: in-game message lines
 

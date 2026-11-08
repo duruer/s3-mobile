@@ -536,35 +536,43 @@ pub fn panel_split(m: &mut Machine) -> Option<PanelSplit> {
     if mode != DisplayMode::NativeWide || ui != crate::settings::UiMode::ClassicTouch || std::env::var("S3_PANEL_SPLIT").is_ok_and(|v| v == "0") {
         return None;
     }
-    if !crate::zoom::enabled(m) || !crate::res::in_game(m) {
+    if !crate::zoom::enabled(m) || !crate::res::in_game_frame(m) {
+        if std::env::var_os("S3_PANEL_TRACE").is_some() {
+            let (fw, fh) = m.last_frame_size();
+            eprintln!(
+                "panel_split: none: zoom {} in_game {} t {} frame {fw}x{fh} glob {}x{} last {}",
+                crate::zoom::enabled(m),
+                crate::res::in_game_frame(m),
+                m.now_ms(),
+                m.mem.read_u32(crate::res::L_SCREEN_W),
+                m.mem.read_u32(crate::res::L_SCREEN_H),
+                m.state::<crate::res::ResState>().borrow_mut().last_frame_ms
+            );
+        }
         return None;
     }
     let pw = m.mem.read_u32(crate::res::L_PANEL_W);
-    if (m.mem.read_u32(crate::res::L_SCREEN_W), m.mem.read_u32(crate::res::L_SCREEN_H)) != (fw, fh) {
-        // Globals already switched to the next size while this frame has the old one (zoom in progress): the
-        // split follows from the frame height (see `panel_for_frame`).
-        if pw == 0 {
-            return None;
-        }
-        let v = crate::res::variant_for(fh);
-        return (v.panel_w < fw && v.h <= fh).then_some(PanelSplit { w: v.panel_w, h: v.h });
-    }
+    // The layout globals may already be for the next size while this frame has the old one (zoom in progress);
+    // UI mode A uses one panel variant at every size (`res::CLASSIC_VARIANT`), so only the fit is checked.
     let v = crate::res::variant(m.mem.read_u32(crate::res::L_RES))?;
-    (pw > 0 && pw == v.panel_w && pw < fw && v.h <= fh).then_some(PanelSplit { w: pw, h: v.h })
+    let r = (pw > 0 && pw == v.panel_w && pw < fw && v.h <= fh).then_some(PanelSplit { w: pw, h: v.h });
+    if r.is_none() && std::env::var_os("S3_PANEL_TRACE").is_some() {
+        eprintln!("panel_split: none: frame {fw}x{fh} pw {pw} variant {} ({}x{})", v.index, v.panel_w, v.h);
+    }
+    r
 }
 
 /// Frontends: the panel split for a frame of size `frame`, given the latest published scene (its split and the
 /// frame size it was made for). During a zoom the frame of a new size can reach the presenter before the scene
 /// made for it; showing it without the split made the Classic panel jump to the frame's scale for one frame
-/// (flicker, 2026-11-08). The split only depends on the frame height (layout variant), so it is derived for the
-/// new size while the scene says Classic is on.
+/// (flicker, 2026-11-08). The panel variant does not change with the size in UI mode A, so the split carries over.
 pub fn panel_for_frame(scene_panel: Option<PanelSplit>, scene_frame: (u32, u32), frame: (u32, u32)) -> Option<PanelSplit> {
     let p = scene_panel?;
     if scene_frame == frame {
         return Some(p);
     }
-    let v = crate::res::variant_for(frame.1);
-    (v.panel_w < frame.0 && v.h <= frame.1).then_some(PanelSplit { w: v.panel_w, h: v.h })
+    // UI mode A uses one panel variant at every size (`res::CLASSIC_VARIANT`): the split carries over.
+    (p.w < frame.0 && p.h <= frame.1).then_some(p)
 }
 
 /// Viewport of the last game frame as the frontend will show it: published window size, display mode, the panel
