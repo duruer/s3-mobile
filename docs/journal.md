@@ -2,6 +2,17 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — re-messages: in-game message lines
+
+RE of the bottom-left message lines for a constant-size overlay ([game-state-ui.md](reverse-engineering/game-state-ui.md)
+section 7). The lines are a 5-slot ring of UTF-16 strings in `logic+0x414` (timer, icon, dirty), filled by
+`AddMessage 0x51e440` (chat, notices) and by the tutorial (`0x540400`: clear + split into 75-char chunks, arrow icon
+`0xfc` on the last chunk), copied to the render snapshot and drawn by `0x4d82b0` (DrawTextA into the 1-bpp text DIB)
+and `0x4d8400` (icons + composite). Verified in s3run: ring contents match the screen; `ret 4` at `0x4d8400` hides
+everything with no stale pixels; the tutorial "arrow" is a fixed 50 x 210 px corner test (`0x532fa2`) that sets
+`gd+0x2d304 = 1`, and poking that advances the tutorial too. Message lines themselves are not clickable ("go to
+event" is panel page 8). s3run `poke` now invalidates decoded code. Tools: `tools/re-messages/`.
+
 ## 2026-11-08 — res-tall: zoom out to 3200x1200
 
 Raised the render size limit from 2560x780 to 3200x1200 ([resolution-zoom.md](porting/resolution-zoom.md), "Taller

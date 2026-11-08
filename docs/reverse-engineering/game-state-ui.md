@@ -37,6 +37,7 @@ Names used below:
 | Building names | text `0x80000 + type` (table 8) | VERIFIED |
 | Goods in stock | sum of `amount` over the pile table (part 1) by good | VERIFIED (one map, panel = sum) |
 | Panel renderer | `0x4b4d00` thiscall gfx, `(snap)`; called from the frame renderer at `0x4b2dc5` | STATIC |
+| In-game message lines (tutorial text, chat, notices) | ring `logic+0x414` (5 x 0x1c, UTF-16); drawn by `0x4d82b0` + `0x4d8400` (skip both to hide); tutorial arrow = `[gd+0x2d304] = 1`; section 7 | VERIFIED |
 | Safe place to change UI state | a hook at `HandleInput` entry `0x524fa0` (logic thread, before input is processed) | STATIC (s3run pokes between slices also worked) |
 
 ## 1. Camera and viewport
@@ -372,4 +373,144 @@ unless marked STATIC.
 - Fixed caps that do not limit bigger views: hit list 10000 entries (`0x4d8240`), sprite lists 4000 / 8000 entries
   in 250 row buckets (`0x4d7c90`, `0x4d7e10`).
 - `0x5158f0` (thiscall gd): tile at the view centre from camera and `0x730f18/1c` (STATIC, callers not checked).
-- `0x4d82b0`: bottom-left message lines, positioned from `[0x730f38]` and `[0x730f10]` (generic).
+- `0x4d82b0`: bottom-left message lines, positioned from `[0x730f38]` and `[0x730f10]`; details in section 7.
+
+## 7. In-game messages (re-messages, 2026-11-08)
+
+Goal: draw the game's text messages at a constant on-screen size in a window-resolution overlay (the port changes the
+render size for zoom, so everything drawn into the game frame grows and shrinks). VERIFIED = seen in s3run on
+2026-11-08 (tutorial at 800x600; recipe and evidence at the end), STATIC = read from code only.
+
+### What is drawn as text over the map
+
+| Text | Source | Drawn by (render thread, inside the frame renderer `0x4b26c0`) | Clickable |
+| --- | --- | --- | --- |
+| **Message lines** bottom-left (tutorial text, chat, desync / CD / ladder notices, "game already saved", ...) | ring in `logic` (below) | text into the text DIB: `0x4d82b0` (call `0x4b2833`); icons + composite: `0x4d8400` (call `0x4b422f`) | only the tutorial "arrow" corner |
+| **Chat input line** (multiplayer, Enter) | `logic+0x3f8` | the same two functions | no (keyboard) |
+| Tooltip | `logic+0x54` -> `snap+0x270` | `0x4b3de1..0x4b3f4b` (section 6) | no |
+| Game clock `hh:mm:ss` while `[0x7deb54]` is set (T key) | `[0x7dfd48]` (ms) | `0x4b3f95..0x4b412d`, rect `(W-80, H-20, W, H)`, font 1 | no |
+| End banner "You've Lost." `0x80113` / "You've won." `0x80115` / "The game ends as a draw." `0x8015c` | `[0x730f64]` = 0 / 1 / 2 (`-1` = game running) | `0x4b412d..0x4b422c`, rect `(W-[0x730f20], 20, W, 47)` | no |
+| Panel info text (`snap+0x274` text id, printf args `+0x284..+0x290`, from `logic+0x50..0x64`) | panel rect `gfx+0x5f654..0x5f660` (set at `0x4c73da`) | `0x4b2838..0x4b2b13` | panel |
+
+All of them use the game's text renderer `[gfx+0x5f6e0]`: GDI `DrawTextA` into a 1-bpp DIB the size of the screen
+(created by `0x4a78f0`). `0x4d65e0(x, y, w, h)` clears a rectangle of that DIB, `0x4d6740(x, y, w, h)` copies the set
+pixels of a rectangle onto the frame (per-run blitter `0x4d6950`); both thiscall `gfx`, `ret 0x10` (STATIC). Fonts are
+created per resolution in `0x4c6fd0..0x4c73b6` (`0x4a7df0`); font 0 has height `5 * cell` (STATIC).
+
+### Message ring (logic thread)
+
+All in `logic` (`CLogicThread`, `[0x700ffee0]` in s3run; part 1). VERIFIED by `xdump 0x700ffee0@0x414 0x8c` +
+`tools/re-messages/slots.py`, matching the screenshots.
+
+| Field | Meaning |
+| --- | --- |
+| `logic+0x414 + i*0x1c`, i = 0..19 | entries; only `i < [logic+0x644]` are used, and `[logic+0x644] = 5` (set once at `0x53cade`) |
+| entry `+0x00` (16 B) | string object: `+4` pointer to **UTF-16** text, `+8` length in chars, `+0xc` capacity (reference count byte at `ptr-1`; the game's wide string class) |
+| entry `+0x10` | timer in logic ticks; the line is shown while it is `!= 0`. 800 for normal lines, 1 000 000 for icon `>= 0xfa` (tutorial: "forever") |
+| entry `+0x14` | icon: `< 0x14` = player colour mark (locally generated lines pass `word [0x7ace64 + player*2]`, = 1 for player 0), `0xfd` = info "i" (gfx `0x10088`), `0xfe` = second icon (gfx `0x10089`), `0xfc` = tutorial **arrow** (gfx `0x1008b`), `0xff` = none |
+| entry `+0x18` | dirty byte (text must be redrawn into the DIB) |
+| `logic+0x648` | next write index; it **decreases** (`(idx + n - 1) % n`): a new line goes one slot up until it wraps |
+| `logic+0x3f8` (16 B) | chat input line (UTF-16; starts with the player name and ": ", prefix length `logic+0x40c`), `+0x400` length (max 0x50), `+0x408` chat open, `+0x410` dirty |
+
+Functions (all thiscall `logic`, logic thread; STATIC unless marked):
+
+- `0x51e440` **AddMessage(string by value (16 B), icon)**, `ret 0x14`: assigns the text to slot `[logic+0x648]`, timer
+  800 (1 000 000 if icon `>= 0xfa`), icon, dirty; moves the index down; for icon `< 0x14` it also clears the timer of
+  the next slot (one free line between chat lines). Plays sound `0x3d`. 40 call sites: chat echo `0x5256e5`,
+  "[Server]: " `0x541051`, text ids `0x8012c` "Ladder games cannot be saved.", `0x8012d` "The game has already been
+  saved within the last minute.", `0x80152` "This is the last tower", `0x80174` "You cannot steal goods from an ally.",
+  hard-coded desync / CD / ladder / lobby strings (`0x53a2f6..0x53b7ec`, `0x53d8a5..0x53d99a`, `0x540801..0x541333`).
+- `0x51e650` ClearMessages: all timers 0, all dirty, index = n-1 (top slot).
+- `0x51e680` Tick: every timer `> 0` is decremented and marked dirty; called once per logic loop at `0x53e6d5`
+  (VERIFIED rate: ~74 per second in s3run, so a normal line lives ~11 s).
+- `0x51e2e0` chat editor (adds a key to `logic+0x3f8`). The Enter handler `0x5254ae` opens the chat **only in a
+  network game** (`0x4318d0` on `0x7a7a18`; VERIFIED: Enter + typing in single player leaves the ring and the chat
+  line empty).
+
+**Tutorial text** (VERIFIED): the tutorial (`[0x7dfdb0] == 0x63`) is a state machine in `gd`: step `[gd+0x2d308]`,
+wait counter `[gd+0x2d304]`. `0x53fbb0` (called every logic loop at `0x53e629` in the tutorial) checks the condition
+of the current step; for "press the arrow" steps it is `0x515b00` (decrement `gd+0x2d304`, true at 0). On success
+`0x53f950` looks the step up in the table `0x72faf0` (16-byte entries `{step, next step, icon, text id}`, first entry
+`{0, 1, 0xfd, 0x70090}`), sets the next step, resets the wait counter to 100 000 (`0x515af0`), loads the text
+(`0x5faaa0` on `[0x7a8010]`, table 7) and calls `0x540400(text, icon)`: **ClearMessages**, then split the text into
+chunks of at most 75 chars at a space (no pixel measuring), at most 4 lines, each through `AddMessage` from the top
+slot down. Icons: first chunk = the step icon, middle chunks `0xff`; if the step icon is `0xfd` the **last** chunk
+gets `0xfc` (the arrow; a one-line text gets only the arrow, no "i"). Step icon `0xfe` = no arrow (the step waits for
+a game action). At 800x600 the first line is clipped at the right edge ("...boot camp. Pl" / "the arrow button to
+continue.") because 75 chars do not fit the 580 px line rectangle.
+
+### Per-frame copy and drawing
+
+The snapshot fill `0x51f110` (logic thread) copies every frame: chat line `logic+0x3f8 -> snap+0xc66c0` (`0x523a40`),
+chat dirty `logic+0x410 -> snap+0xc66d4` (then clears it), `snap+0xc66d0` = chat icon choice (0/1; HYPOTHESIS: team vs
+all), and the 20 entries `logic+0x414.. -> snap+0xc66d8 + i*0x1c` (`0x523330` copies string, timer, icon, dirty),
+clearing each `logic` dirty byte. **In the port the snapshot tail is moved** by the res patch (`s3-mods/src/res.rs`
+`snap_delta()`, `SNAP_TAIL_SITES`): use `snap + 0xc66d8 + snap_delta()` etc., or read `logic` directly.
+
+Render thread (`ecx` = `gfx`, the only stack argument = `snap`; both functions `ret 4`):
+
+1. `0x4d82b0` (from `0x4b2833`, early in the frame): if the chat line is dirty, clear its rectangle and draw it into
+   the DIB; for each entry with the dirty byte set: clear its rectangle and, if the timer is `!= 0`, draw the text
+   (`0x4a8a20`: UTF-16 -> ANSI, then `0x4a8090` -> `DrawTextA`; font 0, flags 0x40) clipped to the line rectangle.
+2. `0x4d8400` (from `0x4b422f`, the last drawing before the flip): composite the chat rectangle (if dirty or non-empty)
+   and its icon (`0x4000a` / `0x40009`); for each entry with dirty or timer `!= 0`: draw the icon sprite (timer `!= 0`)
+   and composite the line rectangle from the DIB onto the frame.
+
+Geometry (game pixels; `c = [0x730f38]` = 3 / 4 / 5 for heights < 600 / < 768 / >= 768, `H = [0x730f10]`; the
+constants are the table `0x658ab8..0x658ad4` times `c`; not shifted by the panel width). VERIFIED at 800x600.
+
+| Item | Rectangle |
+| --- | --- |
+| line slot i (0..4, 0 = bottom) | `x 50c .. 195c`, `y H - (21 + 6i)c .. H - (15 + 6i)c` (800x600: slot 0 = 200..780 x 516..540, slot 4 = y 420..444) |
+| icon of slot i | anchor `x 48c` (`0xfc` arrow: `48c + 8`), `y H - (18 + 6i)c`; the sprites carry their own offset (at 800x600 the arrow of slot 4 is seen around (197, 487), of slot 2 around (197, 535)) |
+| chat line | `x 50c .. 195c`, `y H - 10c .. H - 5c`; icon anchor `(48c, H - 7c)` |
+
+### Clicks
+
+- **Tutorial arrow** (VERIFIED): the map branch of HandleInput's left-down (`0x532fa2`, `x >= [0x730f24]`): if
+  `[0x7dfdb0] == 0x63` and `x - [0x730f24] < 50` and `H - y < 210` (fixed game pixels, not scaled) then
+  `[gd+0x2d304] = 1` and the click ends there; the next logic loops advance the step if it is an arrow step. The area
+  is the whole bottom-left corner of the map (no test whether the arrow is shown). Clicks at (196, 570) and (196, 395)
+  advanced, (300, 570) did not. **Poking `[gd+0x2d304] = 1` advances the same way** (VERIFIED, step 1 -> 2), so an
+  overlay button can do that (or inject a game click at `([0x730f24] + 10, H - 10)`). HYPOTHESIS: with the Mobile HUD
+  layout (`[0x730f24] = 0`) the area is `x < 50`, left of where the arrow is drawn: tapping the original arrow may not
+  work there.
+- **Message lines are not clickable.** "Go to the event" lives in the panel messages page (page 8): the buttons
+  Messages 1..4 call `0x4fee90(n)` (thiscall gd), which stores the event position in `gd+0x2d314/0x2d318`; the "go to"
+  button (cols 0x11..0x16, rows 0x54..0x59 on page 8) centres the camera with `0x51b560(x, y)` (`0x52e1ef`) and closes
+  the page. STATIC.
+
+### Suppressing the game's drawing (VERIFIED)
+
+Patching `0x4d8400` to `ret 4` (s3run `poke 0x4d8400 c20400`, restore `83ec4c`) removes all message lines, icons and
+the chat line from the frame with no stale pixels (the landscape is redrawn every frame); restoring brings them back at
+once (`scratch/re-messages/r3`). The text still goes into the DIB through `0x4d82b0`; skipping that too keeps the DIB
+clean for the other composites (tooltip, clock) and saves the GDI work. The logic side (ring, timers, tutorial) is not
+affected.
+
+### Hook plan for the constant-size overlay
+
+1. Mods hook at `0x4d82b0` entry: `return_from_function(0, 1)` (render thread; no DrawText into the DIB).
+2. Mods hook at `0x4d8400` entry: `snap = [esp+4]`; copy the 5 used entries (`snap + 0xc66d8 + snap_delta() + i*0x1c`:
+   text pointer / length at `+4` / `+8`, UTF-16; timer `+0x10`; icon `+0x14`) and the chat line (`+0xc66c0 +
+   snap_delta()`, shown when non-empty) into the overlay state, then `return_from_function(0, 1)`. Reading the snapshot
+   here gives exactly what the game would have drawn (the logic thread writes the ring concurrently).
+3. Overlay (window resolution): draw slot i from the bottom up at a fixed size and keep the game's slot order
+   (slot 4 = top); hide lines with timer 0. Icon `0xfd` = info, `0xfc` = arrow button, `0xfe` = second icon,
+   `< 0x14` = player colour mark. The 75-char tutorial chunks can be re-joined (consecutive slots from the `0xfd`/`0xfe`
+   line down to the `0xfc`/`0xff` line) and re-wrapped by pixel width.
+4. Arrow tap: write `[gd+0x2d304] = 1` (from a logic-thread hook such as `HandleInput` entry `0x524fa0`, or from the
+   host between slices) or inject a game left click at `([0x730f24] + 10, H - 10)`, only while `[0x7dfdb0] == 0x63`.
+5. Tooltip, clock and end banner can stay in the frame or be hooked the same way later (table above).
+
+### Recipe and evidence
+
+`sh tools/re-messages/run.sh OUT SECS "inject"` starts the tutorial (main menu 165 35; in game after ~3 s at 800x600;
+`START=scen` = random map). Example inject: `12000:xdump 0x700ffee0@0x414 0x8c OUT/s.bin;18000:click 196 570;21000:shot
+OUT/c.png`, then `python -I tools/re-messages/slots.py OUT/s.bin`. `tools/re-messages/lst.py ADDR N` prints the local
+objdump listing. s3run `poke` now also invalidates decoded code, so code patches take effect at once. Evidence (local,
+not committed): `scratch/re-messages/r1..r6`.
+
+Open: the chat line, its icons and the colour mark (icon `< 0x14`, drawn via `0x5fab50(0x40000)` / `0x5fac10(icon +
+0x10000)`) are STATIC only (need a two-instance MP run); the exact sprite offsets of the icons; whether other missions
+use `0x540400` (`[0x7dfdb0]` values other than 0x63).

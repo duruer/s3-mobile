@@ -140,6 +140,8 @@ pub fn run_due(engine: &mut Engine, cmds: &mut VecDeque<(u64, DebugCmd)>, now_ms
                     continue;
                 }
                 engine.machine.mem.write_bytes(addr, &bytes);
+                // Pokes may patch code (RE experiments): drop decoded instructions for the range.
+                engine.machine.invalidate_code(addr, bytes.len() as u32);
                 eprintln!("s3run: poke {addr:#x} <- {} bytes at {now_ms} ms", bytes.len());
             }
             DebugCmd::DumpAll { dir, with_mapped } => {
