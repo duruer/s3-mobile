@@ -15,8 +15,10 @@ use crate::res;
 use crate::settings::UiMode;
 
 /// Render heights of the zoom levels (index 0 = most zoomed in). Max = [`res::MAX_H`].
-/// 280 and 320 added 2026-11-08 (more zoom in; below ~280 the HUD drawn into the frame loses its icons).
-pub const LEVEL_HEIGHTS: [u32; 14] = [280, 320, 360, 400, 440, 480, 520, 560, 600, 640, 680, 720, 760, 780];
+/// 280 and 320 added 2026-11-08 (more zoom in; below ~280 the HUD drawn into the frame loses its icons); 840..1200
+/// added by res-tall (taller snapshot grid).
+pub const LEVEL_HEIGHTS: [u32; 20] =
+    [280, 320, 360, 400, 440, 480, 520, 560, 600, 640, 680, 720, 760, 780, 840, 900, 960, 1040, 1120, 1200];
 /// Default level: 600 px high (like the game's 800x600).
 pub const DEFAULT_LEVEL: u32 = 8;
 /// Lowest level in UI mode A (the original panel needs at least 480 px).
@@ -332,14 +334,17 @@ mod tests {
         // Classic mode never goes below 480.
         assert_eq!(size_for(0, 4.0 / 3.0, CLASSIC_MIN_LEVEL), (640, 480));
         // Very wide: width capped, height follows.
-        let (w, h) = size_for(13, 4.0, 0);
+        let (w, h) = size_for(level_count() - 1, 4.0, 0);
         assert_eq!(w, res::MAX_W);
-        assert_eq!(h, 640);
+        assert_eq!(h, res::MAX_W / 4);
+        // The top level is the largest size the patched game supports.
+        assert_eq!(size_for(level_count() - 1, 2316.0 / 904.0, 0), (3072, 1200));
         // Every level of a few aspects fits the snapshot grid.
         for a in [4.0 / 3.0, 16.0 / 9.0, 2229.0 / 904.0, 2176.0 / 1812.0, 3.0] {
             for l in 0..level_count() {
                 let (w, h) = size_for(l, a, 0);
-                assert!(res::grid_columns_needed(w, h) <= res::SNAP_COLS && res::grid_rows_needed(h) <= 129);
+                assert!(res::grid_columns_needed(w, h) <= res::SNAP_COLS && res::grid_rows_needed(h) < res::SNAP_ROWS);
+                assert!(res::sprite_buckets_needed(h) <= res::SPRITE_BUCKETS);
             }
         }
     }
@@ -351,7 +356,7 @@ mod tests {
         assert_eq!(pinch_level(6, 1.12, 0), 5);
         assert_eq!(pinch_level(6, 1.12f32.powi(3), 0), 3);
         assert_eq!(pinch_level(6, 1.0 / 1.12, 0), 7);
-        assert_eq!(pinch_level(6, 0.1, 0), 13);
+        assert_eq!(pinch_level(6, 0.01, 0), level_count() - 1);
         assert_eq!(pinch_level(6, 10.0, 0), 0);
         assert_eq!(pinch_level(6, 10.0, 3), 3);
     }

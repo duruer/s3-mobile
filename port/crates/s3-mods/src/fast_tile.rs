@@ -19,13 +19,13 @@
 
 use s3_cpu::{layout, Cpu, GuestMemory, EAX, ECX, EDI, EDX, ESI, ESP};
 
-use crate::fast_obj;
+use crate::{fast_obj, res};
 
 /// Loop head of the cell loop (`mov edx,[ebp-0x7c]`, target of the `jmp` at 0x4b32ca).
 pub const START: u32 = 0x004b_2e44;
 /// End of the code the native path stands for: the cell loop and the row advance (0x4b32cf..0x4b330e).
 pub const END: u32 = 0x004b_330e;
-pub const HASH: u64 = 0x4486_d940_c590_71e7;
+pub const HASH: u64 = 0xbdb2_cc00_0a03_439d; // patched code (res::code_patches)
 /// Row loop head `0x4b2e30..0x4b2e44` (`cmp ecx,[ebp-0x44]; ja 0x4b330e`, four moves), run between rows; outside
 /// the registered region, so its bytes are checked at each entry.
 pub const HEAD: (u32, u32) = (0x004b_2e30, 0x004b_2e44);
@@ -64,12 +64,12 @@ pub const OBJ_RANGES: [(u32, u32); 24] = [
     (0x004d_53b2, 0x004d_53bc),
     (0x004d_5a42, 0x004d_5a4f),
 ];
-const OBJ_HASH: u64 = 0x1db8_fad5_ad0a_7098;
+pub(crate) const OBJ_HASH: u64 = 0xd4ce_d67a_3c03_19d3; // patched code
 
 pub const MARK_START: u32 = 0x004b_277e;
 /// First instruction after the loop (`jne` at 0x4b27a5 not taken).
 pub const MARK_EXIT: u32 = 0x004b_27a7;
-pub const MARK_HASH: u64 = 0xdfba_d2b1_e6d2_c9d3;
+pub const MARK_HASH: u64 = 0xa5c3_7deb_4893_1a6b; // patched code
 
 #[inline]
 fn ok(a: u32, len: u32) -> bool {
@@ -103,9 +103,13 @@ fn ranges_hash(mem: &GuestMemory, ranges: &[(u32, u32)]) -> u64 {
     h
 }
 
-/// Cell bytes read by one iteration: `+0x500..+0x520` and the neighbours `+0x592`, `+0x4e22`, `+0x4eb2`.
+/// Cell bytes read by one iteration: `+0x500..+0x520` and the neighbours `+0x592` (3 rows down), `+0x4e22`
+/// (3 columns right) and `+0x4eb2` (3 columns right, 3 rows down); column offsets with the res patch's stride.
 const CELL_LO: u32 = 0x500;
-const CELL_LEN: u32 = 0x4eb3 - 0x500;
+const COL3: u32 = 3 * res::SNAP_COL_BYTES_NEW;
+const N_4E22: u32 = 0x502 + COL3;
+const N_4EB2: u32 = 0x502 + COL3 + 0x90;
+const CELL_LEN: u32 = N_4EB2 + 1 - 0x500;
 
 /// What one cell iteration does (decided before anything is written).
 struct Cell {
@@ -216,7 +220,7 @@ pub fn frame_tiles(cpu: &mut Cpu, mem: &mut GuestMemory, budget: u64) -> Option<
             mem.write_u32(a2, mem.read_u32(a2).wrapping_add(w2));
         }
         mem.write_u32(ebp.wrapping_sub(0x2c), c.l);
-        mem.write_u32(ebp.wrapping_sub(0x20), ecx.wrapping_add(esi.wrapping_mul(130)));
+        mem.write_u32(ebp.wrapping_sub(0x20), ecx.wrapping_add(esi.wrapping_mul(res::SNAP_ROWS)));
         cover(if c.g.is_some() { 3 } else { 4 });
         let ret = if let Some((v28, v60)) = c.g {
             mem.write_u32(ebp.wrapping_sub(0x28), v28);
@@ -272,7 +276,7 @@ fn plan_cell(
     e: u32,
     wr: ((u32, u32), (u32, u32), (u32, u32)),
 ) -> Option<Cell> {
-    let idx = r.wrapping_add(i.wrapping_mul(130));
+    let idx = r.wrapping_add(i.wrapping_mul(res::SNAP_ROWS));
     let cell = snap.wrapping_add(idx.wrapping_mul(48));
     let cr = (cell.wrapping_add(CELL_LO), CELL_LEN);
     if !ok(cr.0, cr.1) || !disjoint(cr, wr.0) || !disjoint(cr, wr.1) || !disjoint(cr, wr.2) {
@@ -333,9 +337,9 @@ fn plan_cell(
             n += 2;
             if b(0x502) < 0x10 {
                 n += 2;
-                if b(0x4eb2) < 0x10 {
+                if b(N_4EB2) < 0x10 {
                     n += 2;
-                    if b(0x4e22) < 0x10 {
+                    if b(N_4E22) < 0x10 {
                         n += 2;
                         if b(0x592) < 0x10 {
                             n += 3; // 0x4b301d
@@ -424,14 +428,14 @@ pub fn land_mark(cpu: &mut Cpu, mem: &mut GuestMemory, budget: u64) -> Option<u6
         };
         done += n;
         last = Some((a, edi, edx));
-        a = a.wrapping_add(0x1860);
+        a = a.wrapping_add(res::SNAP_COL_BYTES_NEW);
         edi = edi.wrapping_sub(1);
         if edi == 0 {
             break;
         }
     }
     let (a0, e0, edx) = last?;
-    cpu.alu_add(a0, 0x1860, 0, 4);
+    cpu.alu_add(a0, res::SNAP_COL_BYTES_NEW, 0, 4);
     cpu.alu_dec(e0, 4);
     cpu.regs[EAX] = a;
     cpu.regs[EDI] = edi;

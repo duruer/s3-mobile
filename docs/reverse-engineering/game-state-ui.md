@@ -26,7 +26,7 @@ Names used below:
 | Center camera on a tile | `0x51b560` thiscall gd, `(x, y)` stdcall (`ret 8`); clamps itself | STATIC (used by minimap click, hotkeys) |
 | Scroll step | arrow keys: +-40 px (`0x525977..`) | VERIFIED (Up: y `0x5e7 -> 0x5bf`) |
 | Screen layout per resolution | globals `0x730f08..0x730f40`, set by `0x4c6d70(resIndex)` (table below) | VERIFIED (all three) |
-| Bigger map view ("zoom out") | switch to 800x600 / 1024x768 at runtime: F2 / F3 (F1 = 640x480), or registry `Resolution` 1 / 2; the port runs any size up to 2560x780 ([resolution-zoom.md](../porting/resolution-zoom.md), section "Resolution internals" below) | VERIFIED |
+| Bigger map view ("zoom out") | switch to 800x600 / 1024x768 at runtime: F2 / F3 (F1 = 640x480), or registry `Resolution` 1 / 2; the port runs any size up to 3200x1200 ([resolution-zoom.md](../porting/resolution-zoom.md), section "Resolution internals" below) | VERIFIED |
 | Panel page | `[gd+0x2d284]`: 1 build, 2 goods, 3 settlers, 4 building selected, 5 units selected, 7 Save/Quit menu, 8 messages, 9 paused | VERIFIED (1, 2, 3, 7, 9; 4/5 from part 1) |
 | Build category / slot / type | `[gd+0x2d288]` cat 1..4, `[gd+0x2d28c]` list slot (0 = none), `[gd+0x2d2f0]` building type | VERIFIED |
 | Start build placement for type T | write page 1, cat, slot, type T, then `[gd+0x2d27c] = 1`; the next map left-click places a site | VERIFIED (site count 6 -> 7) |

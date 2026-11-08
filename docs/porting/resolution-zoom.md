@@ -2,10 +2,12 @@
 
 Status: implemented 2026-11-05 (agent `res-zoom`), desktop-verified (`s3run`, screenshots read), MP two-peer hash
 IDENTICAL with different zoom levels per peer. Not yet tried on the phone (Verify phase).
+**res-tall (2026-11-08)**: maximum raised from 2560x780 to **3200x1200** (row stride of the snapshot grid patched, sprite
+lists enlarged), see "Taller views (res-tall)" below.
 
 Goal (user feedback 2026-11-05): use the whole phone screen like Settlers United (no 4:3 letterbox) and zoom in the
 game (pinch, both UI modes, independent of the HUD). The original GOG S3.EXE only knows 640x480, 800x600 and
-1024x768 (F1-F3). The port now runs the game at **any size from 480x360 up to 2560x780** (width a multiple of 8) and
+1024x768 (F1-F3). The port now runs the game at **any size from 480x360 up to 3200x1200** (width a multiple of 8) and
 uses the render size as the zoom: a smaller size shows less map with bigger pixels, the frontend scales the frame
 to the screen.
 
@@ -18,7 +20,7 @@ pinch hook in `touch.rs`. RE details: [game-state-ui.md](../reverse-engineering/
 
 | | |
 | --- | --- |
-| Zoom levels | 12 render heights: 360, 400, 440, 480, 520, 560, 600 (default), 640, 680, 720, 760, 780. Width = height x window aspect (display mode "Native wide", "Fill", "Stretch"; 4:3 in "Fit"). Phone cover screen 2229x904: 888x360 ... 1480x600 (default) ... 1776x720 ... 1920x780. 4:3: 640x480, 800x600 = the game's own sizes |
+| Zoom levels | 18 render heights: 360, 400, 440, 480, 520, 560, 600 (default), 640, 680, 720, 760, 780, 840, 900, 960, 1040, 1120, 1200 (the last six since res-tall; phone 2316x904: up to 3072x1200). Width = height x window aspect (display mode "Native wide", "Fill", "Stretch"; 4:3 in "Fit"). Phone cover screen 2229x904: 888x360 ... 1480x600 (default) ... 1776x720 ... 1920x780. 4:3: 640x480, 800x600 = the game's own sizes |
 | Pinch | both UI modes, continuous: fingers apart = zoom in (one level per factor 1.12 of finger distance), the map point under the fingers stays in place. One switch at a time (the next one when the game finished the previous one, at least 120 ms apart); the final level is saved at the end of the pinch |
 | Menu | Classic Touch: Menu -> "Zoom in (n/12)" / "Zoom out (n/12)". Mobile HUD: API for the HUD menu (`zoom::zoom_in/zoom_out/label`), wiring is hud-polish's |
 | Persisted | `mods-settings.json` `"res": {"enabled": true, "zoom_level": 6}`; `enabled: false` = the game's own sizes (F1-F3 work again) |
@@ -36,7 +38,8 @@ with `new(0xc7720)`, ctor `0x523480`): a grid of 130 rows x 130 columns at `snap
 (`0x51f990..0x51fab4`, stored at `snap+0x30/+0x34`), and because map rows are sheared the column index runs up to
 `cols + rows/2` (+3 for neighbour reads). 1024x768 already needs 126 of the 130 columns; a wide phone frame would
 write far past the grid into the fields behind it. The row stride (130) is a constant in many instructions
-(displacements like `+0x1860` = one column, `+0x30` = one row), so it stays: **height <= 780** (`rows + 3 <= 129`).
+(displacements like `+0x1860` = one column, `+0x30` = one row), so res-zoom kept it: **height <= 780**
+(`rows + 3 <= 129`). res-tall changed it to 258 (below).
 The columns are cheap to extend: only the fields **behind** the grid (`snap+0xc65c0..0xc7720`: message lines, chat,
 tooltip/object lists) are addressed with absolute offsets, at 51 code sites (snapshot dtor `0x405a50`, frame renderer
 `0x4b3314..0x4b34a2`, panel `0x4c245e`, message lines `0x4d82fc..0x4d85b2`, fill `0x51f88c..0x51f98a`, ctor
@@ -47,10 +50,64 @@ tooltip/object lists) are addressed with absolute offsets, at 51 code sites (sna
 zoom is off) so all peers have the same heap layout.
 
 Other fixed-size things checked: the on-screen hit list caps at 10000 entries (`0x4d8240`), the sprite lists at
-4000/8000 entries with 250 row buckets (`0x4d7c90`, `0x4d7e10`): fine up to 780 rows of pixels. The frame renderer's
+4000/8000 entries with 250 row buckets (`0x4d7c90`, `0x4d7e10`; CORRECTED by res-tall: the bucket is `2*row` of the
+snapshot, so 250 buckets only reach row 124 - at 780 the objects of the last row were already dropped; now 360
+buckets). The frame renderer's
 ambient-sound statistics only look at the left 640 px (`local_1c/0x28 < 16`, `< 0x259`), harmless. The text DIB
-(`0x4a78f0`, 1 bpp) and the landscape ring buffer (`0x54bec0`) are made 2560x780 (+ margins `[0x730f44]` = 32,
+(`0x4a78f0`, 1 bpp) and the landscape ring buffer (`0x54bec0`) are made `MAX_W x MAX_H` (+ margins `[0x730f44]` = 32,
 `[0x730f48]` = 102) by hooks, so no size ever overflows them.
+
+## Taller views (res-tall, 2026-11-08)
+
+Max size now **3200x1200** (`res::MAX_W/MAX_H`; zoom levels up to 1200 high). All in `res::code_patches()`, applied
+by `res::patch_snapshot` with every GOG patch set (all-or-nothing check of the original bytes first):
+
+| What | Change | Sites |
+| --- | --- | --- |
+| Snapshot grid row stride | 130 -> **258** (`res::SNAP_ROWS`). The index `row + col*130` is always compiled as `mov r,col; shl r,6; add r,col; lea x,[row+r*2]`; `shl r,7` makes it `col*258` with the same instruction length | 10 `shl` imm8 6 -> 7 (`STRIDE_SHL_SITES`): `0x4a99c5` (object drawer `0x4a9960`), `0x4b2e7a`, `0x4b2fa3` (frame renderer), `0x4c8603` (settler drawer `0x4c85a0`), `0x4d309a` (`0x4d3050`), `0x4d5a95` (`0x4d5a50`), `0x52240f`, `0x522f66` (fill), `0x54ce80`, `0x54cef8` (rasteriser) |
+| Column steps / neighbours | `n*0x1860` -> `n*0x3060` in displacements and immediates; `3*130`, `130` -> `3*258`, `258` | 30 `STRIDE_DISP_SITES` (renderer pre-pass `add eax,0x1860` `0x4b279f`, renderer neighbours `+0x4eb2`/`+0x4e22` `0x4b2ff6`/`0x4b3003`, the 6-direction neighbour heights of `0x4c85a0` (`-0x1360`, `-0x1390`, `+0x1d60`, `+0x1d90`, three copies), 15 next-column corner reads of the rasteriser `0x54ce95..0x54d347`), 2 `STRIDE_INDEX_SITES` (`0x4b275b`, `0x4b27af`) |
+| Grid columns | 256 -> **320** (`SNAP_COLS`; 3200x1200 needs 300) | tail move as before; 4 tail sites the generator had missed: `0x51f1f8` `mov eax,0xc636c` (= tail `0xc65c0` minus the logic-object offset `0x254` it is added to later) and the fill's unwind funclets `0x642cdc/0x642ceb/0x642d02` (above the generator's `0x630000` limit) |
+| Sprite lists | bucket = `2*row` (+-2) of the snapshot row, the game has 250 buckets (rows >= 125 were not drawn). The six bucket arrays (heads / counts of lists 1-3 at `gfx+0x13a8c, 0x13e74, 0x4ad60, 0x4b148, 0x5edb4, 0x5f19c`) move behind the `gfx` object, **360 buckets** (`SPRITE_BUCKETS`, needs `2*rows+4`) | 62 array references, bounds `cmp ...,0xfa` (6 inserts `0x4d7c90..0x4d8184`, init `0x4b2d6c`, draw loops `0x4b34d3`, `0x4b3565`), first free node `0xfa`/`0xfb` (`0x4b2da7/b1/bb`: nodes 0..249 are the bucket tails), allocation `push 0x5f700` (`0x42c6b9`) + 6*360*4 |
+
+How the sites were found: a temporary memory-access trace in the interpreter (effective address of every load/store
+inside the three snapshot buffers, per instruction; branch commit `0956d16`, removed again) listed the 210
+instructions that touch the grid in a HUD game (7 functions), then each function was reviewed completely in the
+objdump listing (`tools/res-tall/x130.py` finds the `x130` idiom, `stride_scan.py` candidate constants, `sites.py` the
+byte offsets). There are **three** snapshots (the logic fills one while the renderer draws another), all from the one
+allocation site. Fixed-size things re-checked for big views: hit list 10000 (`0x7ade12`, full = objects not clickable),
+sprite node pools 4000/8000/4000 (full = sprites dropped; `S3_RES_TRACE` prints the fill level every 300 frames:
+3072x1200 HUD start scene 728/751/627 nodes, 22 hits), the snapshot's per-player arrays (`snap+0x294..0x2e4`, not
+per row), text DIB and landscape buffer (hooks, follow `MAX_*`). The native fast paths (`fast_land/obj/snap/tile.rs`)
+use `res::SNAP_ROWS` and hash the *patched* code (`fast_tests::fast_path_hashes_match_patched_code`; the
+differential tests load the patched code via `res::apply_code_patches`).
+
+FPS (desktop Windows ARM64, HUD, window 2316x904, `S3_RES` forced, `S3_FPS_CAP=0`, EcoQoS off via
+`tools/perf/fast.ps1`, native fast paths on, no JIT, random-map start scene, median of samples 62-85 s;
+`tools/res-tall/fps_sizes.ps1`):
+
+| Render size | Pixels | fps |
+| --- | --- | --- |
+| 1536x600 (default level on the phone) | 0.92 M | 440 |
+| 2000x780 (old max) | 1.56 M | 345 |
+| 2304x900 | 2.07 M | 274 |
+| 2664x1040 | 2.77 M | 235 |
+| 3072x1200 (new max) | 3.69 M | 176 |
+
+Cost of the patch at the same size (the display mode is now the 3072x1200 top level instead of 2000x780): within
+the run-to-run noise of the random map - 1536x600 two runs each: res-tall 440 / 409, main before it 478 / 332;
+2000x780 345 vs 358. The start scene is light (small explored island); a busy late game costs more per frame. HYPOTHESIS (not measured): on
+the phone the top levels will be well below 60 fps (verify-fps1 measured 42-60 fps at 1848x720 there).
+
+Memory: each snapshot grows from 1.6 MB to 4.0 MB (x3), the display mode is the largest zoom size of the aspect
+(phone 3072x1200 surfaces) and the landscape buffer 3232x1302: `s3det` guest memory 64.9 MB -> 81.3 MB.
+
+Verified (desktop, `scratch/res-tall/`, local only): HUD 3072x1200 (`S3_RES`) full landscape and objects to the
+bottom rows, right and left screen edge (`c_down/c_right/c_left.png`); Classic 4:3 pinch 800x600 -> 1600x1200 and
+back (`mp1/host-60.png`). `s3det` 90 000 vms: two runs IDENTICAL and `S3_FAST=0` IDENTICAL to the fast-path run
+(91 hash lines, `final insns=12330027314`); the hashes differ from before the patch from the first second on (the
+`mem` hash covers the patched code bytes, and the heap is laid out differently) - same for every peer of this
+version, but peers of different port versions cannot play together. MP two peers (`mp-local-test.sh`, Artokia,
+both pinching through 640x480 ... 1600x1200 at different times): **IDENTICAL**, 1226 ticks.
 
 ## How a size change works
 
@@ -142,8 +199,7 @@ change) about 1-2 s on the desktop (display re-setup).
 - HUD menu zoom buttons (hud-polish, API ready). The HUD restores the panel with the original map width of the
   variant (`ui_hud_game::original_layout`); `res::classic_layout(m)` gives the right one for custom widths (the
   per-frame `fix_map_width` in res.rs corrects it one frame later meanwhile).
-- Heights above 780 need the row stride (130) changed in all grid accesses (~45 instruction sites incl. neighbour
-  displacements); not attempted.
+- ~~Heights above 780 need the row stride (130) changed~~ done by res-tall (up to 3200x1200).
 - Classic mode: paint the area below the panel art (heights between the variants).
 - EnumDisplayModes still lists only the three original sizes (the game does not need the custom ones listed).
 

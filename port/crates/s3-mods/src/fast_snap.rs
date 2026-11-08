@@ -16,7 +16,7 @@ use s3_cpu::{layout, Cpu, GuestMemory, EAX, EBP, EBX, ECX, EDI, EDX, ESI, ESP};
 pub const START: u32 = 0x0052_2219;
 /// First instruction after the loop (`jle` not taken at `0x523038`).
 pub const EXIT: u32 = 0x0052_303e;
-pub const HASH: u64 = 0xe6ca_74bf_1298_2e82;
+pub const HASH: u64 = 0xbcb4_31af_a8d6_444c; // patched code (res::code_patches)
 /// Guest instructions per common-path iteration (blocks 0x522219 5, 0x52222b 5, 0x522240 2, 0x522248 2,
 /// 0x522250 2, 0x5223b9 3, 0x5223f5 45, 0x5224f2 21, 0x52254e 13, 0x5225d0 10, 0x522b23 6, 0x522ed2 3, 0x522f33 7,
 /// 0x523020 9).
@@ -76,7 +76,7 @@ pub fn snap_tiles(cpu: &mut Cpu, mem: &mut GuestMemory, budget: u64) -> Option<u
         }
         let k = mem.read_u32(s.wrapping_add(0x34));
         let base = mem.read_u32(s.wrapping_add(0x20));
-        let idx = base.wrapping_add(k.wrapping_mul(130));
+        let idx = base.wrapping_add(k.wrapping_mul(crate::res::SNAP_ROWS));
         let esi = idx.wrapping_mul(48);
         let snap = mem.read_u32(ebp.wrapping_add(0x3d0));
         let w = snap.wrapping_add(esi).wrapping_add(0x500);

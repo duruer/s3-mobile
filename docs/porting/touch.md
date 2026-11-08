@@ -37,7 +37,7 @@ thread, so desktop tests exercise exactly the Android code path.
 | Two-finger drag | camera follows the centroid, inertia | – |
 | Long press | hover only (mouse move = tooltips after ~10 logic ticks). A white ring grows from 150 ms and stays full while held | hover |
 | Long press, then drag | **box selection** (left drag from the press point); green box drawn by us, the game draws its own | left drag |
-| Pinch in / out | **zoom** = render resolution levels (res-zoom, [resolution-zoom.md](resolution-zoom.md)): continuous, one level per finger-distance factor 1.12, the map point under the fingers stays; levels 360..780 px high at the window aspect. With the custom resolution off: the old F1/F2/F3 step (640x480 <-> 800x600 <-> 1024x768, threshold scale 0.75 / 1.33) | – |
+| Pinch in / out | **zoom** = render resolution levels (res-zoom, [resolution-zoom.md](resolution-zoom.md)): continuous, one level per finger-distance factor 1.12, the map point under the fingers stays; levels 360..1200 px high at the window aspect. With the custom resolution off: the old F1/F2/F3 step (640x480 <-> 800x600 <-> 1024x768, threshold scale 0.75 / 1.33) | – |
 
 **No long press is ever a right click.** The original game ignores right-ups held for 15 or more game steps
 (`0x53437d`), so every synthetic right click is a quick down/up. (The `RMB` letterbox button was removed 2026-11-07; if

@@ -15,7 +15,7 @@ use s3_cpu::{code_hash, layout, Cpu, GuestMemory, EAX, ECX, EDX, ESP};
 pub const START: u32 = 0x004d_3050;
 /// End of the function's code (`ret 0x18` at 0x4d5a4c is its last instruction).
 pub const END: u32 = 0x004d_5a4f;
-pub const HASH: u64 = 0x57ce_2335_d031_1e1d;
+pub const HASH: u64 = 0x9d97_378a_b979_69ee; // patched code (res::code_patches)
 /// The 4-instruction setter `mov eax,ecx; mov ecx,[esp+4]; mov [eax],ecx; ret 4` it calls four times.
 const SETTER: u32 = 0x005f_c540;
 const SETTER_LEN: u32 = 11;
@@ -53,7 +53,7 @@ pub fn plan(mem: &GuestMemory, e: u32, a1: u32, a2: u32, a3: u32, a6: u32) -> Op
     if a6 != 0 {
         return None; // object type
     }
-    let cell = a1.wrapping_add(a3.wrapping_add(a2.wrapping_mul(130)).wrapping_mul(48));
+    let cell = a1.wrapping_add(a3.wrapping_add(a2.wrapping_mul(crate::res::SNAP_ROWS)).wrapping_mul(48));
     if !ok(cell.wrapping_add(0x502), 0xa) || !ok(a1.wrapping_add(0x60), 4) {
         return None;
     }

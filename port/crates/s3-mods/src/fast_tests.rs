@@ -10,7 +10,7 @@
 
 use s3_cpu::{Cpu, GuestMemory, NativeFn, EAX, EBP, EBX, ECX, EDI, EDX, ESI, ESP};
 
-use crate::{fast_blit, fast_land, fast_land_rows, fast_obj, fast_snap, fast_sprite, fast_tile};
+use crate::{fast_blit, fast_land, fast_land_rows, fast_obj, fast_snap, fast_sprite, fast_tile, res};
 
 fn exe_bytes() -> Option<Vec<u8>> {
     let p = std::env::var_os("S3_EXE").map(std::path::PathBuf::from).unwrap_or_else(|| {
@@ -34,6 +34,38 @@ fn load_image(mem: &mut GuestMemory, b: &[u8]) {
             mem.write_bytes(base + va, &b[raw..raw + rsize]);
         }
     }
+    // The game always runs with the resolution patch (snapshot row stride, sprite buckets), and the fast paths
+    // stand for the patched code.
+    crate::res::apply_code_patches(mem).expect("res code patch");
+}
+
+/// Every fast path's hash matches the patched code (`res::code_patches`), so none is silently disabled.
+#[test]
+fn fast_path_hashes_match_patched_code() {
+    let Some(exe) = exe_bytes() else {
+        eprintln!("fast_path_hashes_match_patched_code: S3.EXE not found, skipped");
+        return;
+    };
+    let mut mem = GuestMemory::new().unwrap();
+    load_image(&mut mem, &exe);
+    let mut bad = Vec::new();
+    for (start, _end, b) in crate::fast::gog_blocks() {
+        let h = s3_cpu::code_hash(mem.slice(start, b.len as usize));
+        if h != b.hash {
+            bad.push(format!("{} {start:#x}: {h:#x}", b.name));
+        }
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &(a, e) in &fast_tile::OBJ_RANGES {
+        for &x in mem.slice(a, (e - a) as usize) {
+            h ^= x as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+    }
+    if h != fast_tile::OBJ_HASH {
+        bad.push(format!("OBJ_HASH: {h:#x}"));
+    }
+    assert!(bad.is_empty(), "hash mismatch (patched code): {bad:?}");
 }
 
 struct Rng(u64);
@@ -315,7 +347,7 @@ fn differential_obj_empty() {
         put(&mut stack, base + 0x418, if r.below(15) == 0 { 1 + r.below(300) } else { 0 });
         let mut snap = random_bytes(&mut r, 0x10_0000.min(0x60 + 8));
         put(&mut snap, 0x60, [0, 1, 2, 3, 4, 5, 0x10][r.below(7) as usize]);
-        let cell = ((a3 + a2 * 130) * 48) as usize;
+        let cell = ((a3 + a2 * res::SNAP_ROWS) * 48) as usize;
         let mut cellb = random_bytes(&mut r, 0x10);
         cellb[2] = [0, 1, 2, 5, 7, 8, 0x50, 0x51, 0xff, 3, 4, 6][r.below(12) as usize];
         if r.below(2) == 0 {
@@ -519,7 +551,7 @@ fn obj_empty_path_hashed() {
                     mem.write_u32(e + 0xc, 5);
                     mem.write_u32(e + 0x18, 0);
                     mem.write_u32(SNAP + 0x60, mode);
-                    let cell = SNAP + (5 + 3 * 130) * 48;
+                    let cell = SNAP + (5 + 3 * res::SNAP_ROWS) * 48;
                     mem.write_u8(cell + 0x502, land);
                     mem.write_u8(cell + 0x505, b505);
                     mem.write_u16(cell + 0x50a, v50a);
@@ -562,7 +594,7 @@ fn differential_frame_tiles() {
     };
     const SNAP: u32 = 0x3600_0000;
     const REND: u32 = 0x3700_0000;
-    const SNAP_LEN: u32 = 0x8_0000;
+    const SNAP_LEN: u32 = 0x10_0000;
     let mut r = Rng(0xf4a3_e000_004b_2e44);
     let mut ran = 0;
     let mut longest = 0u64;
@@ -603,7 +635,7 @@ fn differential_frame_tiles() {
         let lands = [0u8, 0, 1, 2, 5, 7, 8, 0x0f, 0x10, 0x1c, 0x20, 0x50, 0x51, 0xff];
         for i in 0..60u32 {
             for rr in 0..rows + 6 {
-                let c = (0x500 + (rr + i * 130) * 48) as usize;
+                let c = (0x500 + (rr + i * res::SNAP_ROWS) * 48) as usize;
                 if c + 0x30 > snap.len() {
                     continue;
                 }
@@ -666,14 +698,14 @@ fn differential_land_mark() {
         let mut regs: [u32; 8] = std::array::from_fn(|_| r.next());
         regs[EAX] = SNAP + 0x502 + 48 * r.below(130);
         regs[EDI] = 1 + r.below(60);
-        let mut snap = random_bytes(&mut r, 0x6_0000);
+        let mut snap = random_bytes(&mut r, 0x10_0000);
         for b in snap.iter_mut() {
             if r.below(4) == 0 {
                 *b = [0x1c, 0x10, 0, 4][r.below(4) as usize];
             }
         }
         let writes = vec![(SNAP, snap)];
-        let regions = [(SNAP, 0x6_0000)];
+        let regions = [(SNAP, 0x10_0000)];
         if check_in(&exe, fast_tile::land_mark, fast_tile::MARK_START, regs, eflags, &writes, budget, "land_mark", &regions) {
             ran += 1;
         }

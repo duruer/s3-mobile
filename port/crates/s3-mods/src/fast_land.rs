@@ -11,10 +11,18 @@
 
 use s3_cpu::{layout, Cpu, GuestMemory, EAX, EBP, EBX, ECX, EDI, EDX, ESI};
 
+use crate::res;
+
 pub const START: u32 = 0x0054_ce53;
 /// End of the code the native path stands for (the `jmp 0x54ce53` at 0x54e70d is its last instruction).
 pub const END: u32 = 0x0054_e712;
-pub const HASH: u64 = 0x150d_1fa0_3814_0942;
+/// FNV-1a of the code *after* the res patch (`res::code_patches`: row stride 258 in this loop).
+pub const HASH: u64 = 0x6653_2149_bbd1_c4ee;
+/// Cell offset of the same row in the next snapshot column (`0x500 + 0x1860` in the game's 130-row grid; the
+/// res patch makes the stride [`res::SNAP_ROWS`]).
+const NEXT: u32 = 0x500 + res::SNAP_COL_BYTES_NEW;
+/// Bytes read from `cell + 0x500`: up to byte `+5` of the next column's next row.
+const CELLS_LEN: u32 = NEXT + 0x36 - 0x500;
 
 #[inline]
 fn ok(a: u32, len: u32) -> bool {
@@ -53,22 +61,22 @@ pub fn land_clean(cpu: &mut Cpu, mem: &mut GuestMemory, budget: u64) -> Option<u
         }
         let phase = rd(mem, 0x5c);
         let v44 = rd(mem, 0x44);
-        let off = v48.wrapping_add(v44.wrapping_mul(130)).wrapping_mul(48);
+        let off = v48.wrapping_add(v44.wrapping_mul(res::SNAP_ROWS)).wrapping_mul(48);
         let cell = off.wrapping_add(base);
-        if !ok(cell.wrapping_add(0x500), 0x1896) || !disjoint(cell.wrapping_add(0x500), 0x1896, fr, 0xf4) {
+        if !ok(cell.wrapping_add(0x500), CELLS_LEN) || !disjoint(cell.wrapping_add(0x500), CELLS_LEN, fr, 0xf4) {
             break;
         }
         let b = |o: u32| mem.read_u8(cell.wrapping_add(o)) as u32;
         // (eax, edi, ebx) entering the min/max block 0x54cf66, guest instructions so far
         let (eax, edi, ebx, mut n) = if phase == 1 {
-            let (h1, h0, h2) = (b(0x1d90), b(0x500), b(0x1d60));
-            if b(0x505) & 0x80 != 0 || b(0x1d95) & 0x80 != 0 || b(0x1d65) & 0x80 != 0 {
+            let (h1, h0, h2) = (b(NEXT + 0x30), b(0x500), b(NEXT));
+            if b(0x505) & 0x80 != 0 || b(NEXT + 0x35) & 0x80 != 0 || b(NEXT + 5) & 0x80 != 0 {
                 break;
             }
             (v98.wrapping_sub(h1).wrapping_add(8), v98.wrapping_sub(h0), v98.wrapping_sub(h2), 4 + 7 + 31u64)
         } else {
-            let (h0, h1, h3) = (b(0x500), b(0x1d90), b(0x530));
-            if b(0x505) & 0x80 != 0 || b(0x1d95) & 0x80 != 0 || b(0x535) & 0x80 != 0 {
+            let (h0, h1, h3) = (b(0x500), b(NEXT + 0x30), b(0x530));
+            if b(0x505) & 0x80 != 0 || b(NEXT + 0x35) & 0x80 != 0 || b(0x535) & 0x80 != 0 {
                 break;
             }
             (v98.wrapping_sub(h0), v98.wrapping_sub(h3).wrapping_add(8), v98.wrapping_sub(h1).wrapping_add(8), 4 + 7 + 33u64)

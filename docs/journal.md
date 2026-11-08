@@ -2,6 +2,18 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — res-tall: zoom out to 3200x1200
+
+Raised the render size limit from 2560x780 to 3200x1200 ([resolution-zoom.md](porting/resolution-zoom.md), "Taller
+views"). Found every grid access with a temporary per-instruction memory-access trace of the three render snapshots
+(there are three: logic fills one, renderer draws another), then reviewed the 7 functions: the row stride 130 is
+always `(col<<6 + col)*2` -> `shl 7` gives 258 rows; 30 column displacements/steps, 2 index immediates; 4 snapshot
+tail references the res-zoom generator had missed (`0x51f1f8`, unwind funclets `0x642cdc..`). Learned: the sprite
+lists bucket objects by `2*row` with 250 buckets, so rows >= 125 (bottom of a 780-high view) lost their objects
+already; buckets moved behind the `gfx` object, 360 of them. Fast paths follow the stride and hash the patched code.
+s3det deterministic (fast = no-fast), MP two peers at different zooms IDENTICAL. Desktop HUD uncapped: 1536x600 440, 2000x780 345, 3072x1200 176 fps
+(start scene).
+
 ## 2026-11-07 — pinch: presentation zoom tried and reverted
 
 Tried scaling the shown frame while pinching and switching the render size once at release (desktop 2-5 ->
