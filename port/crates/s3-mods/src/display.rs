@@ -346,7 +346,7 @@ impl Viewport {
     pub fn for_frame_split(mode: DisplayMode, pixels: &[u16], game_w: u32, game_h: u32, win_w: u32, win_h: u32, panel: Option<PanelSplit>) -> Viewport {
         if matches!(mode, DisplayMode::NativeWide | DisplayMode::Fill) {
             if let Some(l) = menu_layout::detect(pixels, game_w, game_h) {
-                return Viewport::with_layout(mode, l, win_w, win_h);
+                return Viewport::with_layout(mode, menu_layout::choose(l, win_w, win_h), win_w, win_h);
             }
         }
         Viewport::new_split(mode, game_w, game_h, win_w, win_h, panel)

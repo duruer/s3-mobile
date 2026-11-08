@@ -126,6 +126,79 @@ pub fn detect(px: &[u16], w: u32, h: u32) -> Option<&'static MenuLayout> {
     LAYOUTS.iter().copied().find(|l| l.matches(px, w, h))
 }
 
+/// Prefer the whole original screen ([`full_variant`]) when it can be shown at least this big relative to the
+/// re-arranged layout (window px per game px). Tablets (4:3, 16:10), a foldable's inner screen (~1.2:1) and 16:9
+/// phones then show every element of the menu; very wide screens (Fold cover ~2.56:1, 20:9) keep the layout,
+/// which drops decoration to make the buttons bigger.
+pub const FULL_PREFER: f32 = 0.8;
+
+/// The layout to show for a detected screen in a `win_w` x `win_h` window: the re-arranged layout, or the whole
+/// frame (all elements) when the window's shape lets it be nearly as big ([`FULL_PREFER`]). Responsive: called for
+/// every frame with the current window, so folding / unfolding / resizing switches at once.
+pub fn choose(l: &'static MenuLayout, win_w: u32, win_h: u32) -> &'static MenuLayout {
+    let Some(full) = full_variant(l) else { return l };
+    let s_layout = canvas_placement(l, win_w, win_h).2;
+    let s_full = canvas_placement(full, win_w, win_h).2;
+    if s_full >= FULL_PREFER * s_layout {
+        full
+    } else {
+        l
+    }
+}
+
+/// The whole-frame variant of a layout (same detection, background colour behind the bars), `None` when the
+/// layout already shows the whole frame.
+pub fn full_variant(l: &MenuLayout) -> Option<&'static MenuLayout> {
+    if l.canvas == l.frame && l.pieces.len() == 1 {
+        return None;
+    }
+    FULL_LAYOUTS.iter().copied().find(|f| f.name.strip_suffix("-full") == Some(l.name))
+}
+
+const FULL_800: [Piece; 1] = [Piece { src: [0, 0, 800, 600], at: [0, 0] }];
+
+macro_rules! full {
+    ($stat:ident, $base:ident, $name:literal) => {
+        pub static $stat: MenuLayout = MenuLayout {
+            name: $name,
+            frame: $base.frame,
+            canvas: $base.frame,
+            background: match $base.background {
+                Background::Color(c) => Background::Color(c),
+                Background::Stretch(_) => STONE_BG,
+            },
+            pieces: &FULL_800,
+            neutral: $base.neutral,
+            probes: &[],
+        };
+    };
+}
+
+full!(MAIN_MENU_FULL, MAIN_MENU, "main-menu-full");
+full!(CHOOSE_RACE_FULL, CHOOSE_RACE, "choose-race-full");
+full!(CHOOSE_RACE_MCD_FULL, CHOOSE_RACE_MCD, "choose-race-mcd-full");
+full!(CHOOSE_RACE_AMAZON_FULL, CHOOSE_RACE_AMAZON, "choose-race-amazon-full");
+full!(MAP_PICKER_FULL, MAP_PICKER, "map-picker-full");
+full!(GAME_SETUP_FULL, GAME_SETUP, "game-setup-full");
+full!(PLAYERS_FULL, PLAYERS, "players-full");
+full!(LAN_GAME_FULL, LAN_GAME, "lan-game-full");
+full!(LOAD_GAME_FULL, LOAD_GAME, "load-game-full");
+full!(BRIEFING_FULL, BRIEFING, "briefing-full");
+
+/// Whole-frame variants (not detected themselves; see [`choose`]).
+pub static FULL_LAYOUTS: &[&MenuLayout] = &[
+    &MAIN_MENU_FULL,
+    &CHOOSE_RACE_FULL,
+    &CHOOSE_RACE_MCD_FULL,
+    &CHOOSE_RACE_AMAZON_FULL,
+    &MAP_PICKER_FULL,
+    &GAME_SETUP_FULL,
+    &PLAYERS_FULL,
+    &LAN_GAME_FULL,
+    &LOAD_GAME_FULL,
+    &BRIEFING_FULL,
+];
+
 /// Canvas placement in a window: (origin x, origin y, scale window px per canvas unit).
 pub fn canvas_placement(l: &MenuLayout, win_w: u32, win_h: u32) -> (f32, f32, f32) {
     let (cw, ch) = (l.canvas[0] as f32, l.canvas[1] as f32);
@@ -485,6 +558,27 @@ mod tests {
         }
         assert_eq!(detect(&f, 800, 600).map(|l| l.name), Some("main-menu"));
         assert!(detect(&f, 640, 480).is_none());
+    }
+
+    #[test]
+    fn responsive_choice() {
+        // Fold4 cover (2.56:1): the re-arranged layout; inner screen, 4:3 / 16:10 tablets, 16:9: the whole menu.
+        assert_eq!(choose(&MAIN_MENU, 2316, 904).name, "main-menu");
+        assert_eq!(choose(&MAIN_MENU, 2176, 1812).name, "main-menu-full");
+        assert_eq!(choose(&MAIN_MENU, 2048, 1536).name, "main-menu-full");
+        assert_eq!(choose(&MAIN_MENU, 2560, 1600).name, "main-menu-full");
+        assert_eq!(choose(&MAIN_MENU, 1920, 1080).name, "main-menu-full");
+        assert_eq!(choose(&MAIN_MENU, 2400, 1080).name, "main-menu");
+        // Every layout has a full variant; the loading screen is already whole.
+        for l in LAYOUTS {
+            if l.name != "loading" {
+                assert!(full_variant(l).is_some(), "{}", l.name);
+            }
+        }
+        assert!(full_variant(&LOADING).is_none());
+        // The full variant maps 1:1.
+        let f = full_variant(&MAIN_MENU).unwrap();
+        assert_eq!(f.game_to_canvas(400.0, 450.0), Some((400.0, 450.0)));
     }
 
     #[test]

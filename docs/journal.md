@@ -2,6 +2,13 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Responsive menu layouts (tablets, foldable inner screen)
+
+- Menu screens now show the whole original screen (all elements, bars in the menu's colour) when the window's
+  shape allows it nearly as big as the re-arranged layout (`menu_layout::choose`, 0.8 rule), else the layout.
+  Verified: previews at 2316x904 / 2400x1080 (layout) and 1920x1080 / 2560x1600 / 2176x1812 (whole menu); Fold4
+  inner screen shows the full main menu. [menu-layout.md](porting/menu-layout.md).
+
 ## 2026-11-08 — AI upscaling filter (Anime4K CNN)
 
 - New display filter "AI (Anime4K)": Anime4K v3.2 CNN x2 (S) converted to GLSL ES 3.00 (`tools/anime4k_to_gles.py`

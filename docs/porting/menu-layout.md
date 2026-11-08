@@ -30,6 +30,27 @@ S3.EXE draws every menu as a fixed **800x600** (4:3) frame. The test phone (Gala
   `render_xrgb` (nearest).
 - Presentation only: guest memory is never touched (lockstep MP unaffected).
 
+## Responsive: whole screen when it fits (2026-11-08)
+
+The layouts drop decoration (helmets, logos, version) so the buttons are big on a ~2.56:1 phone. On other
+shapes that is not needed. Every layout has a whole-frame variant (`<name>-full`, `menu_layout::FULL_LAYOUTS`:
+the 800x600 frame 1:1, the bars filled with the screen's background colour, same detection). For every frame the
+viewport picks with the current window size (`menu_layout::choose`): the whole frame when it can be shown at
+least `FULL_PREFER` = 0.8 times as big as the re-arranged layout, else the layout. So it follows folding,
+split screen and resizing at once.
+
+| Window | Shape | Main menu |
+| --- | --- | --- |
+| Fold4 cover 2316x904 | 2.56:1 | layout (2.69 vs 1.51 px per game px) |
+| 20:9 phone 2400x1080 | 2.22:1 | layout |
+| 16:9 1920x1080 | 1.78:1 | whole menu (1.80 vs 2.23) |
+| 16:10 tablet 2560x1600 | 1.6:1 | whole menu |
+| 4:3 tablet 2048x1536 | 1.33:1 | whole menu |
+| Fold4 inner 2176x1812 | 1.2:1 | whole menu (VERIFIED on the phone) |
+
+`s3run --layout-preview frame.png out.png WxH` shows the choice for a window size. Tested by
+`menu_layout::tests::responsive_choice`.
+
 ## Screens (GOG S3.EXE 1.60)
 
 | Layout | Screen | What it does |
