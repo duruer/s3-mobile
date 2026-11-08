@@ -175,6 +175,21 @@ interpolation, mono duplicated) and pushed into a lock-free SPSC ring (1 s). The
 samples. `audio_queued_frames` reports the ring fill in the caller's rate for mixer pacing. An AAudio error
 callback (device change) reopens the stream. If AAudio cannot open, the app runs silent.
 
+## Foldables, resizing (2026-11-08)
+
+The activity is `android:resizeableActivity="true"`. With `false`, unfolding a Galaxy Z Fold4 while the game ran
+kept the app in **size compatibility mode**: still at the cover screen's size, scaled and letterboxed on the inner
+screen (`dumpsys activity activities`: `mSizeCompatScale=0.93955094 mSizeCompatBounds=Rect(0, 482 - 2176, 1331)`).
+Now the window follows the display: `MainEvent::WindowResized` / `ConfigChanged` (handled without a restart,
+`configChanges` lists screenSize etc.) -> `Presenter::set_window` -> new EGL surface size -> viewport, window
+layer and zoom aspect follow (`zoom::aspect` from the published window size). Verified on the Fold4: inner screen
+2176x1812 full screen in game (120 fps); `wm size 1300x2176` while in game -> the frame re-laid out for 2176x1300
+at once, `wm size reset` -> back. Split screen / pop-up windows are allowed now too. Not tested: an actual
+fold/unfold while in game (needs the person; same code path), and whether Samsung's "continue apps on cover
+screen" setting keeps the app running when folding.
+The full-screen menu layouts were made for wide screens; on the near-square inner screen they are placed small
+in the middle (works, could use layouts for ~1.2:1).
+
 ## Controls
 
 Since 2026-11-05 the activity thread only reports fingers: every MotionEvent becomes raw `HostEvent::Pointer`

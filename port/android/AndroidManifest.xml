@@ -25,7 +25,7 @@
             android:label="Settlers 3 Port"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
-            android:resizeableActivity="false"
+            android:resizeableActivity="true"
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
             <meta-data android:name="android.app.lib_name" android:value="s3android" />

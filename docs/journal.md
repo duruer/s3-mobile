@@ -2,6 +2,13 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Foldable: resizeable activity
+
+- Report: unfolding the phone in game kept the old screen. Cause: `resizeableActivity="false"` -> size compat
+  mode (cover size scaled into the inner screen). Now `true`; the existing resize path (EGL surface, viewport,
+  zoom aspect) adapts at once. Verified with the inner screen and `wm size` changes in game
+  ([android.md](porting/android.md) "Foldables, resizing").
+
 ## 2026-11-08 — xBR filter, FPS center, messages under HUD sheets
 
 - New display filter "xBR (HD edges)": GPU xBR-lv2 shader (`gl::FS_XBR`) for smooth pixel-art edges at high zoom.
