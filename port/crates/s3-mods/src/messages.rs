@@ -179,6 +179,7 @@ mod tests {
     #[test]
     fn layout_constants() {
         assert_eq!(super::SNAP_MSGS - super::SNAP_CHAT, 0x18);
-        assert_eq!(super::ENTRY * 20 + super::SNAP_MSGS, 0xc6888);
+        // 20 entries of 0x1c bytes follow the chat line (only the first 5 are used).
+        assert_eq!(super::ENTRY * 20 + super::SNAP_MSGS, 0xc6908);
     }
 }
