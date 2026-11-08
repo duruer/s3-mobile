@@ -161,3 +161,10 @@ A one-finger touch that goes down within `double_tap_ms` (300 ms) of a tap near 
 drags starts the box selection at once, like a drag after a long press (`gesture.rs` `double_drag`: emits
 `LongPress` + `Pan { after_long_press: true }`). A plain drag stays a camera pan; a quick second tap stays a
 `DoubleTap`. Note: the first tap still does what a tap does (select / move order) (user request 2026-11-08).
+
+## Minimap drag (UI mode A)
+
+A one-finger drag that starts on the minimap scrolls the map, also after a long press (it used to start a box
+selection). The game jumps on a left-button press on the minimap but ignores moves with the button held, so
+`touch.rs` (`Drag::Minimap`) re-presses at the finger every 50 ms (`MINIMAP_REPRESS_MS`) and once more on release.
+Verified desktop 2316x904: the camera rectangle follows the finger for hold-drags and quick drags (2026-11-08).

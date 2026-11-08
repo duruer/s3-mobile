@@ -65,6 +65,9 @@ pub fn install(m: &mut Machine) -> Result<(), String> {
 enum Drag {
     Camera,
     Left,
+    /// Finger dragged over the minimap: the game reacts to a button press there (jump), not to moves with the
+    /// button held, so the drag re-presses at the finger every [`MINIMAP_REPRESS_MS`] (last press time).
+    Minimap(u64),
     /// Box selection from `a` to `b` (screen).
     Box { a: (f32, f32), b: (f32, f32) },
 }
@@ -109,6 +112,9 @@ fn key(m: &mut Machine, t: u64, vk: u32) {
 fn mouse(m: &mut Machine, t: u64, e: HostEvent) {
     with_fallback(m, |f| f.push(t, e));
 }
+
+/// Minimap drag: re-press interval (the game jumps on a press there, see [`Drag::Minimap`]).
+const MINIMAP_REPRESS_MS: u64 = 50;
 
 fn pt(x: f32, y: f32) -> (i32, i32) {
     (x.round() as i32, y.round() as i32)
@@ -217,7 +223,7 @@ impl ContextTouch {
 
     fn end_drag(&mut self, m: &mut Machine) {
         match self.drag.take() {
-            Some(Drag::Left) | Some(Drag::Box { .. }) => {
+            Some(Drag::Left) | Some(Drag::Box { .. }) | Some(Drag::Minimap(_)) => {
                 mouse(m, self.now, HostEvent::MouseButton { button: MouseButton::Left, down: false })
             }
             Some(Drag::Camera) => self.cam.release(self.now),
@@ -229,6 +235,43 @@ impl ContextTouch {
         let TouchEvent::Pan { phase, fingers, x, y, dx, dy, start_x, start_y, after_long_press } = *ev else {
             return ModEvent::Pass;
         };
+        // A drag that starts on the minimap is always a left-button drag there (scroll the map), also after a long
+        // press (holding the finger first used to start a box selection instead; user report 2026-11-08).
+        let on_minimap = self.in_game && {
+            let (sx, sy) = pt(start_x, start_y);
+            self.layout().region(sx, sy) == logic::Region::Minimap
+        };
+        if fingers == 1 && (on_minimap || matches!(self.drag, Some(Drag::Minimap(_)))) {
+            self.press = None;
+            let now = self.now;
+            let c = pt(x, y);
+            match phase {
+                Phase::Begin => {
+                    self.left_drag(m, Phase::Begin, (start_x, start_y), (x, y));
+                    self.drag = Some(Drag::Minimap(now));
+                }
+                Phase::Update => {
+                    if let Some(Drag::Minimap(t)) = self.drag {
+                        if now.saturating_sub(t) >= MINIMAP_REPRESS_MS {
+                            mouse(m, now, HostEvent::MouseButton { button: MouseButton::Left, down: false });
+                            mouse(m, now, HostEvent::MouseMove { x: c.0, y: c.1 });
+                            mouse(m, now, HostEvent::MouseButton { button: MouseButton::Left, down: true });
+                            self.drag = Some(Drag::Minimap(now));
+                        } else {
+                            mouse(m, now, HostEvent::MouseMove { x: c.0, y: c.1 });
+                        }
+                    }
+                }
+                Phase::End => {
+                    mouse(m, now, HostEvent::MouseButton { button: MouseButton::Left, down: false });
+                    mouse(m, now, HostEvent::MouseMove { x: c.0, y: c.1 });
+                    mouse(m, now, HostEvent::MouseButton { button: MouseButton::Left, down: true });
+                    mouse(m, now, HostEvent::MouseButton { button: MouseButton::Left, down: false });
+                    self.drag = None;
+                }
+            }
+            return ModEvent::Consumed;
+        }
         if fingers == 1 && after_long_press {
             // Box selection in game, a plain left drag in menus.
             self.press = None;

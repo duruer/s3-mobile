@@ -3,6 +3,12 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — Classic minimap drag, all-unit paths
+
+- Minimap: drags starting there scroll the map (re-press every 50 ms; the game only reacts to presses there), also
+  after a long press (was box select) → [touch](porting/touch.md).
+- "Paths: all units" now draws every own unit walking to a target (`+0x24` != position), not only player orders.
+
 ## 2026-11-08 — Menu pass: popups and Credits keep the mobile layout
 
 - User report: the multiplayer error popup broke the mobile menu layout. Reproduced: "Internet connection not
