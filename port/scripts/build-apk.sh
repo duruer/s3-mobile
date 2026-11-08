@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the Settlers 3 Port APK without Gradle.
-#   cargo ndk (libs3android.so for arm64-v8a + x86_64) -> aapt2 link (manifest + res) -> add stripped libs
-#   (stored, 16 KiB page aligned) -> zipalign -> apksigner (debug keystore in port/target, generated once).
+#   cargo ndk (libs3android.so for arm64-v8a + x86_64) -> aapt2 link (manifest + res) -> javac + d8
+#   (android/java -> classes.dex: the background-play service) -> add stripped libs (stored, 16 KiB page aligned)
+#   -> zipalign -> apksigner (debug keystore in port/target, generated once).
 # The APK never contains game files.
 #
 # Usage: scripts/build-apk.sh [--abi arm64-v8a|x86_64|all] [--debug] [--shell] [--game-icon]
@@ -82,7 +83,16 @@ fi
   --min-sdk-version 26 --target-sdk-version 35 \
   "$OUT/res.zip" ${ICON_FLAGS[@]+"${ICON_FLAGS[@]}"}
 
-# 3. Native libs: stripped copies, stored uncompressed (extractNativeLibs=false).
+# 3. Java (GameService, docs/porting/android.md "Background play"): javac against android.jar, d8 -> classes.dex.
+echo "== javac + d8"
+rm -rf "$OUT/classes"
+mkdir -p "$OUT/classes"
+mapfile -t JAVA_SRC < <(find "$PORT/android/java" -name '*.java')
+javac -nowarn -Xlint:-options --release 11 -classpath "$PLATFORM_JAR" -d "$OUT/classes" "${JAVA_SRC[@]}"
+mapfile -t CLASS_FILES < <(find "$OUT/classes" -name '*.class')
+"$BT/d8$BAT" --release --min-api 26 --lib "$PLATFORM_JAR" --output "$STAGE" "${CLASS_FILES[@]}"
+
+# 4. Native libs: stripped copies, stored uncompressed (extractNativeLibs=false).
 for a in "${ABIS[@]}"; do
   case "$a" in
     arm64-v8a) triple=aarch64-linux-android ;;
@@ -102,9 +112,10 @@ with zipfile.ZipFile(sys.argv[1], "a", zipfile.ZIP_STORED) as z:
         for f in files:
             p = os.path.join(root, f)
             z.write(p, p.replace(os.sep, "/"))
+    z.write("classes.dex", "classes.dex", zipfile.ZIP_DEFLATED)
 ' "$OUT/unsigned.apk")
 
-# 4. Align + sign.
+# 5. Align + sign.
 "$BT/zipalign$EXE" -f -P 16 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 KS="$PORT/target/debug.keystore"
 if [ ! -f "$KS" ]; then
@@ -114,6 +125,7 @@ if [ ! -f "$KS" ]; then
 fi
 "$BT/apksigner$BAT" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android \
   --out "$OUT/settlers3port.apk" "$OUT/aligned.apk"
+rm -rf "$OUT/classes"
 rm -f "$OUT/unsigned.apk" "$OUT/aligned.apk" "$OUT/res.zip" "$OUT/icon-res.zip" "$OUT/settlers3port.apk.idsig"
 "$BT/apksigner$BAT" verify "$OUT/settlers3port.apk"
 echo "== built $OUT/settlers3port.apk ($(du -h "$OUT/settlers3port.apk" | cut -f1))"

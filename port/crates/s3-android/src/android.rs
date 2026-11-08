@@ -16,6 +16,8 @@ use ndk::audio::{
 use s3_runtime::{HostEvent, MouseButton};
 
 use crate::audio::{AudioRing, OUT_CHANNELS, OUT_RATE};
+use crate::background::{Background, NOT_IN_GAME_PAUSE_MS};
+use crate::bgservice;
 use crate::frontend::{run_engine, Shared};
 use crate::present::Presenter;
 use crate::touch::{pointer_events, Action, PointerFilter};
@@ -63,6 +65,9 @@ fn open_audio(ring: Arc<AudioRing>, dead: Arc<AtomicBool>) -> Option<AudioStream
     }
 }
 
+/// Frame cap while a game runs in the background (docs/porting/android.md "Background play").
+const BACKGROUND_FPS: u32 = 10;
+
 fn now_ms(t0: Instant) -> u64 {
     t0.elapsed().as_millis() as u64
 }
@@ -91,6 +96,7 @@ fn android_main(app: AndroidApp) {
     let data_dir = base.join("data");
     log::info!("game dir: {} (copy your own install here); data dir: {}", game_dir.display(), data_dir.display());
 
+    let data_dir_ui = data_dir.clone();
     let waker = app.create_waker();
     let shared = Shared::new(Box::new(move || waker.wake()));
     let engine_thread = {
@@ -122,6 +128,11 @@ fn android_main(app: AndroidApp) {
     // with every switch, so the zoom went back and forth. With one mapping per gesture the distance ratio is the
     // real one on screen.
     let mut pinch_vp: Option<Viewport> = None;
+    // Background play: Some while the app is in the background and the game keeps running (foreground service +
+    // notifications); `bg_out_of_game` = since when the game is no longer in a game (then pause like in menus).
+    let mut bg: Option<Background> = None;
+    let mut bg_out_of_game: Option<u64> = None;
+    let mut asked_permission = false;
 
     while !quit {
         let mut wait = 250;
@@ -146,9 +157,23 @@ fn android_main(app: AndroidApp) {
                 }
                 MainEvent::RedrawNeeded { .. } | MainEvent::ContentRectChanged { .. } => presenter.invalidate(),
                 MainEvent::Pause => {
-                    log::info!("lifecycle: pause");
                     paused = true;
-                    shared.set_paused(true);
+                    if shared.in_game.load(Ordering::Acquire) {
+                        // In a game: keep it running (foreground service, notifications). Sound is muted.
+                        let gm = shared.game_ms.load(Ordering::Acquire);
+                        log::info!("lifecycle: pause -> background play (game time {} s)", gm / 1000);
+                        shared.bg_lines.lock().unwrap().clear();
+                        shared.background.store(true, Ordering::Release);
+                        crate::frontend::background_fps(Some(BACKGROUND_FPS));
+                        bgservice::start(&app, gm);
+                        let mut b = Background::default();
+                        b.begin(now_ms(t0), gm);
+                        bg = Some(b);
+                        bg_out_of_game = None;
+                    } else {
+                        log::info!("lifecycle: pause");
+                        shared.set_paused(true);
+                    }
                     if let Some(s) = &audio {
                         let _ = s.request_pause();
                     }
@@ -156,7 +181,15 @@ fn android_main(app: AndroidApp) {
                 MainEvent::Resume { .. } => {
                     log::info!("lifecycle: resume");
                     paused = false;
+                    if bg.take().is_some() {
+                        log::info!("background play: back in the foreground (game time {} s)", shared.game_ms.load(Ordering::Acquire) / 1000);
+                        shared.background.store(false, Ordering::Release);
+                        crate::frontend::background_fps(None);
+                        bgservice::stop(&app);
+                    }
                     shared.set_paused(false);
+                    // Drop sound queued before the pause (it would play late).
+                    shared.audio.clear();
                     if let Some(s) = &audio {
                         let _ = s.request_start();
                     }
@@ -165,6 +198,13 @@ fn android_main(app: AndroidApp) {
                 MainEvent::LostFocus => log::info!("lifecycle: lost focus"),
                 MainEvent::GainedFocus => {
                     log::info!("lifecycle: gained focus");
+                    // Notifications for background play (Android 13+): asked once per install, in the menus.
+                    if !asked_permission && !shared.in_game.load(Ordering::Acquire) {
+                        asked_permission = true;
+                        if let Some(u) = &ui_thread {
+                            bgservice::ask_notification_permission(u, &data_dir_ui);
+                        }
+                    }
                     // The system shows the bars again after dialogs / app switches.
                     if let Some(u) = &ui_thread {
                         u.immersive();
@@ -322,6 +362,32 @@ fn android_main(app: AndroidApp) {
             }
         }
 
+        // Background play: post new game messages (rate limited), keep the chronometer in sync, and pause like in
+        // the menus once the game is over.
+        if let Some(b) = &mut bg {
+            let t = now_ms(t0);
+            let lines = std::mem::take(&mut *shared.bg_lines.lock().unwrap());
+            b.push(lines);
+            if let Some(l) = b.due(t) {
+                log::info!("background play: notify {l:?}");
+                bgservice::event(&app, &l);
+            }
+            if shared.in_game.load(Ordering::Acquire) {
+                bg_out_of_game = None;
+                if let Some(g) = b.drift(t, shared.game_ms.load(Ordering::Acquire)) {
+                    log::info!("background play: game time {} s (chronometer re-synced)", g / 1000);
+                    bgservice::update(&app, g);
+                }
+            } else if t.saturating_sub(*bg_out_of_game.get_or_insert(t)) > NOT_IN_GAME_PAUSE_MS {
+                log::info!("background play: no longer in a game; pausing");
+                bg = None;
+                shared.background.store(false, Ordering::Release);
+                crate::frontend::background_fps(None);
+                bgservice::stop(&app);
+                shared.set_paused(true);
+            }
+        }
+
         if shared.guest_exited.load(Ordering::Acquire) && !finishing {
             finishing = true;
             match &ui_thread {
@@ -332,6 +398,9 @@ fn android_main(app: AndroidApp) {
     }
 
     log::info!("shutting down");
+    if bg.is_some() {
+        bgservice::stop(&app);
+    }
     drop(presenter);
     shared.request_quit();
     if let Some(s) = audio.take() {

@@ -5,6 +5,7 @@
 //! NativeActivity glue and only builds for `target_os = "android"`. See docs/porting/android.md.
 
 pub mod audio;
+pub mod background;
 pub mod frontend;
 pub mod keys;
 pub mod layout;
@@ -23,6 +24,8 @@ mod upscale_ai;
 mod present;
 #[cfg(target_os = "android")]
 mod uithread;
+#[cfg(target_os = "android")]
+mod bgservice;
 
 /// Package id of the APK.
 pub const PACKAGE: &str = "com.settlers3port.app";

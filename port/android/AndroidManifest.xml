@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Settlers 3 Port: pure-native app (NativeActivity + libs3android.so). No game files are packaged. -->
+<!-- Settlers 3 Port: NativeActivity + libs3android.so, plus one small Java service (GameService, background play).
+     No game files are packaged. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.settlers3port.app"
     android:versionCode="1"
@@ -7,6 +8,11 @@
 
     <!-- Online multiplayer: WebSocket connection to our relay (docs/porting/multiplayer.md). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Background play (docs/porting/android.md): foreground service + notifications, CPU awake while it runs. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-feature android:glEsVersion="0x00020000" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -14,7 +20,7 @@
     <application
         android:label="Settlers 3 Port"
         android:icon="@drawable/ic_launcher"
-        android:hasCode="false"
+        android:hasCode="true"
         android:extractNativeLibs="false"
         android:allowBackup="false"
         android:appCategory="game"
@@ -34,5 +40,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name="com.settlers3port.app.GameService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="A started single-player or multiplayer game keeps running (game simulation) while the app is in the background" />
+        </service>
     </application>
 </manifest>

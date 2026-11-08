@@ -89,6 +89,18 @@ fn read_snapshot(m: &Machine, snap: u32) -> Shown {
     Shown { lines, chat }
 }
 
+/// Message lines that appeared since the last [`take_new_lines`] (the frontend posts them as notifications while
+/// the app is in the background, docs/porting/android.md "Background play"). Bounded; oldest dropped.
+/// Process-wide (one game per app process; a plain mutex, safe with the render hook on another host thread).
+static NEW_LINES: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
+
+const NEW_LINES_CAP: usize = 32;
+
+/// Drain the message lines (texts) that newly appeared in the game since the last call.
+pub fn take_new_lines() -> Vec<String> {
+    NEW_LINES.lock().unwrap_or_else(|p| p.into_inner()).drain(..).collect()
+}
+
 /// Install the hooks and the mod (GOG patch set only).
 pub fn install(m: &mut Machine) {
     let shared = Arc::new(Shared::default());
@@ -98,7 +110,25 @@ pub fn install(m: &mut Machine) {
         let snap = c.arg(0);
         if snap != 0 {
             let s = read_snapshot(c.m, snap);
-            *sh.shown.lock().unwrap() = s;
+            let mut cur = sh.shown.lock().unwrap();
+            // A text not shown in the previous frame is a new message (an expired one coming back counts again).
+            let fresh: Vec<String> = s
+                .lines
+                .iter()
+                .filter(|l| !cur.lines.iter().any(|p| p.text == l.text))
+                .map(|l| l.text.clone())
+                .collect();
+            *cur = s;
+            drop(cur);
+            if !fresh.is_empty() {
+                let mut q = NEW_LINES.lock().unwrap_or_else(|p| p.into_inner());
+                for t in fresh {
+                    if q.len() == NEW_LINES_CAP {
+                        q.pop_front();
+                    }
+                    q.push_back(t);
+                }
+            }
             sh.last_ms.store(c.m.real_ms(), std::sync::atomic::Ordering::Relaxed);
         }
         c.return_from_function(0, 1)

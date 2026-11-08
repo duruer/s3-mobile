@@ -13,7 +13,7 @@ x86_64, release APK with arm64-v8a + x86_64). Same point as desktop s3run:
 | In game | castle, settlers, AI thread messages, music `MCI cdaudio play tracks 7..8` |
 | Tap build menu, category, building, then a ghost site on the map | construction site placed (stakes + flag) |
 | One-finger drag on the map | map scrolls with the finger (see Controls) |
-| Home, then reopen | pause/resume, game continues where it was |
+| Home, then reopen | pause/resume, game continues where it was (2026-11-08: in a game it keeps running in the background, see Background play) |
 
 Screenshots (local only, not in git): `scratch/android-shots/attempt1-1.png` (menu), `-2` (Game Setup), `-5` (in game),
 `-6`/`-7` (build menu, placement markers), `-9` (construction site), `-16` (after resume).
@@ -47,7 +47,7 @@ Code: `port/crates/s3-android` (crate `s3-android`, library `libs3android.so`), 
 | Item | Value |
 | --- | --- |
 | Package / label | `com.settlers3port.app` / "Settlers 3 Port" |
-| Activity | `android.app.NativeActivity` (`hasCode=false`, no Java/Kotlin, no Gradle), `lib_name` = `s3android` |
+| Activity | `android.app.NativeActivity`, `lib_name` = `s3android`. No Gradle. Since 2026-11-08 `hasCode=true`: one small Java class `com.settlers3port.app.GameService` (background play foreground service, `port/android/java`, javac + d8 in `build-apk.sh`) |
 | SDK | minSdk 26 (AAudio), targetSdk 35, landscape (`sensorLandscape`), fullscreen theme, keep-screen-on flag |
 | ABIs | `arm64-v8a` (phones) and `x86_64` (emulator). The `.so` files are stripped and stored uncompressed (`extractNativeLibs=false`), aligned for 16 KiB pages |
 | Game dir | `/sdcard/Android/data/com.settlers3port.app/files/game` (= `getExternalFilesDir()/game`). The user copies their own install there. **The APK contains no game files** |
@@ -164,7 +164,7 @@ bottom-left, white bottom-right) plus text in the 8x8 `font8x8` font (MIT). It i
 frame: "Starting", "Game files missing" with the copy instructions, the engine stop reason. If the engine stops
 after it has drawn frames, the reason is drawn as a panel over the last frame. The app never shows a black screen.
 
-**Lifecycle**: `Pause` -> `HostEvent::Pause`, the engine thread stops running slices, AAudio is paused,
+**Lifecycle** (menus; in a game see Background play below): `Pause` -> `HostEvent::Pause`, the engine thread stops running slices, AAudio is paused,
 rendering stops. `Resume` -> `HostEvent::Resume`, AAudio restarts. The guest clock (`Host::now_ms`) does not
 advance while paused, so game timers do not jump. `TerminateWindow` drops the window (the engine keeps its
 frames). `Destroy` sets quit and joins the engine thread.
@@ -174,6 +174,51 @@ interpolation, mono duplicated) and pushed into a lock-free SPSC ring (1 s). The
 (shared mode, `PCM_I16`, 2 channels, 44100 Hz) pops from it and plays silence on underrun. Overflow drops new
 samples. `audio_queued_frames` reports the ring fill in the caller's rate for mixer pacing. An AAudio error
 callback (device change) reopens the stream. If AAudio cannot open, the app runs silent.
+
+## Background play (2026-11-08)
+
+User request: a game that was not closed keeps running when the app goes to the background; an ongoing
+notification shows that it runs and the game time; game messages ("coal found", tutorial text, chat) come as
+notifications while in the background.
+
+| Situation on `MainEvent::Pause` | Behaviour |
+| --- | --- |
+| In a game (`Shared::in_game` = `s3_mods::res::in_game`, a game frame within the last second) | **Game keeps running**: no `HostEvent::Pause`, the engine keeps running slices. Frame cap lowered to 10 fps (`frontend::background_fps`, restored on resume; nobody sees the frames, the logic does not depend on them). **Sound muted** (AAudio stream paused; the ring is cleared on resume so no stale sound plays). Foreground service started |
+| Menus (not in a game) | Old behaviour: engine paused, guest clock stopped |
+| Background, then the game is no longer in a game for 5 s (game ended, statistics, main menu) | Service stopped, engine paused like in the menus |
+| `Resume` | Service stopped (its notifications go with it), frame cap restored, audio ring cleared + stream restarted |
+| Swiped away from recents | `GameService.onTaskRemoved` kills the process (the user closed the game) |
+
+Parts:
+
+- `port/android/java/com/settlers3port/app/GameService.java`: the only Java code. Intents (explicit component, not
+  exported): `START` (`startForegroundService`, extra `game_ms`): `startForeground` with type `specialUse`
+  (API 34+; manifest `<property PROPERTY_SPECIAL_USE_FGS_SUBTYPE>`) and a partial wake lock (the game also runs with
+  the screen off); `UPDATE` (`startService`): re-sync the chronometer; `EVENT` (`startService`, extra `text`, lines
+  joined with `\n`): one notification in channel "Game events" (IMPORTANCE_DEFAULT, group, InboxStyle for several
+  lines, BigText for one, auto-cancel). `stopService` -> `onDestroy` releases the wake lock and removes the ongoing
+  and all event notifications. Ongoing notification: channel "Game running" (IMPORTANCE_LOW), title
+  "Settlers III — running", `setUsesChronometer(true)` + `setWhen(now - game_ms)` (counts up by itself), tap opens
+  the app (launch intent, `FLAG_IMMUTABLE`). Small icon `res/drawable/ic_notify.xml` (our monochrome "III", cropped).
+- Manifest: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS`, `WAKE_LOCK`.
+- `bgservice.rs` (JNI from the activity thread): `start` runs synchronously inside the `Pause` handler, while the
+  activity is still visible, which Android 12+ requires for a foreground-service start. `update`, `event`, `stop`.
+  `ask_notification_permission`: `requestPermissions(POST_NOTIFICATIONS)` on Android 13+ at the first focus in the
+  menus, once per install (marker `data/notification-permission-asked.txt`). Without the permission the service
+  still runs; Android only hides its notifications.
+- Game time: `[0x7dfd48]` (logic tick counter, +1 per 64 ms of game time) * 64, read by the engine thread after each
+  slice (`frontend::sync_background` -> `Shared::game_ms`). The chronometer counts wall time; with fast speed
+  (2x-8x) or the in-game pause it drifts, so `background::Background::drift` re-syncs (`UPDATE`) when it is off by
+  more than 3 s.
+- Messages: `s3_mods::messages::take_new_lines()` (process-wide queue, filled by the composite hook: a line text not
+  shown in the previous frame is new; max 32 kept). The engine drains it every slice; only while
+  `Shared::background` the lines go to `Shared::bg_lines`. The activity loop coalesces them
+  (`background.rs`: at most one notification per 4 s, up to 6 newest lines each, consecutive duplicates dropped).
+  The render thread keeps drawing game frames in the background (10 fps), so the hook still sees the lines.
+- Build: `build-apk.sh` step 3 `javac --release 11 -classpath android.jar` + `d8 --release --min-api 26` ->
+  `classes.dex` in the APK (JDK 25 on the dev PC works).
+
+Verification on the phone: see the journal entry 2026-11-08 "Background play".
 
 ## Foldables, resizing (2026-11-08)
 

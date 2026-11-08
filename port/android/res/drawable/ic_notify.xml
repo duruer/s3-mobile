@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later. Notification small icon: the monochrome launcher layer, cropped. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="56" android:viewportHeight="56">
+    <group android:translateX="-26" android:translateY="-25">
+        <path android:pathData="M30.00,36.00H45.00V39.20Q41.00,39.20 41.00,42.08V63.92Q41.00,66.80 45.00,66.80V70.00H30.00V66.80Q34.00,66.80 34.00,63.92V42.08Q34.00,39.20 30.00,39.20Z" android:fillColor="#FFFFFFFF" />
+        <path android:pathData="M63.00,36.00H78.00V39.20Q74.00,39.20 74.00,42.08V63.92Q74.00,66.80 78.00,66.80V70.00H63.00V66.80Q67.00,66.80 67.00,63.92V42.08Q67.00,39.20 63.00,39.20Z" android:fillColor="#FFFFFFFF" />
+        <path android:pathData="M45.50,30.00H62.50V33.60Q58.00,33.60 58.00,36.84V69.16Q58.00,72.40 62.50,72.40V76.00H45.50V72.40Q50.00,72.40 50.00,69.16V36.84Q50.00,33.60 45.50,33.60Z" android:fillColor="#FFFFFFFF" />
+    </group>
+</vector>

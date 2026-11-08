@@ -86,6 +86,14 @@ pub struct Shared {
     /// Engine (mods) -> presenter: the window-resolution overlay layer (`s3_mods::layer`); publishing wakes the
     /// render thread.
     pub layer: Arc<SceneSlot>,
+    /// Engine -> UI (background play, docs/porting/android.md): a game is running (not the menus), and its game
+    /// time in ms (tick counter `[0x7dfd48]` * 64 ms).
+    pub in_game: AtomicBool,
+    pub game_ms: AtomicU64,
+    /// UI -> engine: the app is in the background while the game keeps running; the engine then queues new game
+    /// message lines in `bg_lines` (UI posts them as notifications).
+    pub background: AtomicBool,
+    pub bg_lines: Mutex<Vec<String>>,
 }
 
 impl Shared {
@@ -127,6 +135,10 @@ impl Shared {
             refresh_hz: AtomicU32::new(0),
             density_dpi: AtomicU32::new(0),
             layer,
+            in_game: AtomicBool::new(false),
+            game_ms: AtomicU64::new(0),
+            background: AtomicBool::new(false),
+            bg_lines: Mutex::new(Vec::new()),
         }
     }
 
@@ -485,6 +497,7 @@ fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
         hint.slice_done(p - presents_seen, crate::perf_hint::target_ns(s3_dx::ddraw::fps_cap()));
         presents_seen = p;
         sync_touch_flags(&shared, &mut engine.machine);
+        sync_background(&shared, &mut engine.machine);
         sync_display(&shared, &mut engine.machine, &mut seen_viewport);
         if last_report.elapsed() > Duration::from_secs(10) {
             last_report = Instant::now();
@@ -517,6 +530,49 @@ fn sync_display(shared: &Shared, m: &mut s3_runtime::Machine, seen_viewport: &mu
     s3_mods::display::set_host_rates(m, f(&shared.host_fps), f(&shared.refresh_hz));
     s3_mods::display::set_density(m, shared.density_dpi.load(Ordering::Relaxed));
 }
+
+/// Game tick counter (GOG S3.EXE 1.60): +1 per logic tick, 64 ms of game time each.
+#[cfg(feature = "engine")]
+const GAME_TICKS: u32 = 0x007d_fd48;
+
+/// Background play: publish in-game state + game time; queue new message lines while in the background.
+#[cfg(feature = "engine")]
+fn sync_background(shared: &Shared, m: &mut s3_runtime::Machine) {
+    let ig = s3_mods::res::in_game(m);
+    shared.in_game.store(ig, Ordering::Release);
+    if ig {
+        shared.game_ms.store(m.mem.read_u32(GAME_TICKS) as u64 * 64, Ordering::Release);
+    }
+    let lines = s3_mods::messages::take_new_lines();
+    if !lines.is_empty() && shared.background.load(Ordering::Acquire) {
+        log::info!("background: game messages {lines:?}");
+        shared.bg_lines.lock().unwrap().extend(lines);
+        (shared.wake)();
+    }
+}
+
+/// Frame cap while the app is in the background (nobody sees the frames; the game logic does not depend on
+/// them). `Some(fps)` lowers the cap and remembers the old one, `None` restores it.
+#[cfg(feature = "engine")]
+pub fn background_fps(cap: Option<u32>) {
+    static SAVED: AtomicU32 = AtomicU32::new(u32::MAX);
+    match cap {
+        Some(c) => {
+            let old = s3_dx::ddraw::fps_cap();
+            let _ = SAVED.compare_exchange(u32::MAX, old, Ordering::AcqRel, Ordering::Acquire);
+            s3_dx::ddraw::set_fps_cap(c);
+        }
+        None => {
+            let old = SAVED.swap(u32::MAX, Ordering::AcqRel);
+            if old != u32::MAX {
+                s3_dx::ddraw::set_fps_cap(old);
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "engine"))]
+pub fn background_fps(_cap: Option<u32>) {}
 
 /// Pass the mod layer's three-finger keyboard request to the UI thread.
 #[cfg(feature = "engine")]
