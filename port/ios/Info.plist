@@ -14,6 +14,9 @@
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
+    <!-- ProMotion (iPhone 13 Pro and later): without this, iPhone apps are capped at 60 Hz. -->
+    <key>CADisableMinimumFrameDurationOnPhone</key>
+    <true/>
     <key>UIRequiresFullScreen</key>
     <true/>
     <key>UIStatusBarHidden</key>
