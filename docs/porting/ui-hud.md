@@ -218,3 +218,9 @@ trip, tiles, camera formula).
   `[0x7e3408]` is 0, so `gd()` falls back to `[logic+0x3a0]` (ux-verify1).
 - touch.rs' ✕ placement cancel is not drawn in this mode (the banner has Cancel), but its hit area top right is
   still active during placement.
+
+
+## Game speed
+
+Single-player game: the ">> Nx" pill right of the resource strip switches between normal speed and the chosen fast
+speed (accent colour while fast). Settings -> "Fast speed: Nx" cycles 2x..8x (`crate::speed`).

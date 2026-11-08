@@ -65,6 +65,8 @@ pub struct Settings {
     pub display: crate::display::DisplaySettings,
     /// Custom game resolution + zoom level (docs/porting/resolution-zoom.md, `crate::res` / `crate::zoom`).
     pub res: crate::res::ResSettings,
+    /// Game speed the speed button switches to (2..=8, `crate::speed`); chosen in the menus.
+    pub fast_speed: u32,
 }
 
 impl Default for Settings {
@@ -78,6 +80,7 @@ impl Default for Settings {
             touch: TouchSettings::default(),
             display: crate::display::DisplaySettings::default(),
             res: crate::res::ResSettings::default(),
+            fast_speed: crate::speed::DEFAULT_FAST,
         }
     }
 }

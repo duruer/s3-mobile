@@ -2,6 +2,13 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Fast speed up to 8x, speed button toggles
+
+- `speed.rs`: the speed button now switches normal <-> a chosen fast speed (`Settings::fast_speed`, 2x..8x,
+  default 2x); the choice is cycled in the menus (Classic: "Fast speed: Nx" in the floating menu column; Mobile HUD:
+  Settings row next to FPS position). Button gold / accent while fast. Verified desktop 2316x904 Classic: tap ->
+  `speed: 2x`, gold button, menu row shown. If the device cannot keep up at 8x the game runs as fast as it can.
+
 ## 2026-11-08 — Main menu borders along the whole height (tablet / unfolded)
 
 - On tall windows the 800x600 main menu leaves bands above and below; the Greek-key side borders stopped at the

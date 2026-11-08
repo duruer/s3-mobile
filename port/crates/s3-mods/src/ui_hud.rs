@@ -110,8 +110,10 @@ pub(crate) enum Action {
     PeekDone,
     /// The minimap widget (drag = pan, tap = full-screen map).
     Minimap,
-    /// Game speed 1x / 2x / 3x / 4x (single player).
+    /// Game speed: normal <-> chosen fast speed (single player).
     Speed,
+    /// Settings: choose the fast speed (2x..8x).
+    CycleFastSpeed,
     /// The full-screen map image (tap = jump there).
     MapPoint,
     MenuSettings,
@@ -164,8 +166,8 @@ pub struct MobileHud {
     /// Panel page the peek shows (auto-exit once the game has shown it and left it again).
     peek_page: Option<u32>,
     peek_seen: bool,
-    /// Game speed label while it can be changed (`crate::speed::allowed`).
-    speed: Option<String>,
+    /// Speed button state (chosen fast speed label, running fast) while it can be changed.
+    speed: Option<(String, bool)>,
     snap: Option<GameSnapshot>,
     in_game: bool,
     frame: (u32, u32),
@@ -547,9 +549,14 @@ impl MobileHud {
             }
             Action::Minimap => self.sheet = Sheet::Map,
             Action::Speed => {
-                let s = crate::speed::cycle(m);
-                self.speed = crate::speed::allowed(m).then(|| crate::speed::label(m));
+                let s = crate::speed::toggle(m);
+                self.speed = crate::speed::button_state(m);
                 self.set_toast(&format!("Game speed {s}x"));
+            }
+            Action::CycleFastSpeed => {
+                let s = crate::speed::cycle_choice(m);
+                self.speed = crate::speed::button_state(m);
+                self.set_toast(&format!("Fast speed {s}x"));
             }
             Action::MapPoint | Action::Nothing => {}
         }
@@ -830,7 +837,9 @@ impl MobileHud {
         self.button(c, Rect::new(inner.x, row(1), half, bh), &format!("FPS counter: {}", d.fps_counter.label()), BTN_BG, Action::CycleFps);
         let fl = crate::display::fps_limit_label(m);
         self.button(c, Rect::new(inner.x + half + gap, row(1), half, bh), &fl, BTN_BG, Action::CycleFpsLimit);
-        self.button(c, Rect { y: row(2), ..full }, &format!("FPS position: {}", d.fps_pos.label()), BTN_BG, Action::CycleFpsPos);
+        self.button(c, Rect::new(inner.x, row(2), half, bh), &format!("FPS position: {}", d.fps_pos.label()), BTN_BG, Action::CycleFpsPos);
+        let fs = format!("Fast speed: {}", crate::speed::choice_label(m));
+        self.button(c, Rect::new(inner.x + half + gap, row(2), half, bh), &fs, BTN_BG, Action::CycleFastSpeed);
         self.button(c, Rect::new(inner.x, row(3), third, bh), "Zoom -", BTN_BG, Action::Zoom(-1));
         let zl = zoom_label(m);
         c.text_centered(inner.x + third + gap, row(3), third, bh, self.k() * 13.0, Weight::Bold, TEXT, &zl);
@@ -890,11 +899,11 @@ impl MobileHud {
             x += wd;
         }
         // Game speed pill right of the strip (single player).
-        if let Some(sp) = self.speed.clone() {
+        if let Some((sp, fast)) = self.speed.clone() {
             let t = format!(">> {sp}");
             let sw = measure_text(px, Weight::Bold, &t).0 + self.u(18.0);
             let r = Rect::new(x0 + total + self.u(6.0), y0, sw, h);
-            let bg = if sp == "1x" { Rgba::rgba(18, 22, 30, 200) } else { ACCENT.fade(0.85) };
+            let bg = if fast { ACCENT.fade(0.85) } else { Rgba::rgba(18, 22, 30, 200) };
             c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(10.0) as f32, bg);
             c.text_centered(r.x, r.y, r.w, r.h, px, Weight::Bold, TEXT, &t);
             self.add(r, Action::Speed);
@@ -1049,7 +1058,7 @@ impl Mod for MobileHud {
     }
 
     fn tick(&mut self, m: &mut Machine, now: u64) {
-        let speed = crate::speed::allowed(m).then(|| crate::speed::label(m));
+        let speed = crate::speed::button_state(m);
         if speed != self.speed {
             self.speed = speed;
             self.dirty = true;

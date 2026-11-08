@@ -194,8 +194,10 @@ enum FloatBtn {
     FpsPos,
     /// Shown while the menu is open: cycle the display filter (Pixel / Smooth / Sharp / xBR / AI).
     Filter,
-    /// Always (single-player game): game speed 1x / 2x / 3x / 4x, left of Menu.
+    /// Always (single-player game): normal <-> chosen fast speed, left of Menu.
     Speed,
+    /// Shown while the menu is open: choose the fast speed (2x..8x).
+    SpeedChoice,
     /// Shown while the menu is open: cycle the display mode (Fit / Fill / Stretch / Native wide).
     Screen,
     /// Shown while the menu is open: zoom in / out one level (render resolution, docs/porting/resolution-zoom.md).
@@ -215,8 +217,8 @@ pub struct ClassicTouch {
     /// (UI mode, FPS, filter, zoom...) are shown; the panel's own computer icon opens just the game's page
     /// (user report 2026-11-08).
     menu_by_float: bool,
-    /// Game speed label ("2x") while it can be changed (`crate::speed::allowed`), refreshed each tick.
-    speed: Option<String>,
+    /// Speed button state (chosen fast speed label, running fast) while it can be changed, refreshed each tick.
+    speed: Option<(String, bool)>,
     /// The menu page was seen open since `menu_by_float` was set (it is cleared when the page closes).
     menu_seen_open: bool,
     /// Delayed host events (click button-up).
@@ -375,7 +377,11 @@ impl ClassicTouch {
         if self.view.panel.page == 7 && self.menu_by_float {
             let hw = self.q(150.0);
             let mut y = menu.1;
-            for k in [FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut] {
+            let mut ks = vec![FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut];
+            if self.speed.is_some() {
+                ks.insert(1, FloatBtn::SpeedChoice);
+            }
+            for k in ks {
                 y -= h + self.q(12.0);
                 if y < vy + self.q(4.0) {
                     break;
@@ -529,7 +535,8 @@ impl ClassicTouch {
                     crate::display::DisplayMode::Stretch => "Screen: Stretch",
                     crate::display::DisplayMode::NativeWide => "Screen: Wide",
                 }),
-                FloatBtn::ZoomIn | FloatBtn::ZoomOut | FloatBtn::FpsLimit | FloatBtn::FpsPos | FloatBtn::Filter | FloatBtn::Speed => (BG, ""),
+                FloatBtn::Speed if self.speed.as_ref().is_some_and(|s| s.1) => (GOLD.fade(0.55), ""),
+                FloatBtn::ZoomIn | FloatBtn::ZoomOut | FloatBtn::FpsLimit | FloatBtn::FpsPos | FloatBtn::Filter | FloatBtn::Speed | FloatBtn::SpeedChoice => (BG, ""),
             };
             let zoom_label;
             let text = match k {
@@ -554,7 +561,11 @@ impl ClassicTouch {
                     zoom_label.as_str()
                 }
                 FloatBtn::Speed => {
-                    zoom_label = format!(">> {}", self.speed.clone().unwrap_or_default());
+                    zoom_label = format!(">> {}", self.speed.as_ref().map(|s| s.0.clone()).unwrap_or_default());
+                    zoom_label.as_str()
+                }
+                FloatBtn::SpeedChoice => {
+                    zoom_label = format!("Fast speed: {}", crate::speed::choice_label(m));
                     zoom_label.as_str()
                 }
                 _ => text,
@@ -678,9 +689,13 @@ impl Mod for ClassicTouch {
                                     self.dirty = true;
                                     return ModEvent::Consumed;
                                 }
-                                                FloatBtn::Speed => {
-                                    crate::speed::cycle(m);
-                                    self.speed = crate::speed::allowed(m).then(|| crate::speed::label(m));
+                                FloatBtn::Speed | FloatBtn::SpeedChoice => {
+                                    if k == FloatBtn::Speed {
+                                        crate::speed::toggle(m);
+                                    } else {
+                                        crate::speed::cycle_choice(m);
+                                    }
+                                    self.speed = crate::speed::button_state(m);
                                     self.dirty = true;
                                     return ModEvent::Consumed;
                                 }
@@ -748,7 +763,7 @@ impl Mod for ClassicTouch {
     }
 
     fn tick(&mut self, m: &mut Machine, now: u64) {
-        let speed = crate::speed::allowed(m).then(|| crate::speed::label(m));
+        let speed = crate::speed::button_state(m);
         if speed != self.speed {
             self.speed = speed;
             self.dirty = true;

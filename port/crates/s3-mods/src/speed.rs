@@ -1,4 +1,5 @@
-//! Game speed (single player): 1x / 2x / 3x / 4x, like Settlers United's speed-up (user request 2026-11-08).
+//! Game speed (single player): normal or a chosen fast speed 2x..8x, like Settlers United's speed-up (user
+//! requests 2026-11-08: "up to 8x; the button toggles the chosen speed; the speed is chosen in the menu").
 //!
 //! The guest clock runs `scale` times as fast as the wall clock (`Machine::set_time_scale`: GetTickCount,
 //! timeGetTime, QueryPerformanceCounter, waits and timers), so the game's logic ticks faster; display pacing,
@@ -10,8 +11,10 @@ use s3_runtime::{LogLevel, Machine};
 
 use crate::Mod;
 
-/// Speed steps cycled by the speed buttons.
-pub const SPEEDS: [f64; 4] = [1.0, 2.0, 3.0, 4.0];
+/// Fast speeds selectable in the menus.
+pub const FAST_CHOICES: [u32; 7] = [2, 3, 4, 5, 6, 7, 8];
+/// Default fast speed.
+pub const DEFAULT_FAST: u32 = 2;
 
 /// `CGameData*` global: non-zero in a single-player game, 0 in multiplayer (game-state-ui.md).
 const GD_GLOBAL_SP: u32 = 0x007e_3408;
@@ -26,21 +29,39 @@ pub fn current(m: &Machine) -> f64 {
     m.time_scale()
 }
 
-/// Short label, e.g. "2x".
-pub fn label(m: &Machine) -> String {
-    format!("{}x", current(m).round() as u32)
+/// Is the game running fast now?
+pub fn is_fast(m: &Machine) -> bool {
+    current(m) > 1.001
 }
 
-/// Next speed (wraps to 1x); 1x when not allowed.
-pub fn cycle(m: &mut Machine) -> f64 {
-    let next = if allowed(m) {
-        let cur = current(m);
-        let i = SPEEDS.iter().position(|&s| (s - cur).abs() < 0.01).unwrap_or(0);
-        SPEEDS[(i + 1) % SPEEDS.len()]
-    } else {
-        1.0
-    };
+/// The chosen fast speed (settings, clamped to [`FAST_CHOICES`]).
+pub fn fast_choice(m: &mut Machine) -> u32 {
+    crate::settings(m).fast_speed.clamp(FAST_CHOICES[0], FAST_CHOICES[FAST_CHOICES.len() - 1])
+}
+
+/// Label of the chosen fast speed, e.g. "4x".
+pub fn choice_label(m: &mut Machine) -> String {
+    format!("{}x", fast_choice(m))
+}
+
+/// Speed button: normal <-> chosen fast speed. Returns the new factor (1 when not allowed).
+pub fn toggle(m: &mut Machine) -> f64 {
+    let next = if allowed(m) && !is_fast(m) { fast_choice(m) as f64 } else { 1.0 };
     set(m, next);
+    next
+}
+
+/// Menu: next fast speed choice (wraps); applied at once while running fast. Returns the new choice.
+pub fn cycle_choice(m: &mut Machine) -> u32 {
+    let cur = fast_choice(m);
+    let i = FAST_CHOICES.iter().position(|&c| c == cur).unwrap_or(0);
+    let next = FAST_CHOICES[(i + 1) % FAST_CHOICES.len()];
+    let mut s = crate::settings(m);
+    s.fast_speed = next;
+    let _ = crate::set_settings(m, s);
+    if is_fast(m) && allowed(m) {
+        set(m, next as f64);
+    }
     next
 }
 
@@ -50,6 +71,11 @@ pub fn set(m: &mut Machine, s: f64) {
         m.set_time_scale(s);
         m.log(LogLevel::Info, &format!("speed: {s}x"));
     }
+}
+
+/// Speed button state for the UIs: (chosen label, running fast) while the speed can be changed.
+pub fn button_state(m: &mut Machine) -> Option<(String, bool)> {
+    allowed(m).then(|| (choice_label(m), is_fast(m)))
 }
 
 /// Resets the speed to 1x outside a single-player game.
@@ -63,7 +89,7 @@ impl Mod for SpeedMod {
         "speed"
     }
     fn tick(&mut self, m: &mut Machine, now: u64) {
-        if current(m) == 1.0 {
+        if !is_fast(m) {
             self.out_since = 0;
             return;
         }

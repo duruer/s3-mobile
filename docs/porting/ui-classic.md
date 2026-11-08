@@ -93,3 +93,9 @@ window layer".
   in a multiplayer game).
 - Mode switch: while the Menu (page 7) is open, a "UI: Mobile HUD" button above "Close" switches to mode B (saved
   in `mods-settings.json`). Mode B covers the panel until the next game start, then uses the full-screen map.
+
+
+## Game speed
+
+Single-player game: a ">> Nx" button left of Menu switches between normal speed and the chosen fast speed (gold
+while fast). The fast speed (2x..8x) is chosen with "Fast speed: Nx" in the menu column (`crate::speed`).
