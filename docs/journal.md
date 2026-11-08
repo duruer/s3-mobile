@@ -5,6 +5,9 @@ Newest first. One entry per session: what was done, what was learned, links to d
 
 ## 2026-11-08 — Group buttons fixed on screen
 
+- No blinking while zooming: during a zoom step the layout globals already have the next size while the old
+  frame is shown; `UnitOrders` stays "in game" then (`res::in_game_frame`) and only skips the paths. Classic x =
+  panel width from the window height alone. Verified with 8 window shots during a 1.5 s pinch.
 - `unit_orders::group_rects`: placed from the window rect and the Classic panel's last column (constant scale), not
   the shown frame rect / first map column, which move with the zoom. Verified desktop: same position before and
   after a pinch zoom.

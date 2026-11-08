@@ -316,6 +316,8 @@ pub struct UnitOrders {
     now: u64,
     mode: UiMode,
     show_paths: crate::settings::PathMode,
+    /// The game layout matches the shown frame (map coordinates usable for the paths).
+    layout_ok: bool,
     groups_on: bool,
     long_press_ms: u64,
     /// Units selected (page 5) right now.
@@ -381,15 +383,11 @@ impl UnitOrders {
                 // Bottom of the map, right of the panel; the Menu / speed buttons sit bottom right.
                 let q = |v: f32| (v * vp.win_h as f32 / 600.0).round() as i32;
                 let (bw, bh, gap) = (q(46.0), q(40.0), q(8.0));
-                // Right edge of the panel at its constant scale (the last panel column, not the first map column,
-                // whose window position depends on the map zoom).
-                let x = match vp.panel {
-                    Some(p) => vp.game_to_window(p.w as f32 - 1.0, p.h as f32 - 1.0).0.round() as i32 + 1 + q(10.0),
-                    None => {
-                        let pw = game::layout(m).map_or(0, |l| l.panel_w);
-                        vp.game_to_window(pw as f32, vp.game_h as f32 - 1.0).0.round() as i32 + q(10.0)
-                    }
-                };
+                // Right edge of the panel, from the window height alone: the panel (`res::CLASSIC_VARIANT`) is
+                // always drawn full window height (`display::Viewport::split`), so this never moves with the zoom
+                // (the shown frame's split can be missing for a frame during a zoom step: jitter, 2026-11-08).
+                let v = crate::res::CLASSIC_VARIANT;
+                let x = (v.panel_w as f32 * vp.win_h as f32 / v.h as f32).round() as i32 + q(10.0);
                 (x.max(vx + q(8.0)), vy + vh - bh - q(14.0), bw, bh, gap)
             }
         };
@@ -457,8 +455,12 @@ impl UnitOrders {
         self.groups_on = settings.group_shortcuts;
         self.long_press_ms = settings.touch.long_press_ms.max(150);
         let gd = game::gd(m);
-        let lay = game::layout(m).filter(|l| (l.screen_w as u32, l.screen_h as u32) == frame);
-        self.in_game = hooked && gd.is_some() && lay.is_some() && self.now.saturating_sub(last) < IN_GAME_MS;
+        let lay = game::layout(m);
+        // During a zoom step the layout globals already have the next size while the old frame is shown: still in
+        // game (the buttons must not blink, 2026-11-08), only the paths (map coordinates) wait for a match.
+        self.layout_ok = lay.is_some_and(|l| (l.screen_w as u32, l.screen_h as u32) == frame);
+        let in_frame = self.layout_ok || crate::res::in_game_frame(m);
+        self.in_game = hooked && gd.is_some() && lay.is_some() && in_frame && self.now.saturating_sub(last) < IN_GAME_MS;
         self.units_selected = self.in_game
             && gd.is_some_and(|g| m.mem.read_u32(g + GD_PAGE) == 5)
             && game::selection_count(m) > 0;
@@ -831,7 +833,9 @@ impl Mod for UnitOrders {
         if !self.in_game {
             return;
         }
-        self.draw_paths(m, c);
+        if self.layout_ok {
+            self.draw_paths(m, c);
+        }
         self.draw_groups(m, c);
         self.draw_orders(m, c);
         self.draw_hint(m, c);
