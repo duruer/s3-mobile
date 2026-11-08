@@ -91,6 +91,15 @@ from the window's by up to ~0.5 % and `Viewport::new` left 1-4 px bars whose wid
 everything anchored to the shown frame (Mobile HUD bars, ✕, FPS counter) shifted by a few px per step ("the HUD
 jitters"). Within 2 % `NativeWide` now stretches the frame to the whole window.
 
+**FPS limit and FPS counter position (2026-11-08).** `DisplaySettings::fps_limit` (30 / 60 / 120 / 144, plus the
+display's refresh rate when it is above 144, `display::fps_limit_options`; default 60) is applied to the
+DirectDraw frame limiter (`s3_dx::ddraw::set_fps_cap`) at install and on change (`display::apply_fps_limit`); a
+developer override wins (env `S3_FPS_CAP`; Android `fps-cap.txt` sets that env). `DisplaySettings::fps_pos`
+(auto / top left / top centre / top right / bottom right / bottom centre / bottom left) places the counter in the
+free area: right of the Classic panel, below the HUD's resource strip, above the HUD's bottom bar. Both are
+cycled with one tap: Mobile HUD Menu > Settings ("FPS limit", "FPS position"), Classic Menu floating buttons
+("FPS limit", "FPS pos"). Desktop: 144 -> 82-86 fps (desktop speed), counter bottom right above the bar.
+
 **Cursor in the window layer (2026-11-08).** `s3_runtime::cursor` drew the game's Windows cursor into the presented
 frame, so it grew, shrank and moved with the zoom. With a window layer, `cursor_layer::CursorMod` sets
 `CursorState::disabled` and blits the same image (RGBA copy per HCURSOR, XOR pixels as their colour) at

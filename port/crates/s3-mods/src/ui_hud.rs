@@ -51,6 +51,14 @@ const ACCENT: Rgba = Rgba::rgb(240, 190, 80);
 /// Height of the bottom bar in HUD units (1 unit = 1 px of a 480 px high window, times `hud_scale`).
 const BAR_H: f32 = 54.0;
 
+/// Window px of the HUD's bottom bar and top resource strip for a view of `vw` x `vh` (same scale as `HudMod::k`),
+/// for other window-layer UI that must not cover them (FPS counter).
+pub(crate) fn bar_and_strip_h(m: &mut Machine, vw: i32, vh: i32) -> (i32, i32) {
+    let pref = crate::settings(m).hud_scale;
+    let k = (vh.max(1) as f32 / 480.0).min(vw.max(1) as f32 / 640.0).max(0.5) * pref.clamp(0.6, 1.6);
+    ((BAR_H * k).round() as i32, (34.0 * k).round() as i32)
+}
+
 // ---------------------------------------------------------------- geometry
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -109,6 +117,10 @@ pub(crate) enum Action {
     CycleDisplayMode,
     CycleFilter,
     CycleFps,
+    /// Next game frame limit (30 / 60 / 120 / 144 / display rate).
+    CycleFpsLimit,
+    /// Next FPS counter position.
+    CycleFpsPos,
     Zoom(i32),
     /// Swallow the tap (sheet background).
     Nothing,
@@ -510,6 +522,12 @@ impl MobileHud {
             Action::CycleFps => {
                 crate::display::cycle_fps(m);
             }
+            Action::CycleFpsLimit => {
+                crate::display::cycle_fps_limit(m);
+            }
+            Action::CycleFpsPos => {
+                crate::display::cycle_fps_pos(m);
+            }
             Action::Zoom(d) => {
                 if let Some(t) = zoom_step(m, d) {
                     self.set_toast(&t);
@@ -784,7 +802,7 @@ impl MobileHud {
     fn draw_settings(&mut self, m: &mut Machine, c: &mut Layer) {
         let bh = self.u(40.0);
         let gap = self.u(7.0);
-        let inner = self.dialog(c, 7, "Settings");
+        let inner = self.dialog(c, 8, "Settings");
         let full = Rect::new(inner.x, inner.y, inner.w, bh);
         let half = (inner.w - gap) / 2;
         let third = (inner.w - 2 * gap) / 3;
@@ -792,20 +810,23 @@ impl MobileHud {
         let d = crate::display::display_settings(m);
         self.button(c, Rect::new(inner.x, row(0), half, bh), &format!("Screen: {}", d.mode.label()), BTN_BG, Action::CycleDisplayMode);
         self.button(c, Rect::new(inner.x + half + gap, row(0), half, bh), &format!("Filter: {}", d.filter.label()), BTN_BG, Action::CycleFilter);
-        self.button(c, Rect { y: row(1), ..full }, &format!("FPS counter: {}", d.fps_counter.label()), BTN_BG, Action::CycleFps);
-        self.button(c, Rect::new(inner.x, row(2), third, bh), "Zoom -", BTN_BG, Action::Zoom(-1));
+        self.button(c, Rect::new(inner.x, row(1), half, bh), &format!("FPS counter: {}", d.fps_counter.label()), BTN_BG, Action::CycleFps);
+        let fl = crate::display::fps_limit_label(m);
+        self.button(c, Rect::new(inner.x + half + gap, row(1), half, bh), &fl, BTN_BG, Action::CycleFpsLimit);
+        self.button(c, Rect { y: row(2), ..full }, &format!("FPS position: {}", d.fps_pos.label()), BTN_BG, Action::CycleFpsPos);
+        self.button(c, Rect::new(inner.x, row(3), third, bh), "Zoom -", BTN_BG, Action::Zoom(-1));
         let zl = zoom_label(m);
-        c.text_centered(inner.x + third + gap, row(2), third, bh, self.k() * 13.0, Weight::Bold, TEXT, &zl);
-        self.button(c, Rect::new(inner.x + 2 * (third + gap), row(2), third, bh), "Zoom +", BTN_BG, Action::Zoom(1));
-        self.button(c, Rect::new(inner.x, row(3), third, bh), "HUD -", BTN_BG, Action::MenuScale(-1));
-        c.text_centered(inner.x + third + gap, row(3), third, bh, self.k() * 14.0, Weight::Bold, TEXT, &format!("HUD {:.0}%", self.scale_pref * 100.0));
-        self.button(c, Rect::new(inner.x + 2 * (third + gap), row(3), third, bh), "HUD +", BTN_BG, Action::MenuScale(1));
+        c.text_centered(inner.x + third + gap, row(3), third, bh, self.k() * 13.0, Weight::Bold, TEXT, &zl);
+        self.button(c, Rect::new(inner.x + 2 * (third + gap), row(3), third, bh), "Zoom +", BTN_BG, Action::Zoom(1));
+        self.button(c, Rect::new(inner.x, row(4), third, bh), "HUD -", BTN_BG, Action::MenuScale(-1));
+        c.text_centered(inner.x + third + gap, row(4), third, bh, self.k() * 14.0, Weight::Bold, TEXT, &format!("HUD {:.0}%", self.scale_pref * 100.0));
+        self.button(c, Rect::new(inner.x + 2 * (third + gap), row(4), third, bh), "HUD +", BTN_BG, Action::MenuScale(1));
         let fm = if self.fullscreen_map { "Full-screen map: on" } else { "Full-screen map: off" };
-        self.button(c, Rect { y: row(4), ..full }, fm, BTN_BG, Action::MenuToggleFullMap);
+        self.button(c, Rect { y: row(5), ..full }, fm, BTN_BG, Action::MenuToggleFullMap);
         let mode = crate::settings(m).ui_mode;
         let mode_label = if mode == UiMode::MobileHud { "UI: Mobile HUD  >  Classic Touch" } else { "UI: Classic  >  Mobile HUD" };
-        self.button(c, Rect { y: row(5), ..full }, mode_label, BTN_BG, Action::MenuToggleMode);
-        self.button(c, Rect { y: row(6), ..full }, "< Back", BTN_ACTIVE, Action::SettingsBack);
+        self.button(c, Rect { y: row(6), ..full }, mode_label, BTN_BG, Action::MenuToggleMode);
+        self.button(c, Rect { y: row(7), ..full }, "< Back", BTN_ACTIVE, Action::SettingsBack);
     }
 
     /// Resource strip (top left; the FPS counter uses the top-right corner): building materials, food and population, with the game's own goods icons.

@@ -140,7 +140,7 @@ impl Mod for FpsMod {
             (s.host_fps, s.refresh_hz)
         };
         let lines = self.stats.lines(self.mode, host_fps, refresh);
-        let (vx, vy, vw, _vh) = crate::draw_viewport(m).dst_rect_clipped();
+        let (vx, vy, vw, vh) = crate::draw_viewport(m).dst_rect_clipped();
         // Window pixels: 11 px at a 600 px high window (as it looked at a 600 px high frame shown full screen).
         let sk = c.ui().clamp(0.3, 4.0);
         let px = 11.0 * sk;
@@ -148,10 +148,30 @@ impl Mod for FpsMod {
         let lh = measure_text(px, Weight::Bold, "0").1.max(1);
         let w = lines.iter().map(|l| measure_text(px, Weight::Bold, l).0).max().unwrap_or(0) + 2 * pad;
         let h = lh * lines.len() as i32 + pad;
-        // Top right; in the Mobile HUD top centre (its full-screen map "Close" and "Back to HUD" sit top right).
+        // Position setting; Auto = top right, in the Mobile HUD top centre (its full-screen map "Close" and "Back to
+        // HUD" sit top right). Never over the HUD's resource strip / bottom bar or the Classic panel.
         let hud = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode == crate::settings::UiMode::MobileHud;
-        let x = if hud { vx + (vw - w) / 2 } else { (vx + vw - w - 2).max(vx) };
-        let y = vy + (2.0 * sk).round() as i32;
+        let pos = crate::display::display_settings(m).fps_pos;
+        let vp = crate::draw_viewport(m);
+        let m2 = (2.0 * sk).round() as i32;
+        let (bar, strip) = if hud { crate::ui_hud::bar_and_strip_h(m, vw, vh) } else { (0, 0) };
+        // Left edge of the free area: right of the Classic panel (incl. the minimap frame's edge at the top).
+        let left = match vp.panel {
+            Some(p) => vp.game_to_window(p.art_right(0.0).max(p.w as f32) - 1.0, 0.0).0.round() as i32 + m2,
+            None => vx + m2,
+        };
+        use crate::display::FpsPos as P;
+        let pos = if pos == P::Auto { if hud { P::TopCenter } else { P::TopRight } } else { pos };
+        let x = match pos {
+            P::TopLeft | P::BottomLeft => left,
+            P::TopCenter | P::BottomCenter => left + (vx + vw - left - w) / 2,
+            _ => (vx + vw - w - m2).max(left),
+        };
+        let y = match pos {
+            P::TopLeft if hud => vy + strip + m2,
+            P::BottomLeft | P::BottomCenter | P::BottomRight => vy + vh - bar - h - m2,
+            _ => vy + m2,
+        };
         c.fill_rect(x, y, w, h, Rgba::rgba(0, 0, 0, 150));
         let color = if !self.stats.have || self.stats.fps >= 55.0 {
             Rgba::rgb(140, 255, 140)

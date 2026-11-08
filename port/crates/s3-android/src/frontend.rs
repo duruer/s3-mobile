@@ -383,6 +383,8 @@ pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) {
     #[cfg(feature = "engine")]
     if let Some(cap) = std::fs::read_to_string(data_dir.join("fps-cap.txt")).ok().and_then(|s| s.trim().parse::<u32>().ok()) {
         s3_dx::ddraw::set_fps_cap(cap);
+        // Wins over the in-game FPS limit setting (s3_mods::display::apply_fps_limit skips when it is set).
+        std::env::set_var("S3_FPS_CAP", cap.to_string());
         log::info!("fps cap: {cap} (from fps-cap.txt)");
     }
 

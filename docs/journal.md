@@ -2,6 +2,12 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — FPS limit and FPS counter position settings
+
+- Both UI modes: "FPS limit" cycles 30 / 60 / 120 / 144 (+ display refresh rate when higher), applied to the
+  DirectDraw frame limiter; "FPS position" cycles the counter's corner / edge
+  ([display.md](porting/display.md)). s3-mods now depends on s3-dx (for `set_fps_cap`).
+
 ## 2026-11-08 — Mobile HUD: own quit confirmation
 
 - Bug: the last message lines (tutorial text) stayed on the statistics screen after quitting: the composite hook

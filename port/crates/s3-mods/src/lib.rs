@@ -244,6 +244,7 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     add_mod(m, Box::new(fps::FpsMod::default())); // FPS counter, drawn on top of the UI modes
     cursor_layer::install(m); // the game's mouse cursor at a constant size, on top of everything
     hooks::commit(m);
+    display::apply_fps_limit(m); // FPS limit setting -> DirectDraw frame limiter
     fast::install(m, &sha); // after commit: regions containing hooks are skipped
     let n = m.hook_addrs().map(|h| h.len()).unwrap_or(0);
     let st = m.state::<ModsState>();

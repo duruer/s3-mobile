@@ -92,6 +92,40 @@ impl ScaleFilter {
     }
 }
 
+/// Where the FPS counter sits (cycled from the menus).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FpsPos {
+    /// Top right in UI mode A, top centre in the Mobile HUD.
+    #[default]
+    Auto,
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomRight,
+    BottomCenter,
+    BottomLeft,
+}
+
+impl FpsPos {
+    pub const ALL: [FpsPos; 7] =
+        [FpsPos::Auto, FpsPos::TopLeft, FpsPos::TopCenter, FpsPos::TopRight, FpsPos::BottomRight, FpsPos::BottomCenter, FpsPos::BottomLeft];
+    pub fn label(self) -> &'static str {
+        match self {
+            FpsPos::Auto => "auto",
+            FpsPos::TopLeft => "top left",
+            FpsPos::TopCenter => "top centre",
+            FpsPos::TopRight => "top right",
+            FpsPos::BottomRight => "bottom right",
+            FpsPos::BottomCenter => "bottom centre",
+            FpsPos::BottomLeft => "bottom left",
+        }
+    }
+    pub fn next(self) -> FpsPos {
+        let i = Self::ALL.iter().position(|&p| p == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+}
+
 /// FPS counter (drawn by [`crate::fps`] in the top-right corner of the visible game area).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FpsCounter {
@@ -136,13 +170,30 @@ pub struct DisplaySettings {
     /// Requested display refresh rate in Hz (Android `ANativeWindow_setFrameRate`); 0 = the highest the panel
     /// offers.
     pub refresh_hz: u32,
+    /// Game frame limit (fps) applied by the DirectDraw frame limiter (`s3_dx::ddraw::set_fps_cap`): one of
+    /// [`fps_limit_options`] (30, 60, 120, 144, or the display's refresh rate when it is higher).
+    pub fps_limit: u32,
+    /// FPS counter position.
+    pub fps_pos: FpsPos,
 }
 
 impl Default for DisplaySettings {
     fn default() -> Self {
-        DisplaySettings { mode: DisplayMode::default(), filter: ScaleFilter::default(), fps_counter: FpsCounter::Off, refresh_hz: 0 }
+        DisplaySettings {
+            mode: DisplayMode::default(),
+            filter: ScaleFilter::default(),
+            fps_counter: FpsCounter::Off,
+            refresh_hz: 0,
+            fps_limit: DEFAULT_FPS_LIMIT,
+            fps_pos: FpsPos::Auto,
+        }
     }
 }
+
+/// Default game frame limit (the original game's 60 Hz pacing).
+pub const DEFAULT_FPS_LIMIT: u32 = 60;
+/// Fixed frame limit choices; the display's refresh rate is added when it is higher ([`fps_limit_options`]).
+pub const FPS_LIMITS: [u32; 4] = [30, 60, 120, 144];
 
 /// UI mode A in `NativeWide` with the custom resolution (docs/porting/display.md "Classic panel"): the original
 /// panel (frame `x < w`, `y < h` = the panel art of the current layout variant) is shown at a constant scale
@@ -742,6 +793,51 @@ pub fn cycle_filter(m: &mut Machine) -> ScaleFilter {
     d.filter = d.filter.next();
     set_display(m, d);
     d.filter
+}
+
+/// Frame limit choices: [`FPS_LIMITS`] plus the display's refresh rate (published by the frontend) when higher.
+pub fn fps_limit_options(m: &mut Machine) -> Vec<u32> {
+    let mut v = FPS_LIMITS.to_vec();
+    let hz = m.state::<DisplayState>().borrow_mut().refresh_hz.map(|r| r.round() as u32).unwrap_or(0);
+    if hz > *FPS_LIMITS.last().unwrap() {
+        v.push(hz);
+    }
+    v
+}
+
+/// Next frame limit (saved and applied).
+pub fn cycle_fps_limit(m: &mut Machine) -> u32 {
+    let opts = fps_limit_options(m);
+    let mut d = display_settings(m);
+    let i = opts.iter().position(|&o| o == d.fps_limit);
+    d.fps_limit = opts[i.map_or(0, |i| (i + 1) % opts.len())];
+    set_display(m, d);
+    apply_fps_limit(m);
+    d.fps_limit
+}
+
+/// Apply the frame limit setting to the frame limiter, unless a developer override is set (env `S3_FPS_CAP`,
+/// Android `fps-cap.txt` sets that env too).
+pub fn apply_fps_limit(m: &mut Machine) {
+    if std::env::var_os("S3_FPS_CAP").is_some() {
+        return;
+    }
+    let l = display_settings(m).fps_limit;
+    let l = if l == 0 { DEFAULT_FPS_LIMIT } else { l };
+    s3_dx::ddraw::set_fps_cap(l);
+}
+
+/// Label for menus, e.g. "FPS limit: 60".
+pub fn fps_limit_label(m: &mut Machine) -> String {
+    format!("FPS limit: {}", display_settings(m).fps_limit)
+}
+
+/// Next FPS counter position (saved).
+pub fn cycle_fps_pos(m: &mut Machine) -> FpsPos {
+    let mut d = display_settings(m);
+    d.fps_pos = d.fps_pos.next();
+    set_display(m, d);
+    d.fps_pos
 }
 
 pub fn cycle_fps(m: &mut Machine) -> FpsCounter {

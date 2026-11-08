@@ -188,6 +188,10 @@ enum FloatBtn {
     HudMode,
     /// Shown while the menu is open: cycle the FPS counter (docs/porting/display.md).
     Fps,
+    /// Shown while the menu is open: cycle the game frame limit (30 / 60 / 120 / 144 / display rate).
+    FpsLimit,
+    /// Shown while the menu is open: move the FPS counter to the next corner / edge.
+    FpsPos,
     /// Shown while the menu is open: cycle the display mode (Fit / Fill / Stretch / Native wide).
     Screen,
     /// Shown while the menu is open: zoom in / out one level (render resolution, docs/porting/resolution-zoom.md).
@@ -346,7 +350,7 @@ impl ClassicTouch {
         if self.view.panel.page == 7 {
             let hw = self.q(150.0);
             let mut y = menu.1;
-            for k in [FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut] {
+            for k in [FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut] {
                 y -= h + self.q(12.0);
                 if y < vy + self.q(4.0) {
                     break;
@@ -505,7 +509,7 @@ impl ClassicTouch {
                     crate::display::DisplayMode::Stretch => "Screen: Stretch",
                     crate::display::DisplayMode::NativeWide => "Screen: Wide",
                 }),
-                FloatBtn::ZoomIn | FloatBtn::ZoomOut => (BG, ""),
+                FloatBtn::ZoomIn | FloatBtn::ZoomOut | FloatBtn::FpsLimit | FloatBtn::FpsPos => (BG, ""),
             };
             let zoom_label;
             let text = match k {
@@ -515,6 +519,14 @@ impl ClassicTouch {
                     let word = if k == FloatBtn::ZoomIn { "in" } else { "out" };
                     let _ = sign;
                     zoom_label = if crate::zoom::enabled(m) { format!("Zoom {word} ({lv}/{n})") } else { format!("Zoom {word} (off)") };
+                    zoom_label.as_str()
+                }
+                FloatBtn::FpsLimit => {
+                    zoom_label = crate::display::fps_limit_label(m);
+                    zoom_label.as_str()
+                }
+                FloatBtn::FpsPos => {
+                    zoom_label = format!("FPS pos: {}", self.disp.fps_pos.label());
                     zoom_label.as_str()
                 }
                 _ => text,
@@ -631,10 +643,14 @@ impl Mod for ClassicTouch {
                                     self.dirty = true;
                                     return ModEvent::Consumed;
                                 }
-                                FloatBtn::Fps | FloatBtn::Screen => {
+                                                FloatBtn::Fps | FloatBtn::Screen | FloatBtn::FpsLimit | FloatBtn::FpsPos => {
                                     // Presentation settings only: no game action.
                                     if k == FloatBtn::Fps {
                                         crate::display::cycle_fps(m);
+                                    } else if k == FloatBtn::FpsLimit {
+                                        crate::display::cycle_fps_limit(m);
+                                    } else if k == FloatBtn::FpsPos {
+                                        crate::display::cycle_fps_pos(m);
                                     } else {
                                         crate::display::cycle_mode(m);
                                     }
