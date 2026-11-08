@@ -9,6 +9,7 @@ Newest first. One entry per session: what was done, what was learned, links to d
   `[ebp-0x1c]`, y `esi`, w `[ebp-0x2c]`, h `[ebp-0x44]`, minimap image px) scales it to the shown part
   (`display::Viewport::map_src` fractions). Verified desktop: small rectangle at deep zoom, unchanged at >= 480.
   s3det fast vs S3_FAST=0: IDENTICAL (also covers the guest clock change of the speed feature at 1x).
+
 ## 2026-11-08 — Crisp panel texts and tooltips (panel-text)
 
 - RE: all in-game texts go DIB clear `0x4d65e0` -> `DrawTextA` (only call `0x4a8725`) -> composite `0x4d6740`, which
