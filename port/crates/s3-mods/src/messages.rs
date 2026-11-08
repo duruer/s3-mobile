@@ -51,7 +51,13 @@ struct Shown {
 #[derive(Default)]
 struct Shared {
     shown: Mutex<Shown>,
+    /// `m.now_ms()` of the last composite call (the game renders a game frame).
+    last_ms: std::sync::atomic::AtomicU64,
 }
+
+/// Lines are dropped when the game has not drawn a game frame for this long (it left the game: quit, statistics,
+/// main menu; the hook is not called there and the last lines stayed on screen, user report 2026-11-08).
+const STALE_MS: u64 = 300;
 
 fn read_wstr(m: &Machine, obj: u32) -> Option<String> {
     let ptr = m.mem.read_u32(obj + 4);
@@ -93,6 +99,7 @@ pub fn install(m: &mut Machine) {
         if snap != 0 {
             let s = read_snapshot(c.m, snap);
             *sh.shown.lock().unwrap() = s;
+            sh.last_ms.store(c.m.now_ms(), std::sync::atomic::Ordering::Relaxed);
         }
         c.return_from_function(0, 1)
     });
@@ -115,9 +122,26 @@ impl Mod for MessagesMod {
         !s.lines.is_empty() || s.chat.is_some()
     }
 
+    fn tick(&mut self, m: &mut Machine, now: u64) {
+        let last = self.shared.last_ms.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(last) > STALE_MS {
+            let mut s = self.shared.shown.lock().unwrap();
+            if !s.lines.is_empty() || s.chat.is_some() {
+                *s = Shown::default();
+                drop(s);
+                self.next_rect = None;
+                m.refresh_overlay();
+            }
+        }
+    }
+
     fn draw_window(&mut self, m: &mut Machine, l: &mut Layer, _frame: &FrameBuffer) {
         let shown = self.shared.shown.lock().unwrap().clone();
         self.next_rect = None;
+        // Not over menu screens (menu layouts) or a frame the game did not draw as a game frame.
+        if crate::draw_viewport(m).layout.is_some() {
+            return;
+        }
         let (wh, ui) = (l.height() as f32, l.ui());
         let vp = crate::draw_viewport(m);
         // Left edge: right of the Classic panel; in the Mobile HUD right of its minimap (like the game's 50c).

@@ -4,6 +4,10 @@ Newest first. One entry per session: what was done, what was learned, links to d
 
 ## 2026-11-08 — Mobile HUD: own quit confirmation
 
+- Bug: the last message lines (tutorial text) stayed on the statistics screen after quitting: the composite hook
+  that reads them is only called for game frames. `messages.rs` now drops them after 300 ms without a game frame
+  and never draws over menu layouts. Verified on desktop (tutorial -> HUD quit -> statistics without text).
+
 - "Quit game" in the HUD menu used to open the original panel's page 7 confirmation (peek), so the player saw the
   Classic panel. RE: the YES handler calls `0x53e720(logic)` ([game-state-ui.md](reverse-engineering/game-state-ui.md)
   section 4). The HUD now shows "Quit this game?" (No / Yes, quit) and runs that call on the logic thread
