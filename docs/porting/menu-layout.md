@@ -67,6 +67,12 @@ split screen and resizing at once.
 | `briefing` | campaign mission briefing | text panel left, map right, tip text + Cancel/OK below |
 | `loading` | 640x480 loading screen before a map (laurel + helmets) | kept whole, sides filled with its beige |
 
+Window bands above / below a canvas (tall windows, e.g. Fold4 inner 2176x1812 with `main-menu-full`) are filled
+with the background colour; `MenuLayout::band_tiles` repeats edge strips there (`menu_layout::band_quads`, used by
+the CPU renderer and the GLES presenter). The main menu's Greek-key borders repeat every 62 rows, so they now run
+along the whole window height (user report 2026-11-08; checked with `--layout-preview` at 2176x1812, 2316x904,
+2048x1536).
+
 Not covered (shown as before): Credits (scrolling text), popups, any screen not
 listed. Lists are cut at the bottom (Load Game, players): long lists need the game's own scrolling.
 

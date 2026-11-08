@@ -472,6 +472,13 @@ impl Gles {
             glUniform4f(prog.u_uv, t[0], t[1], t[2], t[3]);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
+        // Edge strips repeated over the bands above / below the canvas (main menu borders).
+        for (s, d) in s3_mods::menu_layout::band_quads(l, vp.win_w, vp.win_h) {
+            let r = clip_rect(d[0], d[1], d[2], d[3], ww, wh);
+            glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
+            glUniform4f(prog.u_uv, s[0] / gw, s[1] / gh, (s[0] + s[2]) / gw, (s[1] + s[3]) / gh);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
         for p in l.pieces {
             let [x, y, w, h] = p.src;
             let r = clip_rect(vp.dst_x + p.at[0] as f32 * sx, vp.dst_y + p.at[1] as f32 * sy, w as f32 * sx, h as f32 * sy, ww, wh);

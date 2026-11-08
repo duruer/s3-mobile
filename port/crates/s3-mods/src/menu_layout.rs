@@ -53,6 +53,10 @@ pub struct MenuLayout {
     pub pieces: &'static [Piece],
     /// Game point for touches outside every piece.
     pub neutral: [u16; 2],
+    /// Strips repeated vertically over the window bands above and below the canvas (a window taller than the
+    /// canvas): `src` is one period of the strip, `at` the canvas position of one copy. Keeps edge decoration (the
+    /// main menu's Greek-key borders) running along the whole window height (user report 2026-11-08).
+    pub band_tiles: &'static [Piece],
     pub probes: &'static [Probe],
 }
 
@@ -159,6 +163,9 @@ const FULL_800: [Piece; 1] = [Piece { src: [0, 0, 800, 600], at: [0, 0] }];
 
 macro_rules! full {
     ($stat:ident, $base:ident, $name:literal) => {
+        full!($stat, $base, $name, &[]);
+    };
+    ($stat:ident, $base:ident, $name:literal, $tiles:expr) => {
         pub static $stat: MenuLayout = MenuLayout {
             name: $name,
             frame: $base.frame,
@@ -169,12 +176,20 @@ macro_rules! full {
             },
             pieces: &FULL_800,
             neutral: $base.neutral,
+            band_tiles: $tiles,
             probes: &[],
         };
     };
 }
 
-full!(MAIN_MENU_FULL, MAIN_MENU, "main-menu-full");
+/// Greek-key borders of the main menu: the pattern repeats every 62 rows (measured on the 800x600 frame).
+const MAIN_KEY_PERIOD: u16 = 62;
+full!(
+    MAIN_MENU_FULL,
+    MAIN_MENU,
+    "main-menu-full",
+    &[pc(0, 100, 22, MAIN_KEY_PERIOD, 0, 100), pc(778, 100, 22, MAIN_KEY_PERIOD, 778, 100)]
+);
 full!(CHOOSE_RACE_FULL, CHOOSE_RACE, "choose-race-full");
 full!(CHOOSE_RACE_MCD_FULL, CHOOSE_RACE_MCD, "choose-race-mcd-full");
 full!(CHOOSE_RACE_AMAZON_FULL, CHOOSE_RACE_AMAZON, "choose-race-amazon-full");
@@ -206,6 +221,47 @@ pub fn canvas_placement(l: &MenuLayout, win_w: u32, win_h: u32) -> (f32, f32, f3
     (((win_w as f32 - cw * s) / 2.0).round(), ((win_h as f32 - ch * s) / 2.0).round(), s)
 }
 
+/// Copies of the layout's [`MenuLayout::band_tiles`] outside the canvas rows, as (source rect in game px, window
+/// rect) pairs; partial copies are cut at the canvas edge and the window edge.
+pub fn band_quads(l: &MenuLayout, win_w: u32, win_h: u32) -> Vec<([f32; 4], [f32; 4])> {
+    let mut out = Vec::new();
+    let (ox, oy, s) = canvas_placement(l, win_w, win_h);
+    if s <= 0.0 {
+        return out;
+    }
+    let ch = l.canvas[1] as f32;
+    // Window rows above / below the canvas, in canvas units.
+    let bands = [(-oy / s, 0.0), (ch, ch + (win_h as f32 - oy - ch * s) / s)];
+    for t in l.band_tiles {
+        let [sx, sy, sw, sh] = t.src.map(|v| v as f32);
+        if sh < 1.0 {
+            continue;
+        }
+        for &(b0, b1) in &bands {
+            if b1 - b0 < 0.01 {
+                continue;
+            }
+            // Copies k: canvas rows at.y + k*sh .. + sh, cut to the band.
+            let base = t.at[1] as f32;
+            let mut k = ((b0 - base) / sh).floor();
+            loop {
+                let c0 = base + k * sh;
+                if c0 >= b1 {
+                    break;
+                }
+                let (v0, v1) = (c0.max(b0), (c0 + sh).min(b1));
+                if v1 > v0 {
+                    let src = [sx, sy + (v0 - c0), sw, v1 - v0];
+                    let dst = [ox + t.at[0] as f32 * s, oy + v0 * s, sw * s, (v1 - v0) * s];
+                    out.push((src, dst));
+                }
+                k += 1.0;
+            }
+        }
+    }
+    out
+}
+
 /// CPU renderer (desktop window, Android CPU fallback, previews): nearest sampling into XRGB8888.
 pub fn render_xrgb(l: &MenuLayout, src: &[u16], gw: usize, gh: usize, dst: &mut [u32], ww: usize, wh: usize) {
     if src.len() < gw * gh || dst.len() < ww * wh {
@@ -223,6 +279,18 @@ pub fn render_xrgb(l: &MenuLayout, src: &[u16], gw: usize, gh: usize, dst: &mut 
                 for x in 0..ww {
                     dst[y * ww + x] = px(sx as usize + x * sw as usize / ww, gy);
                 }
+            }
+        }
+    }
+    for (sr, d) in band_quads(l, ww as u32, wh as u32) {
+        let (x0, y0) = (d[0].round().max(0.0) as usize, d[1].round().max(0.0) as usize);
+        let x1 = ((d[0] + d[2]).round().max(0.0) as usize).min(ww);
+        let y1 = ((d[1] + d[3]).round().max(0.0) as usize).min(wh);
+        for y in y0..y1 {
+            let v = (sr[1] + (y as f32 + 0.5 - d[1]) * sr[3] / d[3]).clamp(sr[1], sr[1] + sr[3] - 0.01) as usize;
+            for x in x0..x1 {
+                let u = (sr[0] + (x as f32 + 0.5 - d[0]) * sr[2] / d[2]).clamp(sr[0], sr[0] + sr[2] - 0.01) as usize;
+                dst[y * ww + x] = px(u, v);
             }
         }
     }
@@ -293,6 +361,7 @@ pub static MAIN_MENU: MenuLayout = MenuLayout {
         pc(300, 0, 400, 280, 436, 25),
     ],
     neutral: [270, 590],
+    band_tiles: &[pc(0, 0, 22, MAIN_KEY_PERIOD, 0, 0), pc(778, 0, 22, MAIN_KEY_PERIOD, 838, 0)],
     probes: &[
         pr(8, 300, 68, 59, 65),
         pr(785, 300, 33, 28, 57),
@@ -316,6 +385,7 @@ pub static CHOOSE_RACE: MenuLayout = MenuLayout {
         pc(563, 198, 207, 201, 610, 64),
     ],
     neutral: [400, 580],
+    band_tiles: &[],
     probes: &[
         pr(370, 44, 130, 64, 40),
         pr(400, 250, 34, 39, 42),
@@ -337,6 +407,7 @@ pub static CHOOSE_RACE_MCD: MenuLayout = MenuLayout {
         pc(571, 384, 111, 44, 571, 262),
     ],
     neutral: [60, 20],
+    band_tiles: &[],
     probes: &[
         pr(330, 545, 11, 60, 60),
         pr(300, 100, 7, 0, 0),
@@ -358,6 +429,7 @@ pub static CHOOSE_RACE_AMAZON: MenuLayout = MenuLayout {
         pc(611, 486, 112, 28, 611, 278),
     ],
     neutral: [650, 10],
+    band_tiles: &[],
     probes: &[
         pr(340, 40, 145, 74, 83),
         pr(400, 150, 47, 75, 164),
@@ -381,6 +453,7 @@ pub static MAP_PICKER: MenuLayout = MenuLayout {
         pc(455, 452, 230, 32, 630, 300),
     ],
     neutral: [400, 590],
+    band_tiles: &[],
     probes: &[
         pr(102, 300, 134, 147, 163),
         pr(692, 300, 48, 63, 76),
@@ -408,6 +481,7 @@ pub static GAME_SETUP: MenuLayout = MenuLayout {
         pc(568, 133, 219, 240, 705, 92),
     ],
     neutral: [450, 300],
+    band_tiles: &[],
     probes: &[
         pr(390, 40, 142, 76, 53),
         pr(30, 145, 211, 79, 23),
@@ -433,6 +507,7 @@ pub static PLAYERS: MenuLayout = MenuLayout {
         pc(436, 553, 348, 29, 502, 300),
     ],
     neutral: [400, 560],
+    band_tiles: &[],
     probes: &[
         pr(40, 40, 103, 91, 57),
         pr(760, 50, 16, 24, 24),
@@ -459,6 +534,7 @@ pub static LAN_GAME: MenuLayout = MenuLayout {
         pc(678, 553, 104, 30, 695, 210),
     ],
     neutral: [420, 520],
+    band_tiles: &[],
     probes: &[
         pr(390, 40, 127, 66, 44),
         pr(140, 96, 82, 88, 57),
@@ -481,6 +557,7 @@ pub static LOAD_GAME: MenuLayout = MenuLayout {
         pc(676, 553, 108, 30, 600, 300),
     ],
     neutral: [690, 300],
+    band_tiles: &[],
     probes: &[
         pr(390, 40, 132, 62, 35),
         pr(400, 300, 36, 43, 44),
@@ -502,6 +579,7 @@ pub static BRIEFING: MenuLayout = MenuLayout {
         pc(556, 553, 228, 30, 650, 300),
     ],
     neutral: [740, 400],
+    band_tiles: &[],
     probes: &[
         pr(695, 150, 79, 93, 112),
         pr(20, 320, 102, 136, 166),
@@ -602,6 +680,7 @@ pub static LOADING: MenuLayout = MenuLayout {
     background: Background::Color([165, 150, 82]),
     pieces: &[pc(0, 0, 640, 480, 0, 0)],
     neutral: [30, 470],
+    band_tiles: &[],
     probes: &[
         pr(30, 5, 165, 150, 82),
         pr(610, 470, 165, 150, 82),

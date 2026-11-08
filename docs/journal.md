@@ -2,6 +2,12 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Main menu borders along the whole height (tablet / unfolded)
+
+- On tall windows the 800x600 main menu leaves bands above and below; the Greek-key side borders stopped at the
+  menu's edge. New `MenuLayout::band_tiles` + `menu_layout::band_quads` repeat a 62-row period of each border over
+  the bands (CPU renderer + GLES presenter) → [menu-layout](porting/menu-layout.md).
+
 ## 2026-11-08 — Minimap camera rectangle follows the Classic crop zoom
 
 - Below 480 rows UI mode A shows a centred crop of a 480-row view, but the game's minimap rectangle covered the
