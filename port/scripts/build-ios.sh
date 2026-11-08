@@ -47,8 +47,9 @@ echo "== xtool dev $XTOOL_CMD (port/ios)"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     # Windows: xtool runs in WSL Ubuntu (swiftly + ~/.local/bin/xtool), on the same files via /mnt/c.
-    WPATH="$(wsl -d Ubuntu -- wslpath -a "$(cygpath -w "$PORT/ios")" | tr -d '\r')"
-    wsl -d Ubuntu -- bash -lc ". ~/.local/share/swiftly/env.sh; export PATH=\$HOME/.local/bin:\$PATH; cd '$WPATH' && xtool dev $XTOOL_CMD"
+    WPATH="$(wsl -d Ubuntu -- wslpath -a "$(cygpath -m "$PORT/ios")" | tr -d '\r')"
+    # No $VARS inside: wsl.exe expands them itself (Windows PATH with "(x86)" broke the command).
+    wsl -d Ubuntu -- bash -lc ". ~/.local/share/swiftly/env.sh; cd '$WPATH' && ~/.local/bin/xtool dev $XTOOL_CMD"
     ;;
   *)
     (cd "$PORT/ios" && xtool dev "$XTOOL_CMD")

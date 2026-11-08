@@ -14,6 +14,9 @@ Newest first. One entry per session: what was done, what was learned, links to d
 - New crate `s3-ios` (`libs3ios.a`, 13 C functions, `port/ios/Sources/CS3iOS/include/s3ios.h`) and the SwiftPM/xtool
   app `port/ios`; build script `port/scripts/build-ios.sh`. The static lib builds on Windows (34 MB).
 - Android APK rebuilt and installed after the move: starts, presenter + AAudio up (screen check pending; phone locked).
+- SDK from the user's `Xcode_27.2.xip` (`xtool sdk install`, no login); `xtool dev build` linked the app on the
+  first try (only OpenGL ES deprecation warnings). Fixed build-ios.sh: wsl.exe expands `$VARS` in its arguments, and
+  backslash paths lose their separators (`cygpath -m`).
 - Docs: [ios](porting/ios.md), [architecture](porting/architecture.md).
 
 ## 2026-11-08 — Finger scrolling of the map list

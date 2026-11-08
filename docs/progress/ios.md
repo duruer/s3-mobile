@@ -25,7 +25,7 @@ WSL Ubuntu + xtool (github.com/xtool-org/xtool).
    `xtool dev` builds/signs/installs.
 
 ## In progress
-- Done: steps 1-3 written, core staticlib builds. Next: user runs `xtool setup`, then `scripts/build-ios.sh` (fix Swift/link errors), install, test on device.
+- Done: steps 1-4; app builds + links (`scripts/build-ios.sh`). Next: user `xtool auth login`, iPhone via usbipd, `build-ios.sh --install`, test on device.
 
 ## Verify
 - `cargo check --target aarch64-apple-ios -p s3-ios`; desktop/Android builds still pass; later on device.

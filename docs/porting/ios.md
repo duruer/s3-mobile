@@ -1,8 +1,9 @@
 # iOS app (no Mac: xtool on WSL)
 
-Status 2026-11-08: Rust core and Swift shell written; the core builds for `aarch64-apple-ios` on Windows. Not yet
-linked/run: that needs the iOS SDK from `Xcode.xip` (`xtool setup`). Target device: iPhone, iOS 17+, free Apple ID
-(the app must be re-signed every 7 days).
+Status 2026-11-08: the app builds and links without a Mac: `scripts/build-ios.sh` -> `port/ios/xtool/S3Mobile.app`
+(Mach-O arm64, 10 MB, iOS 17.0+), SDK from `Xcode_27.2.xip` via `xtool sdk install` (no Apple login needed for
+that). Not yet signed / installed / run: needs `xtool auth` (Apple ID) and the iPhone over USB. Target: iPhone,
+iOS 17+, free Apple ID (re-sign every 7 days).
 
 ## Pieces
 
@@ -41,10 +42,11 @@ AI filter falls back to sharp bilinear on iOS.
 Done on this PC 2026-11-08: apt `usbmuxd libimobiledevice-utils` + Swift build deps, swiftly + Swift 6.4.2,
 xtool 1.24.0 at `~/.local/bin/xtool`. Remaining (user, needs Apple login):
 
-1. Download Xcode (xtool docs: 27.1) `.xip` from developer.apple.com/download/all.
-2. In WSL: `xtool setup` -> login mode "Password" (free Apple ID; xtool suggests a separate Apple ID because this
-   uses private Apple APIs), then the path of the `.xip` (e.g. `/mnt/c/Users/<you>/Downloads/Xcode_27.1.xip`).
-   Check: `swift sdk list` shows `darwin`.
+1. Xcode `.xip` from developer.apple.com/download/all (used: 27.2). SDK: `xtool sdk install <path to .xip>`
+   (done 2026-11-08; `swift sdk list` shows `darwin`).
+2. Login (user, once): `xtool auth login` (or `xtool setup`) -> "Password" for a free Apple ID. Any Apple ID works, it
+   does not have to be the one on the iPhone; xtool suggests a separate one because this login uses private Apple
+   APIs. The iPhone is registered as a test device of that account.
 3. iPhone over USB into WSL: `usbipd` (learn.microsoft.com/windows/wsl/connect-usb), or the iTunes relay from xtool
    issue #19 if `AFCClient.Error.muxError`. Developer Mode on the iPhone; trust the developer certificate in
    Settings after the first install.
@@ -61,7 +63,7 @@ xtool prefixes the bundle id (`XTL-xxxx.com.settlers3port.app`) for free account
 
 ## Known gaps / risks
 
-- Not linked yet: Swift code and link flags are unverified until the SDK exists.
+- Only deprecation warnings (GLKView / EAGLContext, OpenGL ES deprecated since iOS 12).
 - No JIT on iOS (W^X); the interpreter is the default anyway.
 - LAN discovery uses UDP broadcast/multicast; iOS 14+ needs the local network permission (Info.plist text set) and
   multicast may need the `com.apple.developer.networking.multicast` entitlement (Apple approval) — HYPOTHESIS:
