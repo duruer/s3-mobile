@@ -25,4 +25,10 @@ Branch: worktree-agent-a4fc43414e521fc52. Scratch: C:\Users\<user>\Projects\sett
   `w`-prefixed touch injects (viewport frozen while fingers down); s3-android: present.rs layer texture + split
   quads, touch window coords, Shared.layer. `cargo test -p s3-mods` OK; android `cargo check --target
   aarch64-linux-android` OK. Determinism s3det 90000: IDENTICAL to baseline (fast + JIT).
+- 2026-11-08 ~09:30: verified headless (HUD 1536x600 / pinch in 760x296 / out; HUD min 512x200 with icons via
+  harvest >= 480; Classic 1232x480 .. 2952x1200 panel constant, magnifier, panel tap through split viewport, Menu
+  button). Fixed: Layout::read 2048 cap (Classic overlay missing > 2048 wide). fps desktop HUD 374 -> 536.
+  APK arm64 builds. Docs: mods, display, resolution-zoom, ui-hud, ui-classic, touch, multicore, performance,
+  journal, AGENTS. Open: phone test (main session), game mouse cursor still in the frame (scales with zoom),
+  s3-runtime vfs test fails on Windows (path separator, pre-existing).
 - Verify: scratch/vis.sh (headless 2316x904, wshot) -> scratch/overlay-window/vis/<name>/.

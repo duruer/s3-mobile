@@ -11,6 +11,12 @@ context-aware touch mod (`touch*.rs`, W3), which both UI modes share. Mode A add
 
 ## What it does
 
+Since 2026-11-08 (overlay-window) the floating buttons, context chip, magnifier bubble and outlines are drawn in the
+window layer (window pixels, sizes as at a 600 px high window, [mods.md](mods.md) "Window layer"), and in `Native
+wide` with the custom resolution the original panel itself is shown at a constant scale (the art fills the screen
+height at every zoom; [display.md](display.md) "Classic panel at a constant size"). The pixel sizes below are those
+reference units. Minimum zoom in Classic stays 480 px (the panel art).
+
 | Feature | Behaviour | How |
 | --- | --- | --- |
 | **Panel taps with a magnifier** | A finger on the left panel below the minimap is captured. While it is down, a bubble right of the panel shows the area under the finger enlarged 3x (64x40 px source, 192x120 px) and, below it, the button name in 18 px bold text. The chosen button gets a gold outline on the panel and in the bubble. The finger may slide to change the choice. Lifting it sends one left click to the **centre** of that button. Sliding more than 48 px right of the panel cancels without a click. | `ui_classic_panel::buttons(page, sub, category, race)` lists the known buttons in grid units. `pick()` chooses the button under the finger. In gaps, it snaps to the nearest button within 4 grid cells (12 px at 640x480), but only on pages whose buttons we know completely (0-3, and 7 sub-page 0). On other pages (4 building, 5 units, 8 messages, …) the raw point is clicked and the bubble still magnifies. |

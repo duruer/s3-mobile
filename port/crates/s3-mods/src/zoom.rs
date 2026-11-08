@@ -212,6 +212,11 @@ pub fn target_size(m: &mut Machine) -> Option<(u32, u32)> {
         return Some(res::clamp_size(w, h));
     }
     let a = aspect(m);
+    // The Mobile HUD reads its building icons from the game's panel once: that needs >= 480 px for a moment.
+    if m.state::<crate::ui_hud_game::HudShared>().borrow_mut().harvesting {
+        let h = m.state::<PinchState>().borrow_mut().height.unwrap_or(0).max(crate::ui_hud_game::HARVEST_MIN_H);
+        return Some(size_now(m, h, a));
+    }
     if let Some(h) = m.state::<PinchState>().borrow_mut().height {
         return Some(size_now(m, h, a));
     }

@@ -2,6 +2,19 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — overlay-window: window-resolution overlay layer, Classic panel at constant size, zoom min 200
+
+User feedback: zoom changed the size / sharpness of the HUD, the FPS counter and the Classic panel. All mod UI now
+goes into a window-resolution layer ([mods.md](porting/mods.md) "Window layer"): mods record a display list (engine
+thread, cheap), the list is published only when its hash changes, the frontend rasterizes only the changed rectangle
+(Android render thread, 2nd RGBA texture with premultiplied blending, only changed rows uploaded; s3run CPU blend,
+`wshot` screenshots). Pointer events carry window coordinates for hit tests. UI mode A: the panel is shown at
+`window height / art height` and the map part fills the rest; the zoom chooses render widths that keep the map's
+aspect and anchors in map-view fractions ([display.md](porting/display.md)). Zoom minimum 280 -> 200 (levels 200,
+240; the HUD icon harvest temporarily raises the size to 480). Found: `ui_classic_panel::Layout::read` rejected screens
+wider/taller than 2048 (Classic overlay vanished at 2952x1200 since res-tall), now uses `res::MAX_*`.
+s3det 90 000 vms IDENTICAL to the previous build (fast paths and JIT).
+
 ## 2026-11-08 — res-tall: zoom out to 3200x1200
 
 Raised the render size limit from 2560x780 to 3200x1200 ([resolution-zoom.md](porting/resolution-zoom.md), "Taller

@@ -423,6 +423,23 @@ After the JIT + multi-core merges (135a0e6), same setup: interpreter (`jit.txt` 
 only ~5 % of a core on the phone: guest code is no longer the main cost; host-side work (overlay/HUD compose, blits,
 HLE) is (see multicore.md, option B).
 
+## Window overlay layer (2026-11-08, overlay-window)
+
+The mods' UI moved out of the guest frame into a window-resolution layer ([mods.md](mods.md) "Window layer"): on the
+engine thread only a display list is recorded (and published when it changed); rasterizing happens on the frontend
+(Android render thread). Desktop Windows ARM64, headless `--window 2316x904`, HUD + detailed FPS counter, 1536x600,
+`S3_FPS_CAP=0`, EcoQoS off (`tools/perf/fast.ps1`), `S3_HOST_PROF=1`, median of 1 s samples 55-84 s (random map,
+one run each, `scratch/overlay-window/fps/`):
+
+| Build | fps | overlay per present (engine thread) |
+| --- | --- | --- |
+| before (frame copy + compose into the frame) | 374 | 0.375 ms |
+| window layer (record + compare) | **536** | 0.014 ms (+ cursor/`Host::present` 0.06 ms) |
+
+On the phone the rasterization cost moves to the `s3-present` thread and only when the list changed (changed
+rectangle only; upload of the changed rows). HYPOTHESIS: phone gain smaller than desktop (the engine thread there was
+~2.9 ms/frame of which ~0.5 ms overlay), not measured yet.
+
 ## Not done / next
 
 - Multi-core: see [multicore.md](multicore.md) (perf-mt, 2026-11-07). The draw thread on its own host thread

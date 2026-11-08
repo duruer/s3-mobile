@@ -20,6 +20,11 @@ thread, so desktop tests exercise exactly the Android code path.
 
 ## Behaviour
 
+(2026-11-08 overlay-window) Touch feedback (ripples, flags, long-press ring, box, ✕ Cancel) is drawn in the window
+layer at a constant on-screen size; selection rings follow the map scale. Raw pointer events carry window pixels too
+(`HostEvent::Pointer::wx/wy`); `s3run` injects with a `w` prefix (`wtap`, `wpinch`, `wdrag`, ...) take window pixels
+(the viewport is frozen while injected fingers are down, like on Android).
+
 | Gesture | In game | Outside a game (menus) |
 | --- | --- | --- |
 | Tap own unit / building (map) | select: left click at the unit (enlarged hit box, see below) | – |

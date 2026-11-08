@@ -842,8 +842,8 @@ mod tests {
         assert!(v.contains(&(5005, pt(2, PointerPhase::Down, 330, 200))));
         assert!(v.contains(&(5172, pt(2, PointerPhase::Up, 430, 200))));
         // Window coordinates (`w` prefix): game position left to the host.
-        let v = parse_inject("0:wtap 1000 400").unwrap();
-        assert_eq!(v[0], (0, HostEvent::Pointer { id: 1, phase: PointerPhase::Down, x: -1, y: -1, wx: 1000, wy: 400 }));
+        let wv = parse_inject("0:wtap 1000 400").unwrap();
+        assert_eq!(wv[0], (0, HostEvent::Pointer { id: 1, phase: PointerPhase::Down, x: -1, y: -1, wx: 1000, wy: 400 }));
         assert_eq!(v.iter().filter(|e| e.0 >= 9000 && e.0 < 9100 && matches!(e.1, HostEvent::Pointer { phase: PointerPhase::Down, .. })).count(), 3);
         assert_eq!(v.iter().filter(|e| e.0 >= 9500 && matches!(e.1, HostEvent::Pointer { phase: PointerPhase::Up, .. })).count(), 2);
     }

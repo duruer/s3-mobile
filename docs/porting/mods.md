@@ -10,13 +10,14 @@ touch pipeline (gesture recognizer -> mods -> fallback touch->mouse) that runs b
 ## Layers
 
 ```
-frontend (s3run / Android)  --HostEvent::Pointer{id,phase,x,y}-->  Machine::run_slice
+frontend (s3run / Android)  --HostEvent::Pointer{id,phase,x,y,wx,wy}-->  Machine::run_slice
    -> MachineExt::event_filter (s3-mods)
         captured pointer? -> that mod only
         else GestureRecognizer -> TouchEvents -> Mod::observe (all) -> Mod::on_touch (top first)
               unconsumed -> fallback::TouchMouse -> mouse HostEvents -> m.input (USER32 / DirectInput)
 guest CPU  --EIP hits hooked addr-->  CpuExit::Hook(eip) -> Machine::dispatch_hook -> hooks::dispatch (closures)
-guest Flip/Blt -> Machine::present -> overlay (Mod::draw on a copy) -> cursor compose -> Host::present
+guest Flip/Blt -> Machine::present -> window layer (Mod::draw_window records a draw list -> SceneSlot -> frontend)
+                -> [frame overlay (Mod::draw on a copy), only if a mod wants_draw_frame] -> cursor compose -> Host::present
 service "s3mods" (each run_slice): long-press timing, delayed mouse-ups, Mod::tick, overlay-only refresh
 ```
 
@@ -34,10 +35,13 @@ service "s3mods" (each run_slice): long-press timing, delayed mouse-ups, Mod::ti
 
 `Machine::ext: MachineExt` holds plain function pointers (state lives in `m.state::<T>()`):
 `hook_dispatch(m, eip) -> HookFlow {Continue, Redirected}`, `event_filter(m, HostEvent, &mut Vec<HostEvent>)`,
-`overlay_wanted(m) -> bool` (cheap, per present) and `overlay_compose(m, &mut FrameBuffer) -> bool`.
-`Machine::refresh_overlay()` re-presents the last guest frame with the current overlay (when the game is idle);
-`Machine::last_frame_size()`. `Stats::hooks` counts dispatched hooks (printed in the s3run summary).
-New host event: `HostEvent::Pointer { id, phase: PointerPhase::{Down,Move,Up,Cancel}, x, y }` in game pixels;
+`overlay_wanted(m) -> bool` (cheap, per present), `overlay_compose(m, &mut FrameBuffer) -> bool` (frame-space
+overlay) and `window_overlay(m, &FrameBuffer)` (window layer, 2026-11-08 overlay-window: called with the raw guest
+frame on every present and refresh; the frame is not copied or changed).
+`Machine::refresh_overlay()` re-runs the window layer for the last guest frame (when the game is idle) and re-presents
+the frame only for frame-space overlays; `Machine::last_frame_size()`. `Stats::hooks` counts dispatched hooks.
+Host event: `HostEvent::Pointer { id, phase: PointerPhase::{Down,Move,Up,Cancel}, x, y, wx, wy }`: game pixels
+(`x`, `y`) and window pixels (`wx`, `wy`; negative = unknown, then the mods map the game point through the viewport);
 `InputState` ignores it (game consumers never see raw touch).
 
 ## Hooks (`s3_mods::hooks`)
@@ -100,14 +104,39 @@ W2/W3/W4 add their hooks to `gog_base` (or new sets) in `patchset.rs`. UI mode A
 `0x4b4d00` panel render, `0x4ff170` ScreenToMap, `0x524fa0` HandleInput, `0x5faaa0` text lookup) and its mod from
 `ui_hud::install(m, gog)`, see [ui-hud.md](ui-hud.md). Several hooks on one address (both modes use `0x524fa0`) chain.
 
-## Overlay (`s3_mods::overlay`)
+## Window layer (`s3_mods::layer`, 2026-11-08 overlay-window)
 
-`Canvas` over the presented RGB565 frame (game pixels, alpha blending): `fill_rect`, `stroke_rect`,
-`fill_rounded_rect`/`stroke_rounded_rect` (anti-aliased), `fill_circle`, `blit`/`blit_scaled` (`Image` = RGBA8),
-`text(x, y, px, Weight, Rgba, str) -> width`, `text_centered`, `measure_text`, `set_clip`. Text uses fontdue with the
-bundled Liberation Sans (Regular/Bold, SIL OFL 1.1, files from `s3-win32/assets/fonts`), glyphs cached.
-Order on screen: guest frame -> overlay -> mouse cursor. Cost when no mod draws: one `overlay_wanted` check plus a
-copy of the guest frame kept for `refresh_overlay` (~1 MB memcpy per present).
+All mod UI (Mobile HUD, touch feedback, FPS counter, Classic floating buttons / bubble / chip, debug overlay) is drawn
+into a **window-resolution layer**, not into the game frame. Before, it was drawn into the guest frame and scaled with
+it, so zoom (= the game's render size) changed its size and sharpness, and below ~280 px the HUD lost its icons.
+
+- `Mod::draw_window(m, l: &mut Layer, frame: &FrameBuffer)` (when `wants_draw()`): window pixels; `frame` is the raw
+  guest frame (read-only: icon sampling, the Classic magnifier). `s3_mods::draw_viewport(m)` = the `Viewport` of this
+  frame (`vp.game_to_window(gx, gy)` for map-anchored effects, `vp.dst_rect_clipped()` = window part that shows the
+  game, `vp.scale()` = window px per game px of the map). `l.ui()` = window height / 600: sizes in "px of a 600 px
+  high frame" times `ui()` look like before, at every zoom level.
+- `Layer` API (same as the old `Canvas`): `fill_rect`, `stroke_rect`, `fill_rounded_rect`, `stroke_rounded_rect`,
+  `fill_circle`, `ellipse_ring`/`ring`, `blit`/`blit_scaled(&ImageRef = Arc<Image>, ...)`, `blit_image(Image, ...)`
+  (one-off, pixels hashed), `blit_map` (the game's sheared minimap shape), `line`, `text(x, y, px, Weight, Rgba, str)
+  -> width`, `text_centered`, `text_box` (text on a rounded box), `set_clip`/`reset_clip`; `overlay::measure_text`.
+  **Text API for other mods** (e.g. redrawing the game's own messages in this layer): `text` / `text_centered` /
+  `text_box` with `measure_text`, sizes in window px (`12.0 * l.ui()` etc.).
+- Recording only: each call appends a command with its clipped bounds and an FNV hash (`DrawList`). After all mods drew,
+  the list is compared with the last one (hash + length + panel split + frame size); only a changed list is
+  published (`SceneSlot::publish`, frontend registered it with `s3_mods::set_layer_sink`). Images are identified by
+  their `Arc` pointer (the previous list keeps a reference, so an address is never reused while compared).
+- Frontend: `LayerRaster::update(&list)` -> the changed rectangle: union of the bounds of commands that appeared or
+  disappeared (multiset of hashes; whole union if only the order changed); it is cleared and every command that
+  touches it is redrawn in order (premultiplied RGBA8). Android uploads only those rows as a second texture and
+  blends it (`GL_ONE, GL_ONE_MINUS_SRC_ALPHA`); s3run blends on the CPU over the row spans that have content
+  (`blend_onto_xrgb`); the Android CPU fallback samples it into its letterbox buffer (`blend_onto_rgb565_scaled`).
+- `Mod::draw(m, &mut Canvas)` + `wants_draw_frame()` still exist for frame-space drawing (game pixels, costs a frame
+  copy); no shipped mod uses it. `Canvas` and the layer raster share one rasterizer (`layer::Surf`).
+- Touch hit tests of window UI use `s3_mods::touch_window_pos(m, &ev)`: the window position of the pointer behind the
+  event (raw events: that pointer; taps / long press: the last pointer; two-finger gestures: centroid).
+- Text: fontdue with the bundled Liberation Sans (Regular/Bold, SIL OFL 1.1, from `s3-win32/assets/fonts`), glyphs
+  cached (shared by the engine thread for measuring and the render thread for rasterizing).
+Order on screen: guest frame (incl. the game's mouse cursor) -> window layer.
 
 ## Mods and touch input
 
@@ -116,7 +145,8 @@ pub trait Mod: Send {
     fn name(&self) -> &str;
     fn observe(&mut self, m, ev: &TouchEvent) {}                     // sees everything, cannot consume
     fn on_touch(&mut self, m, ev: &TouchEvent) -> ModEvent { Pass }   // Consumed | Pass
-    fn wants_draw(&self) -> bool { false }  fn draw(&mut self, m, c: &mut Canvas) {}
+    fn wants_draw(&self) -> bool { false }  fn draw_window(&mut self, m, l: &mut Layer, frame: &FrameBuffer) {}
+    fn wants_draw_frame(&self) -> bool { false }  fn draw(&mut self, m, c: &mut Canvas) {}   // game-pixel overlay
     fn needs_redraw(&self) -> bool { false } fn tick(&mut self, m, now_ms: u64) {}
     fn on_key(&mut self, m, vk: u32, down: bool) -> ModEvent { Pass } // host keys, top first (2026-11-05)
 }

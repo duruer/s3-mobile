@@ -291,6 +291,8 @@ impl MobileHud {
     // ------------------------------------------------------------ icon harvesting
 
     fn harvest_tick(&mut self, m: &mut Machine) {
+        let harvesting = matches!(self.harvest, Harvest::Cat { .. });
+        m.state::<HudShared>().borrow_mut().harvesting = harvesting;
         let Some(snap) = self.snap.clone() else { return };
         if self.icon_race != Some(snap.race) && self.harvest == Harvest::Done {
             self.harvest = Harvest::Idle;
@@ -346,6 +348,7 @@ impl MobileHud {
             game::queue(m, LogicAction::StartBuild { cat: c.max(1), slot: 0, btype: 0 });
             game::queue(m, LogicAction::Page { page: if page == 1 { 0 } else { page }, sub: None });
             self.harvest = Harvest::Done;
+            m.state::<HudShared>().borrow_mut().harvesting = false;
             self.sync_layout(m);
             self.dirty = true;
         }
@@ -364,7 +367,8 @@ impl MobileHud {
         } else {
             m.mem.read_u32(g + game::GD_PAGE) == 1 && m.mem.read_u32(g + game::GD_BUILD_CAT) == cat
         };
-        if !shown {
+        // The panel art needs a frame at least as high as the 640x480 layout (the zoom switches up for the harvest).
+        if !shown || c.height < game::HARVEST_MIN_H {
             return;
         }
         if m.mem.read_u32(game::L_PANEL_W) == 0 {
