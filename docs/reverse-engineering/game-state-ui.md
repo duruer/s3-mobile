@@ -572,6 +572,25 @@ Sub-pages seen: 0 main, 1 crush confirmation, 2 work area, 3 target (command 5),
 (`0x80096..0x80099`), 0xe siege workshops (types 0x1f, 0x2f, 0x30, 0x32: build catapult/ballista/cannon, ammo),
 0x10..0x12 ship yard / trade / storage settings (STATIC, not analysed).
 
+### Settlers page tab 1 "Population" (hud-settlers, 2026-11-08)
+
+- Counting (logic thread, `0x51f110` at `0x5216ff..0x521936`, only while page 3 tab 1 is shown): loops the
+  settler table for the local player and fills `logic+0x94..+0xd0`; `0x5220c0` copies `logic+0x88+i*4` to
+  `snap+0xa4+i*4` (so snap = logic + 0x1c). Snapshot fields: `+0xb0` total (= civilians + soldiers; donkeys not
+  included), `+0xb4` civilians, `+0xb8` soldiers, `+0xbc` carriers (type 0), `+0xc0` diggers (1), `+0xc4` builders
+  (2), `+0xc8` workers (all professions), `+0xcc` swordsmen (5, 0x20, 0x23), `+0xd0` bowmen (8, 0x1e, 0x21), `+0xd4`
+  spearmen (0xf, 0x1f, 0x22), `+0xd8` priests (0x24), `+0xdc` geologists (0x16), `+0xe0` thieves (0x17), `+0xe4`
+  pioneers (0x28), `+0xe8` player record `+0xc4` (house icon; HYPOTHESIS: free beds), `+0xec` donkeys (0x27).
+  Type list per field: [game-state-units.md](game-state-units.md) "Settler types".
+- Drawing (`0x4b7e96..0x4b8833`): title `0x800fb`, race-specific icons (sprite ids from per-race tables
+  `0x6a3534 + 0x10*k`, index `snap+0x94` = race), numbers with `0x4d7150(col, row, value)`: total (24, 30), house
+  (7, 35), civilians (15, 35), soldiers (33, 35); then three rows of four icons, numbers at rows 55 / 73 / 91, columns
+  5 / 15 / 25 / 35. Icon cells: cols `1 + 10k`, rows `41 + 18r`, 8x12 cells (VERIFIED at 640x480: 24x36 px at
+  x 11 / 41 / 71 / 101, y 275 / 329 / 383). Row 1 carriers, diggers, builders, workers; row 2 swordsmen, bowmen,
+  spearmen, priests; row 3 geologists, thieves, pioneers, donkeys.
+- VERIFIED 2026-11-08: the Mobile HUD's counts from the settler table equal the tab's numbers
+  (`hud-settlers population game total 53 [32, 0, 0, 6, 11, 2, 2, 0, 0, 0, 0, 4] hud total 53 ... match true`).
+
 ### Recruitment (page 3 tab 3, `0x52cbf7..0x52d5ff`)
 
 Command 0x10, 12 bytes `{0x21, 0x10, 0x0c, 0, kind, player, x_hi, x_lo, y_hi, y_lo, count, 0}`, posted with 3 dwords,

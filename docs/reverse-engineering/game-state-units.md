@@ -70,6 +70,46 @@ Index 0 is unused (`owner = 0xff`). Iterate `1..=[gd+0x12a5e5c]`; entries with `
 
 Settlers inside a building have a position but are not on the tile (tile `+0` = 0).
 
+`+0x22` (u16) = workplace building id for workers (and the site for diggers / builders); building `+6` = type.
+
+### Settler types (byte +1) (hud-settlers, 2026-11-08)
+
+Sources (all STATIC unless marked): the Population tab counting code `0x5216ff..0x521936` (page 3 tab 1, see
+[game-state-ui.md](game-state-ui.md) "Settlers page"), the page-5 selection kinds `0x542a83..` (sub-page
+`gd+0x2d298`: 2 transport ship, 3 trade ship, 4 war machine, 5 pioneer, 6 geologist, 7 thief), the selection
+counters `0x51fe98..0x51ff57`, promotions `0x4ebbeb..0x4ebc9a`, and the building worker requests: the building update
+`switch` at `0x4e0e1a` (table `0x4e495c`, building type 2..0x38) calls `0x4dacd0(building, worker type)` per case
+(construction sites: type 1 / 2 at `0x4e0811..`). Runtime (`S3_HUD_SETTLER_DUMP=1`, AI buildings after ~6 min):
+3 in woodcutter's huts, 4 stonecutter, 6 sawmill, 7 forester (VERIFIED). Names are ours (English): the game's text
+tables have no settler names except "Priest" `0x8010b`, "Transport Ship" `0x8010d`, "Trade Ship" `0x80111`.
+
+| Type | Settler | Evidence |
+| --- | --- | --- |
+| 0x00 / 0x01 / 0x02 | carrier / digger / builder | Population tab icons + limits texts `0x80067..69`; site requests 1, 2 |
+| 0x05, 0x20, 0x23 | swordsman level 1 / 2 / 3 | promotion `0x4ebbeb..`; Population icon |
+| 0x08, 0x1e, 0x21 | bowman level 1 / 2 / 3 | same |
+| 0x0f, 0x1f, 0x22 | spearman level 1 / 2 / 3 ("Add Spearman" `0x80077`) | same |
+| 0x24 | priest (temples create it, `0x4e367e`; miracle buttons on page 5) | |
+| 0x16 / 0x17 / 0x28 | geologist / thief / pioneer | recruitment VERIFIED; selection kinds 6 / 7 / 5 |
+| 0x27 | donkey (Population tab icon; not in the tab's total) | 4 at a random-map start |
+| 0x03 / 0x04 / 0x06 / 0x07 | woodcutter / stonecutter / sawmill worker / forester (buildings 2 / 3 / 4 / 5) | VERIFIED |
+| 0x0a | miner (coal, gold, iron ore, sulfur, gem mines 7, 8, 9, 0x1d, 0x25, 0x38) | 4 at the start |
+| 0x09 | smelter (gold / iron smelter 0x0a, 0x0b) | |
+| 0x0b | smith (tool / weapon smith 0x0c, 0x0d, siege workshops 0x1f, 0x2f, 0x30, Amazon gong hall 0x32) | 2 at the start |
+| 0x0c / 0x0d / 0x0e | miller (0x11) / baker (0x14) / butcher (0x15) | |
+| 0x10 / 0x11 / 0x12 | grain farmer (0x18) / fisherman (0x19) / waterworker (0x1e) | |
+| 0x13 / 0x15 | shipwright (shipyard 0x20) / healer (0x23) | |
+| 0x18 / 0x19 / 0x1a / 0x1b | charcoal maker (0x27) / distiller (0x16) / brewer (0x26) / gunpowder maker (0x28) | |
+| 0x1c | animal farmer (pig farm 0x17 and donkey farm 0x31) | |
+| 0x1d / 0x26 | winegrower (winery 0x0e) / rice farmer (0x24) | |
+| 0x2d / 0x2e / 0x2f | beekeeper (0x33) / mead maker (0x34) / alchemist (0x35), Amazons | |
+| 0x14 | counted as a worker by the Population tab, no building requests it (HYPOTHESIS: unused) | |
+| 0x29 | war machine (catapult / ballista / cannon by race; ammo at `+0x15`, "Collect Ammunition") | not a settler in the tab |
+| 0x2b / 0x2c | trade ship / transport ship (shipyard; page 5 "Unload") | not in the tab |
+| 0x25 | one per military building, created next to it with job 0xad (`0x4dbf83`); HYPOTHESIS: the figure on the tower | not in the tab |
+
+Not seen / unknown: 0x2a, 0x30+.
+
 ## Building table (`gd+0x1499e64`, 0x3a bytes)
 
 | Off | Type | Meaning | Status |
@@ -334,6 +374,6 @@ Random maps differ per run (positions, races), so read positions from the dumps 
 
 ## Open questions
 
-- Names of settler types and building types (only 15 = Guard Tower, 2 = first building of the first category known).
+- Settler types: done (section "Settler types"); open: 0x14, 0x25, 0x2a.
 - Commands 0x05, 0x12..0x1c; Ctrl move (0x0f) effect not traced in the executor.
 - Construction state bytes in the building entry.

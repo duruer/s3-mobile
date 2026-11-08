@@ -862,3 +862,33 @@ pub fn snapshot(m: &mut Machine) -> Option<GameSnapshot> {
     Some(s)
 }
 
+/// Debug (`S3_HUD_SETTLER_DUMP=1`): log every settler type per owner with the type of its workplace building
+/// (settler `+0x22` = building id, building `+6` = type). Used to map worker types to professions
+/// (game-state-units.md "Settler types").
+pub fn dump_settler_types(m: &mut Machine) {
+    let Some(g) = gd(m) else { return };
+    let smax = m.mem.read_u32(g + GD_SETTLER_MAX).min(0x10000);
+    let bmax = m.mem.read_u32(g + GD_BUILDING_MAX).min(0x10000);
+    let mut seen: Vec<(u8, u8, i32, u32)> = Vec::new();
+    for id in 1..=smax {
+        let e = g + GD_SETTLERS + id * 0x40;
+        let owner = m.mem.read_u8(e);
+        if owner == 0xff {
+            continue;
+        }
+        let t = m.mem.read_u8(e + 1);
+        let b = m.mem.read_u16(e + 0x22) as u32;
+        let bt = if b != 0 && b <= bmax { m.mem.read_u8(g + GD_BUILDINGS + b * 0x3a + 6) as i32 } else { -1 };
+        match seen.iter_mut().find(|k| k.0 == owner && k.1 == t && k.2 == bt) {
+            Some(k) => k.3 += 1,
+            None => seen.push((owner, t, bt, 1)),
+        }
+    }
+    seen.sort();
+    let races: Vec<u8> = (0..8).map(|p| m.mem.read_u8(g + GD_PLAYERS + p * 0x148)).collect();
+    eprintln!("hud-settlers races {races:?} step {}", m.mem.read_u32(g + GD_STEP));
+    for (o, t, bt, n) in seen {
+        eprintln!("hud-settlers owner {o} type {t} building_type {bt} count {n}");
+    }
+}
+

@@ -30,12 +30,15 @@ use crate::layer::{ImageRef, Layer};
 use crate::overlay::{measure_text, Image, Rgba, Weight};
 use crate::settings::UiMode;
 use crate::ui_hud_data::{
-    build_type, building_text_id, good_name, inventory_icon_rect, CATEGORIES, GARRISON_ACTIONS, GARRISON_TYPES, GOODS,
-    RECRUIT_ACTIONS, STOP_WORK_TYPES, WORK_AREA_TYPES,
+    build_slot_of, build_type, building_text_id, good_name, inventory_icon_rect, pop_icon_rect, settler_info,
+    war_machine_building, SettlerIcon, CATEGORIES, GARRISON_ACTIONS, GARRISON_TYPES, GOODS, POP_ICONS, RECRUIT_ACTIONS,
+    STOP_WORK_TYPES, WORK_AREA_TYPES,
 };
 
 /// Harvest step that reads the goods icons (after the four build categories).
 const GOODS_PAGE: u32 = 5;
+/// Harvest step that reads the settler icons of the settlers page, tab Population (the last step).
+const SETTLERS_PAGE: u32 = 6;
 use crate::ui_hud_game::{self as game, GameSnapshot, HudShared, LogicAction};
 use crate::ui_hud_minimap::{self as minimap, MapGeom, MiniData};
 use crate::{Mod, ModEvent, ModsState};
@@ -208,6 +211,8 @@ pub struct MobileHud {
     icon_race: Option<u32>,
     /// Goods icons from the Inventory page, by good id.
     good_icons: Vec<(u8, ImageRef)>,
+    /// Settler icons from the settlers page tab Population, by icon index (`ui_hud_data::POP_ICONS`).
+    pop_icons: Vec<(u8, ImageRef)>,
     harvest: Harvest,
     /// Saved panel state before harvesting (page, cat).
     saved_page: Option<(u32, u32)>,
@@ -255,6 +260,7 @@ impl Default for MobileHud {
             icons: Vec::new(),
             icon_race: None,
             good_icons: Vec::new(),
+            pop_icons: Vec::new(),
             harvest: Harvest::Idle,
             saved_page: None,
             names: Vec::new(),
@@ -350,6 +356,7 @@ impl MobileHud {
         if self.icon_race != Some(snap.race) && self.harvest == Harvest::Done {
             self.harvest = Harvest::Idle;
             self.icons.clear();
+            self.pop_icons.clear();
         }
         let hooked = m.state::<HudShared>().borrow_mut().hooked;
         if !hooked || !self.in_game {
@@ -379,6 +386,8 @@ impl MobileHud {
         self.sync_layout_force_panel(m);
         if cat == GOODS_PAGE {
             game::queue(m, LogicAction::GoodsTab(1));
+        } else if cat == SETTLERS_PAGE {
+            game::queue(m, LogicAction::SettlersTab(1));
         } else {
             game::queue(m, LogicAction::Page { page: 1, sub: None });
             game::queue(m, LogicAction::StartBuild { cat, slot: 0, btype: 0 });
@@ -394,7 +403,7 @@ impl MobileHud {
     }
 
     fn next_harvest_cat(&mut self, m: &mut Machine, cat: u32) {
-        if cat < 5 {
+        if cat < SETTLERS_PAGE {
             self.start_harvest_cat(m, cat + 1);
         } else {
             let (page, c) = self.saved_page.take().unwrap_or((0, 1));
@@ -417,6 +426,8 @@ impl MobileHud {
         let Some(g) = game::gd(m) else { return };
         let shown = if cat == GOODS_PAGE {
             m.mem.read_u32(g + game::GD_PAGE) == 2 && m.mem.read_u32(g + game::GD_GOODS_TAB) == 1
+        } else if cat == SETTLERS_PAGE {
+            m.mem.read_u32(g + game::GD_PAGE) == 3 && m.mem.read_u32(g + game::GD_SETTLERS_TAB) == 1
         } else {
             m.mem.read_u32(g + game::GD_PAGE) == 1 && m.mem.read_u32(g + game::GD_BUILD_CAT) == cat
         };
@@ -438,6 +449,19 @@ impl MobileHud {
                 let img = Arc::new(copy_rect(c, Rect::new(x, y, w, h)));
                 self.good_icons.retain(|(k, _)| *k != good);
                 self.good_icons.push((good, img));
+            }
+            self.next_harvest_cat(m, cat);
+            return;
+        }
+        if cat == SETTLERS_PAGE {
+            for i in 0..POP_ICONS {
+                let (x, y, w, h) = pop_icon_rect(i, cell, gx, gy);
+                let img = Arc::new(copy_rect(c, Rect::new(x, y, w, h)));
+                self.pop_icons.retain(|(k, _)| *k != i);
+                self.pop_icons.push((i, img));
+            }
+            if std::env::var("S3_HUD_DEBUG").is_ok() {
+                log_population_check(m, self.snap.as_ref());
             }
             self.next_harvest_cat(m, cat);
             return;
@@ -760,17 +784,23 @@ impl MobileHud {
 
     fn draw_settlers_sheet(&mut self, m: &mut Machine, c: &mut Layer) {
         let Some(s) = self.snap.clone() else { return };
-        let mut rows: Vec<(String, u32)> = s
+        // (type, count, sort key), in the original Population tab's order; the tower figure is left out.
+        let mut rows: Vec<(u8, u32, u8)> = s
             .settlers
             .iter()
             .enumerate()
             .filter(|(_, &n)| n > 0)
-            .map(|(t, &n)| (settler_label(self, m, t as u8), n))
+            .filter_map(|(t, &n)| match settler_info(t as u8, s.race) {
+                Some(i) if !i.listed => None,
+                Some(i) => Some((t as u8, n, i.order)),
+                None => Some((t as u8, n, 255)),
+            })
             .collect();
-        rows.sort_by_key(|r| std::cmp::Reverse(r.1));
-        let total: u32 = s.settlers.iter().sum();
-        let line = self.u(19.0);
-        let cols = 3;
+        rows.sort_by_key(|r| (r.2, r.0));
+        let total = settler_total(&s);
+        let line = self.u(24.0);
+        let r0 = self.sheet_rect(c, 0);
+        let cols = ((r0.w - self.u(24.0)) / self.u(190.0)).clamp(2, 4) as usize;
         let nrows = rows.len().div_ceil(cols).max(1) as i32;
         let bh = self.u(34.0);
         let gap = self.u(6.0);
@@ -794,10 +824,19 @@ impl MobileHud {
             self.add(br, a);
         }
         let cw = inner.w / cols as i32;
-        for (i, (label, n)) in rows.iter().enumerate() {
+        let isz = self.u(22.0);
+        let px = self.k() * 13.0;
+        for (i, &(t, n, _)) in rows.iter().enumerate() {
             let (col, row) = ((i % cols) as i32, (i / cols) as i32);
             let (x, y) = (inner.x + col * cw, inner.y + row * line);
-            c.text(x, y, self.k() * 13.0, Weight::Regular, TEXT_DIM, label);
+            match self.settler_icon(t, s.race) {
+                Some(img) => blit_fit(c, &img, Rect::new(x, y, isz, isz)),
+                None => draw_person(c, Rect::new(x, y, isz, isz), self.k() * 0.6),
+            }
+            let label = settler_label(t, s.race);
+            let ty = y + (isz - measure_text(px, Weight::Regular, &label).1) / 2;
+            c.text(x + isz + self.u(5.0), ty, px, Weight::Regular, TEXT_DIM, &label);
+            let y = ty;
             let ns = n.to_string();
             let (tw, _) = measure_text(self.k() * 13.0, Weight::Bold, &ns);
             c.text(x + cw - tw - self.u(10.0), y, self.k() * 13.0, Weight::Bold, TEXT, &ns);
@@ -927,7 +966,7 @@ impl MobileHud {
             (Some(2), gv(2), "Stone"),
             (Some(3), gv(3), "Logs"),
             (Some(4), gv(4) + gv(8) + gv(24), "Food"),
-            (None, s.settlers.iter().sum(), "Pop"),
+            (None, settler_total(s), "Pop"),
         ];
         let px = self.k() * 13.0;
         let h = self.u(24.0);
@@ -976,6 +1015,19 @@ impl MobileHud {
         self.good_icons.iter().find(|(k, _)| *k == g).map(|(_, i)| i)
     }
 
+    /// Icon of settler type `t`: the Population tab's icon, or the build-menu icon of the profession's workplace
+    /// (both harvested from the running game); the generic worker icon if that building is not in this race's
+    /// menu.
+    fn settler_icon(&self, t: u8, race: u32) -> Option<ImageRef> {
+        let pop = |i: u8| self.pop_icons.iter().find(|(k, _)| *k == i).map(|(_, img)| img.clone());
+        let building = |b: u8| build_slot_of(race, b).and_then(|(c, s)| self.icon(c, s).cloned());
+        match settler_info(t, race)?.icon {
+            SettlerIcon::Pop(i) => pop(i),
+            SettlerIcon::Building(b) => building(b).or_else(|| pop(3)),
+            SettlerIcon::WarMachine => building(war_machine_building(race)).or_else(|| pop(4)),
+        }
+    }
+
     fn draw_selection(&mut self, m: &mut Machine, c: &mut Layer) {
         let Some(s) = self.snap.clone() else { return };
         let w = self.view.x + self.view.w;
@@ -983,15 +1035,24 @@ impl MobileHud {
         let cw = self.u(250.0);
         let bh = self.u(36.0);
         if s.page == 5 && !s.selection.is_empty() {
-            let lines: Vec<String> = s.sel_types.iter().take(3).map(|(t, n)| format!("{n} x {}", settler_label(self, m, *t))).collect();
+            let lines: Vec<(u8, String)> =
+                s.sel_types.iter().take(3).map(|(t, n)| (*t, format!("{n} x {}", settler_label(*t, s.race)))).collect();
+            let lh = self.u(20.0);
             // Two button rows: Move / Deselect, then the modifier orders (waypoint / patrol / no fight).
-            let ch = self.u(34.0) + lines.len() as i32 * self.u(16.0) + 2 * bh + self.u(14.0);
+            let ch = self.u(34.0) + lines.len() as i32 * lh + 2 * bh + self.u(14.0);
             let r = Rect::new(w - cw - self.u(6.0), h - self.u(BAR_H) - ch - self.u(6.0), cw, ch);
             c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(10.0) as f32, SHEET_BG);
             self.add(r, Action::Nothing);
             c.text(r.x + self.u(10.0), r.y + self.u(6.0), self.k() * 15.0, Weight::Bold, ACCENT, &format!("{} selected", s.selection.len()));
-            for (i, l) in lines.iter().enumerate() {
-                c.text(r.x + self.u(10.0), r.y + self.u(28.0) + i as i32 * self.u(16.0), self.k() * 13.0, Weight::Regular, TEXT, l);
+            let px = self.k() * 13.0;
+            for (i, (t, l)) in lines.iter().enumerate() {
+                let y = r.y + self.u(27.0) + i as i32 * lh;
+                let isz = lh - self.u(2.0);
+                if let Some(img) = self.settler_icon(*t, s.race) {
+                    blit_fit(c, &img, Rect::new(r.x + self.u(10.0), y, isz, isz));
+                }
+                let ty = y + (isz - measure_text(px, Weight::Regular, l).1) / 2;
+                c.text(r.x + self.u(14.0) + isz, ty, px, Weight::Regular, TEXT, l);
             }
             let by = r.y + r.h - 2 * bh - self.u(12.0);
             let half = (r.w - self.u(26.0)) / 2;
@@ -1333,6 +1394,9 @@ impl Mod for MobileHud {
             }
             if !self.text_dumped && std::env::var("S3_HUD_TEXT_DUMP").is_ok() {
                 self.dump_texts(m);
+            }
+            if in_game && now / 10_000 != (now - 200) / 10_000 && std::env::var("S3_HUD_SETTLER_DUMP").is_ok() {
+                game::dump_settler_types(m);
             }
         }
         // Save sheet: result of a queued save, or slot list read by the logic thread.
@@ -1760,20 +1824,61 @@ fn zoom_label(m: &mut Machine) -> String {
     format!("{w}x{h}")
 }
 
-/// Label of a settler type. Only the soldier kinds seen at the start are known (game-state-units.md;
-/// HYPOTHESIS names), the rest show the type number.
-fn settler_label(hud: &mut MobileHud, m: &mut Machine, t: u8) -> String {
-    let _ = (hud, m);
-    match t {
-        0 => "Carriers".into(),
-        5 => "Swordsmen".into(),
-        8 => "Bowmen".into(),
-        15 => "Soldiers (3rd)".into(),
-        // VERIFIED 2026-11-08 (hud-native): "1 New Geologist" / "5 New Pioneers" turned carriers into these types.
-        22 => "Geologists".into(),
-        40 => "Pioneers".into(),
-        t => format!("Type {t}"),
+/// Label of a settler type (`ui_hud_data::settler_info`); only ids the game never uses fall back to a number.
+fn settler_label(t: u8, race: u32) -> String {
+    settler_info(t, race).map(|i| i.name).unwrap_or_else(|| format!("Unknown unit ({t})"))
+}
+
+/// The game's settler total (Population tab, snapshot `+0xb0`): without ships, war machines, donkeys and the
+/// tower figure.
+fn settler_total(s: &GameSnapshot) -> u32 {
+    s.settlers.iter().enumerate().filter(|(t, _)| settler_info(*t as u8, s.race).is_none_or(|i| i.counted)).map(|(_, &n)| n).sum()
+}
+
+/// Population tab category (icon index 0..12, 3 = all professions) a settler type is counted in, like the
+/// game's counting code `0x5216ff..0x521936`.
+fn pop_category(t: u8, race: u32) -> Option<u8> {
+    let i = settler_info(t, race)?;
+    if t == 0x27 {
+        return Some(11);
     }
+    if !i.counted {
+        return None;
+    }
+    Some(match i.icon {
+        SettlerIcon::Pop(p) => p,
+        _ => 3,
+    })
+}
+
+/// Debug (`S3_HUD_DEBUG=1`): compare the game's own Population tab numbers (render snapshot `+0xb0` total,
+/// `+0xbc..+0xec` per icon, filled by `0x5216ff..` while the tab is shown, copied at `0x5220c0`) with the HUD's
+/// counts from the settler table.
+fn log_population_check(m: &mut Machine, s: Option<&GameSnapshot>) {
+    let Some(s) = s else { return };
+    let snap = m.state::<HudShared>().borrow_mut().snap;
+    if snap == 0 {
+        return;
+    }
+    // Snapshot offsets of icons 0..12 (icon 11 = donkeys at +0xec; +0xe8 is the player record value of the
+    // top-left house icon).
+    const OFF: [u32; 12] = [0xbc, 0xc0, 0xc4, 0xc8, 0xcc, 0xd0, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xec];
+    let game: Vec<u32> = OFF.iter().map(|&o| m.mem.read_u32(snap + o)).collect();
+    let mut ours = [0u32; 12];
+    for (t, &n) in s.settlers.iter().enumerate() {
+        if let Some(c) = pop_category(t as u8, s.race) {
+            ours[c as usize] += n;
+        }
+    }
+    let total: u32 = ours[..11].iter().sum();
+    eprintln!(
+        "hud-settlers population game total {} {:?} hud total {} {:?} match {}",
+        m.mem.read_u32(snap + 0xb0),
+        game,
+        total,
+        ours,
+        game == ours && m.mem.read_u32(snap + 0xb0) == total
+    );
 }
 
 /// Label of a good id. Good ids -> names are not mapped yet (game-state-ui.md open questions).

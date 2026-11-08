@@ -13,6 +13,17 @@ Newest first. One entry per session: what was done, what was learned, links to d
 - Found: Exit Game quits without confirm; Online Help / Tips & Tricks open `MANUAL\main.htm` / `TIPS\main.htm` via
   ShellExecute, refused by our HLE (nothing happens).
 
+## 2026-11-08 — Mobile HUD settlers sheet: real names and game icons
+
+- User report: the settlers sheet showed "Type 1", "Type 10", ... RE of every settler type id: Population tab
+  counting `0x5216ff..`, selection kinds `0x542a83..`, building worker requests (switch `0x4e0e1a`, `0x4dacd0`),
+  runtime dump of the AI's workers → [game-state-units](reverse-engineering/game-state-units.md) "Settler types",
+  Population tab fields/layout → [game-state-ui](reverse-engineering/game-state-ui.md).
+- HUD: `ui_hud_data::settler_info` (names with soldier level, Amazon forms), icons sampled at runtime from the
+  Population tab (new harvest step) or the workplace's build icon; settlers sheet + selection card with icons; total
+  like the game (counts VERIFIED equal to the original tab) → [ui-hud](porting/ui-hud.md).
+- Learned: the game's text tables have no profession names; start stock includes 4 miners, 2 smiths, 4 donkeys.
+
 ## 2026-11-08 — App name "Settlers 3 Mobile"
 
 - Launcher label, notification titles, status screen and desktop window title renamed from "Settlers 3 Port" (user

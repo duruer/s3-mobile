@@ -165,8 +165,7 @@ summed over the pile table.
 - Good ids matched to the Inventory page by unique start amounts (`ui_hud_data::GOODS`): 4 Bread, 5 Coal, 7 Iron ore,
   8 Fish, 12 Shovel, 13 Hammer, 14 Axe, 15 Pickaxe, 16 Saw, 24 Meat (VERIFIED by amounts). 1/2 = Boards/Stone and
   17/32 = Scythe/Fishing rod have equal amounts at the start: order HYPOTHESIS. 3 = Logs HYPOTHESIS.
-- Settler type names: 0 Carriers, 5 Swordsmen, 8 Bowmen, 15 third soldier kind (HYPOTHESIS, part 1); others are
-  shown as "Type N".
+- Settler type names: all types mapped (2026-11-08, "Settler names and icons" below).
 - Names come from the game's text tables through a hook on the string lookup `0x5faaa0` (records the table object,
   `ecx`), read host-side like `tools/re-ui/strings.py` (`ui_hud_game::text`). So they follow the game's language.
   Only tables 7, 8 and 9 are loaded in game. `S3_HUD_TEXT_DUMP=1` logs every string once (game data: local logs only).
@@ -177,8 +176,25 @@ On the first in-game frames (and when the race changes) the HUD lets the origina
 (page 1, cat 1..4) and then the goods Inventory page, and copies pixels from the presented frame before drawing:
 build slot `2k+1` / `2k+2` = grid cols 1..19 / 21..39, rows `22+12k .. 31+12k` (game-state-ui.md), goods icon
 `(row, col)` at `x = 14 + 18*col`, `y = 247 + 27*row`, 16x16 at 640x480 (measured; scaled by the grid cell for other
-resolutions, which worked at 800x600). It takes 5 x 3 panel frames (well under a second, inside the start-up period);
-a "Preparing touch HUD" cover is drawn meanwhile. The icons live only in memory.
+resolutions, which worked at 800x600), and last the settlers page tab Population (page 3 tab 1, harvest step
+`SETTLERS_PAGE`): 12 settler icons at grid cols `1 + 10k`, rows `41 + 18r`, 8x12 cells (`ui_hud_data::pop_icon_rect`).
+It takes 6 x 3 panel frames (well under a second, inside the start-up period); a "Preparing touch HUD" cover is drawn
+meanwhile. The icons live only in memory.
+
+### Settler names and icons (hud-settlers, 2026-11-08)
+
+`ui_hud_data::settler_info(type, race)` gives every settler type a name, icon source, sort order and whether it is
+part of the game's total (RE: [game-state-units.md](../reverse-engineering/game-state-units.md) "Settler types"):
+carriers, diggers, builders, soldiers with level ("Swordsman L2"; Amazons "Swordswoman", ...), priests, geologists,
+thieves, pioneers and donkeys use the Population tab icons; professions (woodcutter, miner, smith, baker, ...) use the
+build-menu icon of their workplace (`build_slot_of`), war machines the race's siege workshop, ships the shipyard.
+Names are English (the game has no settler-name texts). The settlers sheet lists the types in the Population tab's
+order with icon + count (2..4 columns by width); the title and the "Pop" pill show the game's total (without ships,
+war machines, donkeys and the tower figure 0x25, which is not listed). The selection card shows "icon 3 x Swordsman L1".
+`S3_HUD_DEBUG=1` logs the game's own Population numbers against the HUD's at harvest time (`log_population_check`;
+VERIFIED equal, 2026-11-08). `S3_HUD_SETTLER_DUMP=1` logs every 10 s all settler types per owner with their workplace
+building type. Screenshots (local): `scratch/hud-settlers/s1.png` (Amazons, 2316x904), `s3.png` (selection card),
+`s4.png` (2176x1812).
 
 ### Cover mode
 
