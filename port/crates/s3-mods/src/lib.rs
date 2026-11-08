@@ -22,6 +22,7 @@ pub mod speed; // game speed 1x-4x (single player)
 pub mod display; // display modes + shared screen<->game transform (docs/porting/display.md)
 pub mod fps; // FPS counter overlay
 pub mod game_time; // game time h:mm:ss overlay
+pub mod stone; // generated stone texture behind menu layouts
 pub mod fallback;
 pub mod fast; // native fast paths for hot guest loops (docs/porting/performance.md)
 pub mod fast_blit;

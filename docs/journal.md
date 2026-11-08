@@ -3,6 +3,11 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — Generated stone background behind menu layouts
+
+- Stone screens' surroundings: `Background::Stone` (`stone.rs`, procedural, no asset) instead of flat grey (user
+  request), CPU + GLES → [menu-layout](porting/menu-layout.md). Checked with `--layout-preview` (LAN, 2316x904).
+
 ## 2026-11-08 — Classic minimap drag, all-unit paths
 
 - Minimap: drags starting there scroll the map (re-press every 50 ms; the game only reacts to presses there), also

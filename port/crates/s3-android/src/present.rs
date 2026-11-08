@@ -156,6 +156,8 @@ struct Gles {
     /// Window layer texture (RGBA8, premultiplied) and its size.
     ltex: GLuint,
     ltex_size: (u32, u32),
+    /// Generated stone tile behind menu layouts (`s3_mods::stone`, `GL_REPEAT`), 0 until first needed.
+    stex: GLuint,
 }
 
 impl Gles {
@@ -227,6 +229,7 @@ impl Gles {
             tex_filter: -1,
             ltex: 0,
             ltex_size: (0, 0),
+            stex: 0,
         })
     }
 
@@ -461,6 +464,10 @@ impl Gles {
             }
             return;
         };
+        if l.background == Background::Stone {
+            self.draw_stone(vp, sx);
+            glBindTexture(GL_TEXTURE_2D, ai.unwrap_or(self.tex));
+        }
         let prog = self.use_filter(filter, sx, sy, ai.is_some(), vp);
         // Full-screen menu layout (s3_mods::menu_layout): background, then one quad per piece.
         let (gw, gh) = (vp.game_w as f32, vp.game_h as f32);
@@ -487,6 +494,37 @@ impl Gles {
             glUniform4f(prog.u_uv, t[0], t[1], t[2], t[3]);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
+    }
+
+    /// The generated stone texture over the whole window, one texel per game pixel, aligned to the layout's canvas
+    /// (same mapping as the CPU renderer `menu_layout::render_xrgb`).
+    unsafe fn draw_stone(&mut self, vp: &Viewport, s: f32) {
+        use s3_mods::stone::{tile_rgba, TILE};
+        if self.stex == 0 {
+            let mut t = 0;
+            glGenTextures(1, &mut t);
+            self.stex = t;
+            glBindTexture(GL_TEXTURE_2D, t);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            let px = tile_rgba();
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA as GLint, TILE as i32, TILE as i32, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.as_ptr() as *const c_void);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+        } else {
+            glBindTexture(GL_TEXTURE_2D, self.stex);
+        }
+        let (ww, wh) = (vp.win_w as f32, vp.win_h as f32);
+        let span = s.max(0.01) * TILE as f32;
+        let (u0, v0) = (-vp.dst_x / span, -vp.dst_y / span);
+        glUseProgram(self.plain.id);
+        glUniform1i(self.plain.u_tex, 0);
+        let r = clip_rect(0.0, 0.0, ww, wh, ww, wh);
+        glUniform4f(self.plain.u_rect, r[0], r[1], r[2], r[3]);
+        glUniform4f(self.plain.u_uv, u0, v0, u0 + ww / span, v0 + wh / span);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 
     /// Swap; `false` if the surface is gone (re-attach needed).

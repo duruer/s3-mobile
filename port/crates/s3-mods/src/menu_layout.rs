@@ -30,6 +30,8 @@ pub enum Background {
     Stretch([u16; 4]),
     /// A plain colour (r, g, b).
     Color([u8; 3]),
+    /// Our generated stone texture (`crate::stone`), one texel per game pixel, aligned to the canvas.
+    Stone,
 }
 
 /// 4x4 block mean (r, g, b, 8 bit) expected at (x, y) (top-left of the block).
@@ -288,7 +290,7 @@ macro_rules! full {
             canvas: $base.frame,
             background: match $base.background {
                 Background::Color(c) => Background::Color(c),
-                Background::Stretch(_) => STONE_BG,
+                Background::Stretch(_) | Background::Stone => STONE_BG,
             },
             pieces: &FULL_800,
             neutral: $base.neutral,
@@ -391,6 +393,17 @@ pub fn render_xrgb(l: &MenuLayout, src: &[u16], gw: usize, gh: usize, dst: &mut 
     };
     match l.background {
         Background::Color([r, g, b]) => dst[..ww * wh].fill(((r as u32) << 16) | ((g as u32) << 8) | b as u32),
+        Background::Stone => {
+            let (ox, oy, s) = canvas_placement(l, ww as u32, wh as u32);
+            let s = s.max(0.01);
+            for y in 0..wh {
+                let ty = ((y as f32 + 0.5 - oy) / s).floor() as i64;
+                for x in 0..ww {
+                    let tx = ((x as f32 + 0.5 - ox) / s).floor() as i64;
+                    dst[y * ww + x] = crate::stone::texel_xrgb(tx, ty);
+                }
+            }
+        }
         Background::Stretch([sx, sy, sw, sh]) => {
             for y in 0..wh {
                 let gy = sy as usize + y * sh as usize / wh;
@@ -439,9 +452,9 @@ const fn pr(x: u16, y: u16, r: u8, g: u8, b: u8) -> Probe {
 // ---------------------------------------------------------------- the layouts (GOG S3.EXE 1.60, 800x600 menus)
 
 
-/// Behind the stone screens. A plain colour, not a tile of the frame: the game draws the mouse cursor into the
-/// frame, so a tiled or stretched source rectangle would repeat the cursor all over the window.
-const STONE_BG: Background = Background::Color([44, 58, 72]);
+/// Behind the stone screens: our generated stone texture (was a flat grey until 2026-11-08). Not a tile of the
+/// frame: clean stone patches there are only ~40 px (panels, vines), and the cursor may be drawn into the frame.
+const STONE_BG: Background = Background::Stone;
 
 /// All known layouts, tried in order.
 pub static LAYOUTS: &[&MenuLayout] = &[

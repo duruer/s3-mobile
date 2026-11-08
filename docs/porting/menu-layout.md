@@ -128,3 +128,12 @@ Add a screen: take a shot, measure rectangles (any image viewer), add a `MenuLay
 - 2026-11-07 desktop previews of all screens at 2316x904; all 32 shots detect the right layout, popup shots -> Fit.
 - 2026-11-07 phone (Fold4 cover, 2316x904): main menu full screen; tap on the moved "Load Game" (window 884,235 ->
   game 166,355) opened Load Game, shown with its layout. Tutorial loading screen (`loading`) full screen.
+
+## Stone background (2026-11-08)
+
+The window area around the stone screens' pieces (LAN, Load Game, Scenario setup / players / map picker, race
+choice, briefing, their `-full` variants) is no longer a flat grey: `Background::Stone` draws our own generated
+stone texture (`s3-mods/src/stone.rs`: tileable 256x256 value noise + diagonal cracks rising to the right, colours
+sampled from the game's stone screens; no game asset). One texel per game pixel, aligned to the canvas, so its grain
+matches the pieces. CPU renderer: `render_xrgb`; GLES: `Gles::draw_stone` (`GL_REPEAT` texture). Not a tile of the
+frame: clean stone patches there are only ~40 px (panels, vines).
