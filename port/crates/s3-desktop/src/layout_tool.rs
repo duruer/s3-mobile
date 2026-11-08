@@ -39,7 +39,7 @@ fn preview(a: &[String]) -> Result<(), String> {
     let (px, w, h) = read_rgb565(Path::new(frame))?;
     let vp = match rest.first() {
         Some(name) => {
-            let l = menu_layout::LAYOUTS.iter().find(|l| l.name == name).ok_or(format!("no layout '{name}'"))?;
+            let l = menu_layout::by_name(name).ok_or(format!("no layout '{name}'"))?;
             Viewport::with_layout(DisplayMode::NativeWide, l, ww, wh)
         }
         None => Viewport::for_frame(DisplayMode::NativeWide, &px, w, h, ww, wh),

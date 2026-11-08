@@ -703,7 +703,14 @@ fn main() {
                 let mode = s3_mods::display::display_settings(&mut engine.machine).mode;
                 let scene = layer.latest();
                 let panel = s3_mods::display::panel_for_frame(scene.panel, scene.frame, (fw, fh));
-                let vp = Some(s3_mods::display::Viewport::new_split(mode, fw, fh, ww, wh, panel));
+                // Through the last frame, so a menu layout (menu_layout.rs) maps `w` touch injects like `wshot`
+                // shows them.
+                let vp = Some(match &shared.lock().unwrap().frame {
+                    Some(fb) if (fb.width, fb.height) == (fw, fh) => {
+                        s3_mods::display::Viewport::for_frame_split(mode, &fb.pixels, fw, fh, ww, wh, panel)
+                    }
+                    _ => s3_mods::display::Viewport::new_split(mode, fw, fh, ww, wh, panel),
+                });
                 if vp != published_vp {
                     published_vp = vp;
                     s3_mods::display::set_viewport(&mut engine.machine, vp);

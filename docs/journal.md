@@ -3,6 +3,16 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — Menu pass: popups and Credits keep the mobile layout
+
+- User report: the multiplayer error popup broke the mobile menu layout. Reproduced: "Internet connection not
+  detected." (and every other main-menu / LAN message box) missed the screen's probes -> plain Fit. Now a popup over
+  a known screen gets `"<screen>+msg-box"`: same canvas and scale, edge borders kept, dialog centred and big; tall
+  windows show the whole frame with the popup in place. New `credits` layout (middle band). Headless `wtap` now maps
+  through the shown layout. Walked every main-menu entry at 2316x904 and 2176x1812 -> [menu layout](porting/menu-layout.md).
+- Found: Exit Game quits without confirm; Online Help / Tips & Tricks open `MANUAL\main.htm` / `TIPS\main.htm` via
+  ShellExecute, refused by our HLE (nothing happens).
+
 ## 2026-11-08 — App name "Settlers 3 Mobile"
 
 - Launcher label, notification titles, status screen and desktop window title renamed from "Settlers 3 Port" (user

@@ -92,16 +92,108 @@ impl MenuLayout {
         if w != self.frame[0] as u32 || h != self.frame[1] as u32 || px.len() < (w * h) as usize {
             return false;
         }
-        let misses = self
-            .probes
-            .iter()
-            .filter(|p| {
-                let m = block_mean(px, w as usize, p.x as usize, p.y as usize);
-                !(0..3).all(|i| (m[i] as i32 - p.rgb[i] as i32).abs() <= PROBE_TOL)
-            })
-            .count();
-        !self.probes.is_empty() && misses <= PROBE_MISSES
+        probes_match(self.probes.iter(), px, w)
     }
+
+    /// Like [`MenuLayout::matches`], but only the probes outside `rect` (a popup covers the others). At least
+    /// [`POPUP_BASE_PROBES`] probes must be left; with fewer than four left none may miss.
+    pub fn matches_outside(&self, px: &[u16], w: u32, h: u32, rect: [u16; 4]) -> bool {
+        if w != self.frame[0] as u32 || h != self.frame[1] as u32 || px.len() < (w * h) as usize {
+            return false;
+        }
+        let outside: Vec<&Probe> = self.probes.iter().filter(|p| !rects_overlap([p.x, p.y, 4, 4], rect)).collect();
+        if outside.len() < POPUP_BASE_PROBES {
+            return false;
+        }
+        let misses = outside.iter().filter(|p| !probe_hit(p, px, w)).count();
+        misses <= if outside.len() >= 4 { PROBE_MISSES } else { 0 }
+    }
+}
+
+fn probe_hit(p: &Probe, px: &[u16], w: u32) -> bool {
+    let m = block_mean(px, w as usize, p.x as usize, p.y as usize);
+    (0..3).all(|i| (m[i] as i32 - p.rgb[i] as i32).abs() <= PROBE_TOL)
+}
+
+/// Non-empty probe list with at most [`PROBE_MISSES`] misses (frame size already checked).
+fn probes_match<'a>(probes: impl Iterator<Item = &'a Probe>, px: &[u16], w: u32) -> bool {
+    let (mut n, mut misses) = (0, 0);
+    for p in probes {
+        n += 1;
+        misses += usize::from(!probe_hit(p, px, w));
+    }
+    n > 0 && misses <= PROBE_MISSES
+}
+
+fn rects_overlap(a: [u16; 4], b: [u16; 4]) -> bool {
+    a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3]
+}
+
+/// A modal popup the game draws over a menu screen (always at the same place, same frame).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Popup {
+    pub name: &'static str,
+    /// x, y, w, h of the whole dialog in the 800x600 frame.
+    pub rect: [u16; 4],
+    /// Static spots of the dialog itself (not the text area, not the button).
+    pub probes: &'static [Probe],
+}
+
+/// Pieces at most this wide are edge decoration, kept next to a popup ([`with_popup`]).
+const EDGE_STRIP_W: u16 = 32;
+
+/// Probes of the screen under a popup that must stay visible next to it.
+const POPUP_BASE_PROBES: usize = 2;
+
+/// The message box (one OK button): "Internet connection not detected.", "Before connecting, a provider has to be
+/// selected!", "First select a game", the "Campaign: Normal" skill info, ... Same rectangle over every screen.
+pub static MSG_BOX: Popup = Popup {
+    name: "msg-box",
+    rect: [200, 160, 400, 200],
+    probes: &[
+        pr(202, 250, 67, 79, 95),
+        pr(592, 250, 58, 78, 94),
+        pr(400, 163, 93, 131, 151),
+        pr(300, 345, 96, 122, 148),
+        pr(230, 320, 95, 127, 153),
+        pr(400, 285, 18, 25, 29),
+    ],
+};
+
+/// All known popups.
+pub static POPUPS: &[&Popup] = &[&MSG_BOX];
+
+/// A popup over a known screen: the screen's canvas and background with only its edge strips, and the whole
+/// dialog centred on it (same scale as the screen, so nothing jumps or shrinks when it opens). Built once
+/// per (screen, popup) pair and kept (`&'static`, like the static layouts). Name `"<screen>+<popup>"`.
+pub fn with_popup(base: &'static MenuLayout, pop: &'static Popup) -> &'static MenuLayout {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Vec<(usize, usize, &'static MenuLayout)>> = Mutex::new(Vec::new());
+    let key = (base as *const MenuLayout as usize, pop as *const Popup as usize);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&(_, _, l)) = cache.iter().find(|(b, p, _)| (*b, *p) == key) {
+        return l;
+    }
+    // Only the screen's thin edge strips stay (the main menu's Greek-key borders): pieces cut around the popup
+    // (half buttons, a sliced logo) looked broken, and the buttons under a modal popup do nothing anyway.
+    let pieces: Vec<Piece> =
+        base.pieces.iter().filter(|p| p.src[2] <= EDGE_STRIP_W && !rects_overlap(p.src, pop.rect)).copied().collect();
+    let mut pieces = pieces;
+    let [_, _, rw, rh] = pop.rect;
+    let (cw, ch) = (base.canvas[0].max(rw), base.canvas[1].max(rh));
+    pieces.push(pc(pop.rect[0], pop.rect[1], rw, rh, (cw - rw) / 2, (ch - rh) / 2));
+    let l: &'static MenuLayout = Box::leak(Box::new(MenuLayout {
+        name: Box::leak(format!("{}+{}", base.name, pop.name).into_boxed_str()),
+        frame: base.frame,
+        canvas: [cw, ch],
+        background: base.background,
+        pieces: Box::leak(pieces.into_boxed_slice()),
+        neutral: base.neutral,
+        band_tiles: base.band_tiles,
+        probes: &[],
+    }));
+    cache.push((key.0, key.1, l));
+    l
 }
 
 /// 4x4 block mean (8-bit rgb) of an RGB565 frame at (x, y).
@@ -127,7 +219,27 @@ fn rgb565_to_888(p: u16) -> (u32, u32, u32) {
 
 /// The layout for this frame, if it is a known menu screen.
 pub fn detect(px: &[u16], w: u32, h: u32) -> Option<&'static MenuLayout> {
+    // A popup over a known screen first ([`with_popup`]; the screen's own probes may tolerate the popup covering
+    // one of them). A popup over anything else stays in the normal display mode.
+    for &pop in POPUPS {
+        if w != 800 || h != 600 || px.len() < 800 * 600 || !probes_match(pop.probes.iter(), px, w) {
+            continue;
+        }
+        if let Some(base) = LAYOUTS.iter().copied().find(|l| l.matches_outside(px, w, h, pop.rect)) {
+            return Some(with_popup(base, pop));
+        }
+    }
     LAYOUTS.iter().copied().find(|l| l.matches(px, w, h))
+}
+
+/// Find a layout by name: a detected one, a whole-frame variant, or `"<screen>+<popup>"`.
+pub fn by_name(name: &str) -> Option<&'static MenuLayout> {
+    if let Some((b, p)) = name.split_once('+') {
+        let base = LAYOUTS.iter().copied().find(|l| l.name == b)?;
+        let pop = POPUPS.iter().copied().find(|q| q.name == p)?;
+        return Some(with_popup(base, pop));
+    }
+    LAYOUTS.iter().chain(FULL_LAYOUTS.iter()).copied().find(|l| l.name == name)
 }
 
 /// Prefer the whole original screen ([`full_variant`]) when it can be shown at least this big relative to the
@@ -153,6 +265,10 @@ pub fn choose(l: &'static MenuLayout, win_w: u32, win_h: u32) -> &'static MenuLa
 /// The whole-frame variant of a layout (same detection, background colour behind the bars), `None` when the
 /// layout already shows the whole frame.
 pub fn full_variant(l: &MenuLayout) -> Option<&'static MenuLayout> {
+    // A screen with a popup: the whole frame shows the popup in place.
+    if let Some((b, _)) = l.name.split_once('+') {
+        return LAYOUTS.iter().copied().find(|x| x.name == b).and_then(full_variant);
+    }
     if l.canvas == l.frame && l.pieces.len() == 1 {
         return None;
     }
@@ -199,6 +315,7 @@ full!(PLAYERS_FULL, PLAYERS, "players-full");
 full!(LAN_GAME_FULL, LAN_GAME, "lan-game-full");
 full!(LOAD_GAME_FULL, LOAD_GAME, "load-game-full");
 full!(BRIEFING_FULL, BRIEFING, "briefing-full");
+full!(CREDITS_FULL, CREDITS, "credits-full");
 
 /// Whole-frame variants (not detected themselves; see [`choose`]).
 pub static FULL_LAYOUTS: &[&MenuLayout] = &[
@@ -212,6 +329,7 @@ pub static FULL_LAYOUTS: &[&MenuLayout] = &[
     &LAN_GAME_FULL,
     &LOAD_GAME_FULL,
     &BRIEFING_FULL,
+    &CREDITS_FULL,
 ];
 
 /// Canvas placement in a window: (origin x, origin y, scale window px per canvas unit).
@@ -337,6 +455,7 @@ pub static LAYOUTS: &[&MenuLayout] = &[
     &LAN_GAME,
     &LOAD_GAME,
     &BRIEFING,
+    &CREDITS,
     &LOADING,
 ];
 
@@ -589,6 +708,26 @@ pub static BRIEFING: MenuLayout = MenuLayout {
     ],
 };
 
+/// Credits (text scrolling up over the stone relief of the three helmets): the middle band of the frame, where
+/// every line passes through; the relief's top and the bottom rows dropped.
+pub static CREDITS: MenuLayout = MenuLayout {
+    name: "credits",
+    frame: [800, 600],
+    canvas: [800, 312],
+    background: STONE_BG,
+    pieces: &[pc(0, 144, 800, 312, 0, 0)],
+    neutral: [400, 300],
+    band_tiles: &[],
+    probes: &[
+        pr(100, 300, 74, 101, 124),
+        pr(700, 300, 50, 68, 87),
+        pr(60, 100, 87, 115, 137),
+        pr(140, 150, 30, 38, 47),
+        pr(660, 250, 68, 92, 115),
+        pr(3, 300, 115, 151, 121),
+    ],
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +775,66 @@ mod tests {
         }
         assert_eq!(detect(&f, 800, 600).map(|l| l.name), Some("main-menu"));
         assert!(detect(&f, 640, 480).is_none());
+    }
+
+    fn paint(f: &mut [u16], probes: &[Probe]) {
+        for p in probes {
+            let c = ((p.rgb[0] as u16 >> 3) << 11) | ((p.rgb[1] as u16 >> 2) << 5) | (p.rgb[2] as u16 >> 3);
+            for y in p.y as usize..p.y as usize + 4 {
+                for x in p.x as usize..p.x as usize + 4 {
+                    f[y * 800 + x] = c;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn popup_over_a_screen_is_shown_big_and_centred() {
+        // Main menu + message box ("Internet connection not detected.").
+        let mut f = vec![0u16; 800 * 600];
+        paint(&mut f, MAIN_MENU.probes);
+        paint(&mut f, MSG_BOX.probes);
+        let l = detect(&f, 800, 600).unwrap();
+        assert_eq!(l.name, "main-menu+msg-box");
+        assert_eq!(l.canvas, MAIN_MENU.canvas, "same scale as the menu: nothing shrinks when the popup opens");
+        assert!(std::ptr::eq(l, by_name("main-menu+msg-box").unwrap()), "built once");
+        // OK button (game 528, 327) round trip; the dialog is centred on the canvas.
+        let (u, v) = l.game_to_canvas(528.0, 327.0).unwrap();
+        assert_eq!((u, v), (230.0 + 328.0, 65.0 + 167.0));
+        assert_eq!(l.canvas_to_game(u, v), (528.0, 327.0));
+        // Menu buttons are hidden (modal popup); borders stay.
+        assert_eq!(l.game_to_canvas(165.0, 35.0), None);
+        assert!(l.game_to_canvas(5.0, 100.0).is_some());
+        // Tall window: the whole frame (popup in place).
+        assert_eq!(choose(l, 2176, 1812).name, "main-menu-full");
+        assert_eq!(choose(l, 2316, 904).name, "main-menu+msg-box");
+        // Same popup over the LAN screen.
+        let mut g = vec![0u16; 800 * 600];
+        paint(&mut g, LAN_GAME.probes);
+        paint(&mut g, MSG_BOX.probes);
+        assert_eq!(detect(&g, 800, 600).map(|l| l.name), Some("lan-game+msg-box"));
+        // A popup over an unknown screen (or the game): normal display mode.
+        let mut h = vec![0u16; 800 * 600];
+        paint(&mut h, MSG_BOX.probes);
+        assert!(detect(&h, 800, 600).is_none());
+        // Every popup fits every screen's canvas.
+        for b in LAYOUTS.iter().filter(|b| b.frame == [800, 600]) {
+            for p in POPUPS {
+                let c = with_popup(b, p);
+                assert_eq!(c.canvas, b.canvas, "{}", c.name);
+            }
+        }
+    }
+
+    #[test]
+    fn credits_band() {
+        let mut f = vec![0u16; 800 * 600];
+        paint(&mut f, CREDITS.probes);
+        let l = detect(&f, 800, 600).unwrap();
+        assert_eq!(l.name, "credits");
+        assert_eq!(choose(l, 2316, 904).name, "credits");
+        assert_eq!(choose(l, 2176, 1812).name, "credits-full");
+        assert_eq!(l.canvas_to_game(400.0, 10.0), (400.0, 154.0));
     }
 
     #[test]

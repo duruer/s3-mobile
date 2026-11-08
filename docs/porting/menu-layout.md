@@ -55,16 +55,17 @@ split screen and resizing at once.
 
 | Layout | Screen | What it does |
 | --- | --- | --- |
-| `main-menu` | main menu | 13 buttons in two columns (7 + 6, original gaps kept), laurel logo right; helmets, Blue Byte logo, version text dropped. Popups ("Campaign: Normal" info, "Internet connection not detected") -> Fit |
+| `main-menu` | main menu | 13 buttons in two columns (7 + 6, original gaps kept), laurel logo right; helmets, Blue Byte logo, version text dropped. Popups ("Campaign: Normal" info, "Internet connection not detected") -> `main-menu+msg-box` (see Popups) |
 | `choose-race` | Campaign -> Choose a Race | title + the three race cards side by side |
 | `choose-race-mcd` | Mission CD Campaign | band y 60..372 of the painting, title / Egyptians / Romans labels moved into it |
 | `choose-race-amazon` | Amazon Campaign | band y 90..402, title / Amazons / Others moved into it |
 | `map-picker` | Single Player: Scenario (map popup over Game Setup) | tabs + list, options/preview, Cancel/OK |
 | `game-setup` | Game Setup | blocks in three columns |
 | `players` | player list / MP waiting room | race icons + map info top, list (first ~9 rows), status + Cancel/OK bottom |
-| `lan-game` | Multi-player Game: LAN | lists left, title / status / Back / Join / New in a right column. Popup "Before connecting, a provider has to be selected" -> Fit |
+| `lan-game` | Multi-player Game: LAN | lists left, title / status / Back / Join / New in a right column. Popups "Before connecting, a provider has to be selected!", "First select a game" -> `lan-game+msg-box` |
 | `load-game` | Load Game | upper 330 rows of the list (~14 entries), buttons right |
 | `briefing` | campaign mission briefing | text panel left, map right, tip text + Cancel/OK below |
+| `credits` | Credits (text scrolls up over the helmet relief) | middle band y 144..456 of the frame (every line passes through it), 2.9x on the Fold4 cover |
 | `loading` | 640x480 loading screen before a map (laurel + helmets) | kept whole, sides filled with its beige |
 
 Window bands above / below a canvas (tall windows, e.g. Fold4 inner 2176x1812 with `main-menu-full`) are filled
@@ -73,8 +74,35 @@ the CPU renderer and the GLES presenter). The main menu's Greek-key borders repe
 along the whole window height (user report 2026-11-08; checked with `--layout-preview` at 2176x1812, 2316x904,
 2048x1536).
 
-Not covered (shown as before): Credits (scrolling text), popups, any screen not
-listed. Lists are cut at the bottom (Load Game, players): long lists need the game's own scrolling.
+Not covered (shown as before): any screen not listed, a popup over an unlisted screen. Lists are cut at the
+bottom (Load Game, players): long lists need the game's own scrolling. Other main-menu entries: **Exit Game** quits
+at once (no confirm dialog in the game); **Online Help** / **Tips & Tricks** call `ShellExecuteExA("open",
+"C:\S3\Manual\main.htm" / "C:\S3\Tips\main.htm")`, which our shell32 HLE refuses, so they do nothing (the
+menu stays; no popup).
+
+## Popups (menu-pass, 2026-11-08)
+
+User report: with multiplayer not working the game shows an error popup, and then the mobile layout broke: a popup
+missed the screen's probes, so the frame fell back to plain `Fit` (small, black bars) until it was closed.
+
+- All main-menu / LAN popups seen so far are one **message box**: the stone dialog at `200,160 400x200` with one OK
+  button (`MSG_BOX`): "Internet connection not detected." (Internet, without touching DirectPlay), "Before connecting,
+  a provider has to be selected!" (LAN New Game without a connection), "First select a game" (LAN Join Game), the
+  "Campaign: Normal" skill text. Identical pixels over every screen (checked with `--layout-probe`).
+- `detect` checks the popups **first**: popup probes (stone frame, empty lower text area, not the text or OK) match
+  and some screen's probes **outside** the popup rectangle match (`matches_outside`, >= 2 left, no miss with < 4)
+  -> `with_popup(screen, popup)` = layout `"<screen>+msg-box"`: the screen's canvas (same scale, nothing jumps) and
+  background, only its thin edge strips (<= 32 px wide: the Greek-key borders), and the whole dialog **centred**.
+  The cut-around screen pieces looked broken (half buttons, sliced logo) and the buttons under a modal box do
+  nothing anyway. Built once per pair and leaked (`&'static` like the static layouts); `by_name` finds it.
+- Tall windows: `choose` -> the screen's full variant (`full_variant` of a composite = the screen's), which shows
+  the popup in place at full size.
+- A popup over an unknown screen (or in game) -> no layout, as before.
+- Size: the dialog is 1077x539 window px on the Fold4 cover (2.69x), the OK button 270x60.
+
+Headless `s3run --window`: the published viewport (used by `w`-prefixed touch injects and the mods) now goes through
+the last frame (`Viewport::for_frame_split`), so `wtap` hits what `wshot` shows on layout screens (before it mapped
+through plain Fit).
 
 ## Tools
 
@@ -92,6 +120,10 @@ Add a screen: take a shot, measure rectangles (any image viewer), add a `MenuLay
 `cargo test -p s3-mods --lib menu_layout`.
 
 ## Verified
+
+- 2026-11-08 (menu-pass) headless `wshot` at 2316x904 and 2176x1812: Internet error popup big and centred (cover) /
+  in place over the whole menu (inner); `wtap` on OK closes it at both sizes; LAN popups; Credits band; all 57 local
+  shots (scratch/keep/menus, scratch/menu-pass/s) detect the expected layout at both sizes.
 
 - 2026-11-07 desktop previews of all screens at 2316x904; all 32 shots detect the right layout, popup shots -> Fit.
 - 2026-11-07 phone (Fold4 cover, 2316x904): main menu full screen; tap on the moved "Load Game" (window 884,235 ->
