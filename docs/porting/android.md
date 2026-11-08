@@ -124,13 +124,64 @@ The script checks free space on the device first. On a real phone use the same t
 `adb push` or a file manager with access to `Android/data` (newer Android versions restrict this; adb always
 works).
 
-**First-run screen** (android-ux, verified on the emulator): while any of `S3.EXE`, `GFX`, `SND`, `Map`
+**Since 2026-11-08 the launcher (below) replaces the first-run screen**; the engine no longer waits for files by
+itself. Old behaviour, kept in `run_engine` / `screen.rs` for tests: **First-run screen** (android-ux, verified on the emulator): while any of `S3.EXE`, `GFX`, `SND`, `Map`
 (`frontend::REQUIRED_PARTS`, case-insensitive) is missing, the app shows a plain "Game files needed" screen
 (`screen::first_run_screen`) with the folder as the user sees it (`Android/data/com.settlers3port.app/files/game/`,
 highlighted), the full path, what to copy, which parts are still missing, the `adb push` command and the hint that
 Android 11+ file managers cannot open `Android/data`. It checks again every 2 s; once everything is there it waits
 3 s more (a push may still be running) and starts by itself (verified: moved the game dir away and back while the
 app ran). Screenshot: `scratch/android-shots/ux-firstrun-s.png`.
+
+## Launcher (home screen, 2026-11-08)
+
+User request: our own screen first, not straight into the game. `launcher.rs` (platform independent, tested on
+the desktop) records a window-resolution `s3_mods::layer::DrawList` (same recorder/fonts as the in-game overlay);
+`android.rs` publishes it with `Shared::set_launcher(Some(list))` and the presenter (`present.rs`) draws it over a
+plain 4x4 fill frame instead of the game. The activity loop feeds it the first finger (window px), Back and typed
+characters; it returns `Request::{Play, Keyboard(bool), Quit}`. Sizes are in dp (`density_dpi / 160`, capped so
+~330 dp of height fit), the page scrolls by dragging (scroll bar on the right), and it is redrawn on every window
+size change (fold / unfold) and only republished when the list hash changes.
+
+- **Home**: title + version, game files card (`REQUIRED_PARTS` present / which are missing, S3.EXE version from
+  sha256: GOG 1.60 = supported, 3,842,048 bytes other = "1.60 build, patches off", else unknown; folder),
+  **Play** (green; grey "Play (game files missing)" opens Game files), Settings, Game files, Quit, last message
+  ("The game was closed ..." or the engine error). Wide windows (>= 640 dp) use two columns.
+- **Settings**: buttons with the in-game labels (UI: Classic Touch / Mobile HUD, Screen, Filter, FPS counter,
+  FPS limit (+ display Hz like the game menu), FPS position, Fast speed, Game time, Unit paths, Group buttons,
+  Vibration, HUD - / HUD n% / HUD +); each tap edits and saves `mods-settings.json` (`Settings::save`) at once.
+  "Internet multiplayer relay" text field (soft keyboard; Enter or a tap elsewhere saves `relay-url.txt`,
+  "Default" deletes it = built-in LAN relay). `run_engine` reads `relay-url.txt` at every start (and clears
+  `S3_RELAY_URL` when it is gone). 3 / 2 / 1 columns by width.
+- **Game files**: card, **Start / Stop upload server**, Check again, and while the server runs the address
+  `http://<phone Wi-Fi IP>:8080/?k=<token>` in large text plus a QR code (`qrcode` crate, MIT/Apache, no default
+  features), received files / MB, current file + bytes, last error; adb / MTP hints. Files are re-checked every
+  2 s (server on) or 5 s.
+- **Back**: sub-page -> Home (or ends relay editing); on Home it quits (finish + `process::exit`).
+- **Play** spawns the engine thread (`run_engine`) and hides the launcher. When the engine run ends
+  (`Shared::engine_end`: Exit Game, engine error/panic) the activity joins the thread, clears the frame slot and
+  shows the launcher again with a message; settings are reloaded (the game menus may have changed them). Play
+  again builds a **new `Engine` in the same process** (process-wide statics are only caches/queues: fonts, menu
+  layout cache, haptics queue, embedded relay port).
+- Scripts: `am start -n com.settlers3port.app/android.app.NativeActivity --ez play true` skips the launcher once
+  (if the files are there); `run-emulator.sh` and `tools/phone-fps.sh` pass it.
+- Debug / tests: `<data dir>/game-dir.txt` (one absolute path) replaces the game dir (test the missing-files
+  state or uploads without touching the real install).
+- Desktop preview of every page at the Fold4 sizes: `S3_LAUNCHER_PREVIEW=<dir> cargo test -p s3-android --lib
+  launcher_preview -- --ignored` (PNGs; put them under `scratch/`).
+
+**Web upload** (`upload.rs`, std::net only, a thread per connection): binds `0.0.0.0:8080` (or the next free of
+8080-8089, else any), token = 6 random chars, needed on every request (403 page otherwise). Routes: `GET /` page,
+`GET /status` (missing parts, files, bytes), `GET /stat?path=` (size or -1, the page skips files with the same
+size), `POST /upload?path=` (raw body, Content-Length required, `Expect: 100-continue` handled, max 4 GiB per
+file). Paths: `/` or `\` separated, no `.`/`..`/empty/`:`/control chars, <= 12 parts; each part reuses an existing
+entry of another case (`gfx/` + `GFX/x`), written to `<name>.upload-part` then renamed. The page (no external
+resources): folder picker (`<input webkitdirectory>`) or drag and drop of the folder; the root is the folder that
+holds `S3.EXE` (shortest path; else the single top folder), only files below it are sent, one XHR per file with a
+progress bar, MB/s and a log; it polls `/status` every 5 s and says when all required parts are there. The phone
+IP: `s3_net::lan::primary_ipv4()` if private, else the first private interface address. No zip upload (would
+need an unzip crate; the folder upload covers it). The Android folder picker (ACTION_OPEN_DOCUMENT_TREE) needs
+an `onActivityResult`, i.e. a Java activity of our own: not done yet.
 
 ## Runtime design
 
@@ -313,7 +364,8 @@ The APK has the `INTERNET` permission. The relay URL is read once at engine star
 `/sdcard/Android/data/com.settlers3port.app/files/data/relay-url.txt` (one line, e.g. `ws://10.0.2.2:7788/` for a
 relay on the PC that runs the emulator); default `ws://127.0.0.1:7777/`. Then the game's own "Multi-player Game: LAN"
 menu lists "Internet (Settlers 3 Port)". Verified: the emulator joined a desktop-hosted game and played it by taps in
-both UI modes (ux-verify1, [integration-log.md](integration-log.md)). No in-app setting yet.
+both UI modes (ux-verify1, [integration-log.md](integration-log.md)). In-app setting: launcher Settings ->
+"Internet multiplayer relay" (2026-11-08; read at every game start).
 
 ## Install for users (phone)
 

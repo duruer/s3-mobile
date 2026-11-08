@@ -18,6 +18,7 @@ use s3_runtime::SliceResult;
 use s3_runtime::{FrameBuffer, Host, HostEvent, LogLevel, Vfs};
 
 use s3_mods::display::{DisplaySettings, Viewport};
+use s3_mods::layer::DrawList;
 use s3_mods::SceneSlot;
 
 use crate::audio::{AudioRing, Resampler, OUT_RATE};
@@ -98,6 +99,21 @@ pub struct Shared {
     pub haptic: Mutex<Vec<u32>>,
     /// Setting `vibrate_messages` (background event notifications vibrate or not).
     pub vibrate_messages: AtomicBool,
+    /// Activity -> presenter: the launcher's window-resolution draw list (`crate::launcher`); `Some` = the
+    /// launcher is shown instead of the game. `launcher_seq` is bumped on every change.
+    pub launcher: Mutex<Option<Arc<DrawList>>>,
+    pub launcher_seq: AtomicU64,
+    /// Engine thread -> activity: how the engine run ended (the launcher comes back).
+    pub engine_end: Mutex<Option<EngineEnd>>,
+}
+
+/// How an engine run ended.
+#[derive(Debug, Clone)]
+pub struct EngineEnd {
+    pub title: String,
+    pub body: String,
+    /// The game ended itself (Exit Game): not an error.
+    pub exited: bool,
 }
 
 impl Shared {
@@ -145,6 +161,9 @@ impl Shared {
             bg_lines: Mutex::new(Vec::new()),
             haptic: Mutex::new(Vec::new()),
             vibrate_messages: AtomicBool::new(true),
+            launcher: Mutex::new(None),
+            launcher_seq: AtomicU64::new(0),
+            engine_end: Mutex::new(None),
         }
     }
 
@@ -152,6 +171,13 @@ impl Shared {
     pub fn notify_render(&self) {
         let _g = self.frame.lock().unwrap();
         self.frame_cv.notify_all();
+    }
+
+    /// Show (`Some`) or hide the launcher's draw list.
+    pub fn set_launcher(&self, list: Option<Arc<DrawList>>) {
+        *self.launcher.lock().unwrap() = list;
+        self.launcher_seq.fetch_add(1, Ordering::AcqRel);
+        self.notify_render();
     }
 
     /// Engine side: publish display settings if they changed.
@@ -380,19 +406,21 @@ fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Engine thread body. Returns when `shared.quit` is set.
-pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) {
+/// Engine thread body: waits for the game files (returns `None` if the app quits meanwhile), runs the engine and
+/// returns how it ended (the launcher shows it).
+pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) -> Option<EngineEnd> {
     let _ = std::fs::create_dir_all(&game_dir);
     let _ = std::fs::create_dir_all(&data_dir);
     log::info!("engine thread: game dir {} data dir {}", game_dir.display(), data_dir.display());
     // Multiplayer relay (docs/porting/multiplayer.md): `<data dir>/relay-url.txt` (one line, e.g.
     // `ws://10.0.2.2:7787/` for a relay on the emulator's host) overrides the default `ws://127.0.0.1:7777/`.
-    if let Ok(s) = std::fs::read_to_string(data_dir.join("relay-url.txt")) {
-        let url = s.trim();
-        if !url.is_empty() {
+    // Read at every start: the launcher's Settings page edits it.
+    match std::fs::read_to_string(data_dir.join("relay-url.txt")).map(|s| s.trim().to_string()) {
+        Ok(url) if !url.is_empty() => {
             log::info!("multiplayer relay: {url} (from relay-url.txt)");
             std::env::set_var("S3_RELAY_URL", url);
         }
+        _ => std::env::remove_var("S3_RELAY_URL"),
     }
     // Optional AArch64 JIT (docs/porting/cpu.md, default off): `<data dir>/jit.txt` = `1` switches it on.
     if let Ok(s) = std::fs::read_to_string(data_dir.join("jit.txt")) {
@@ -413,7 +441,7 @@ pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) {
     let mut announced: Option<Vec<&str>> = None;
     loop {
         if shared.quit.load(Ordering::Acquire) {
-            return;
+            return None;
         }
         let missing = missing_parts(&game_dir);
         if missing.is_empty() {
@@ -437,30 +465,28 @@ pub fn run_engine(shared: Arc<Shared>, game_dir: PathBuf, data_dir: PathBuf) {
     let host = AndroidHost::new(shared.clone(), game_dir.clone(), data_dir.clone());
     let sh = shared.clone();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drive(sh, host)));
+    let mut exited = false;
     let (title, body) = match result {
         Ok(Ok(summary)) => {
             // Stop reason first (it is the last line of the summary).
             let stop = summary.lines().find(|l| l.starts_with("stop:")).unwrap_or("stop: ?").to_string();
             if stop.contains("process exited") {
-                log::info!("engine: the game exited ({stop}); closing the app");
+                log::info!("engine: the game exited ({stop}); back to the launcher");
+                exited = true;
                 shared.guest_exited.store(true, Ordering::Release);
-                (shared.wake)();
             }
             ("Engine stopped".to_string(), format!("{stop}\n{summary}"))
         }
         Ok(Err(e)) => ("Engine failed to start".to_string(), format!("error: {e}")),
         Err(p) => ("Engine panicked".to_string(), format!("panic: {}", panic_text(&*p))),
     };
-    if shared.quit.load(Ordering::Acquire) {
-        return;
-    }
-    for line in body.lines() {
-        log::warn!("{title}: {line}");
+    if !shared.quit.load(Ordering::Acquire) && !exited {
+        for line in body.lines() {
+            log::warn!("{title}: {line}");
+        }
     }
     shared.set_status(Phase::Stopped, &title, &body);
-    while !shared.quit.load(Ordering::Acquire) {
-        shared.park_for(1000);
-    }
+    Some(EngineEnd { title, body, exited })
 }
 
 /// `S3.EXE` in the game dir (case-insensitive).

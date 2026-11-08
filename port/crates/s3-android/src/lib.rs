@@ -8,10 +8,12 @@ pub mod audio;
 pub mod background;
 pub mod frontend;
 pub mod keys;
+pub mod launcher;
 pub mod layout;
 pub mod perf_hint;
 pub mod screen;
 pub mod touch;
+pub mod upload;
 
 #[cfg(target_os = "android")]
 mod android;

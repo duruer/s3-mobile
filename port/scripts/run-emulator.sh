@@ -123,7 +123,7 @@ push() {
 launch() {
   $ADB shell am force-stop "$PKG" || true
   $ADB logcat -c || true
-  $ADB shell am start -n "$PKG/android.app.NativeActivity"
+  $ADB shell am start -n "$PKG/android.app.NativeActivity" --ez play true
 }
 
 stop_app() { $ADB shell am force-stop "$PKG"; }

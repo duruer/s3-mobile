@@ -10,7 +10,7 @@ D=4630946213010294403   # cover display id for screencap
 mkdir -p "$OUT"
 "${A[@]}" shell am force-stop com.settlers3port.app
 "${A[@]}" logcat -c
-"${A[@]}" shell am start -n com.settlers3port.app/android.app.NativeActivity >/dev/null
+"${A[@]}" shell am start -n com.settlers3port.app/android.app.NativeActivity --ez play true >/dev/null
 sleep 22
 for xy in "355 667" "2142 840" "1589 811" "2142 845"; do "${A[@]}" shell input tap $xy; sleep 4; done
 sleep "$WAIT"

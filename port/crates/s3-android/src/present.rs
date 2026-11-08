@@ -675,7 +675,7 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
         let disp_seq = shared.display_seq.load(Ordering::Acquire);
         {
             let status_seq = shared.status.lock().unwrap().seq;
-            let layer_seq = shared.layer.seq();
+            let layer_seq = shared.layer.seq().wrapping_add(shared.launcher_seq.load(Ordering::Acquire) << 32);
             let g = shared.frame.lock().unwrap();
             if g.seq == shown.0 && status_seq == shown.1 && disp_seq == shown.2 && layer_seq == shown.3 {
                 let _ = shared.frame_cv.wait_timeout(g, Duration::from_millis(250)).unwrap();
@@ -696,13 +696,30 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
             requested_hz = Some(want_hz);
         }
         let mut frame_seq = 0;
-        let scene = shared.layer.latest();
-        let (game_frame, status_seq) = pick_image(&shared, &mut local, &mut status_cache, &mut frame_seq);
+        let mut scene = shared.layer.latest();
+        let launcher_seq = shared.launcher_seq.load(Ordering::Acquire);
+        let launcher = shared.launcher.lock().unwrap().clone();
+        let launcher_on = launcher.is_some();
+        let (game_frame, status_seq) = match &launcher {
+            // Launcher (crate::launcher): its draw list covers the whole window; the frame below is a plain fill.
+            Some(_) => {
+                let mut fb = FrameBuffer::new(4, 4);
+                fb.pixels.fill(screen::rgb(14, 20, 34));
+                local = Some(fb);
+                LOCAL_SEQ.store(u64::MAX, Ordering::Release);
+                frame_seq = shared.frame.lock().unwrap().seq;
+                (false, shared.status.lock().unwrap().seq)
+            }
+            None => pick_image(&shared, &mut local, &mut status_cache, &mut frame_seq),
+        };
         let fb = local.as_ref().unwrap();
-        shown = (frame_seq, status_seq, disp_seq, scene.seq);
+        shown = (frame_seq, status_seq, disp_seq, scene.seq.wrapping_add(launcher_seq << 32));
         let panel = if game_frame { s3_mods::display::panel_for_frame(scene.panel, scene.frame, (fb.width, fb.height)) } else { None };
+        if let Some(l) = launcher {
+            scene.list = l;
+        }
         // Window layer for this window size (a scene made for another size waits for the next one).
-        let layer_on = game_frame && !scene.list.is_empty();
+        let layer_on = (game_frame || launcher_on) && !scene.list.is_empty();
 
         if let Some(g) = gles.as_mut() {
             // GPU path.

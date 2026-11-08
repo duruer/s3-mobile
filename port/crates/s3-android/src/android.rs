@@ -18,7 +18,10 @@ use s3_runtime::{HostEvent, MouseButton};
 use crate::audio::{AudioRing, OUT_CHANNELS, OUT_RATE};
 use crate::background::{Background, NOT_IN_GAME_PAUSE_MS};
 use crate::bgservice;
-use crate::frontend::{run_engine, Shared};
+use crate::frontend::{run_engine, EngineEnd, Shared};
+use crate::launcher::{Launcher, Request, Touch};
+use jni::objects::JValue;
+use jni::{jni_sig, jni_str};
 use crate::present::Presenter;
 use crate::touch::{pointer_events, Action, PointerFilter};
 use crate::uithread::UiThread;
@@ -93,21 +96,40 @@ fn android_main(app: AndroidApp) {
         .external_data_path()
         .or_else(|| app.internal_data_path())
         .unwrap_or_else(|| "/sdcard/Android/data/com.settlers3port.app/files".into());
-    let game_dir = base.join("game");
     let data_dir = base.join("data");
+    // `<data dir>/game-dir.txt` (debug / tests) points the game dir elsewhere.
+    let game_dir = crate::launcher::game_dir_override(&data_dir, base.join("game"));
+    let _ = std::fs::create_dir_all(&game_dir);
     log::info!("game dir: {} (copy your own install here); data dir: {}", game_dir.display(), data_dir.display());
 
     let data_dir_ui = data_dir.clone();
     let waker = app.create_waker();
     let shared = Shared::new(Box::new(move || waker.wake()));
-    let engine_thread = {
-        let sh = shared.clone();
-        std::thread::Builder::new()
-            .name("s3-engine".into())
-            .stack_size(16 << 20)
-            .spawn(move || run_engine(sh, game_dir, data_dir))
-            .expect("spawn engine thread")
-    };
+    // Launcher first (docs/porting/android.md "Launcher"); the engine thread starts on Play and ends with the game.
+    let mut launcher = Launcher::new(game_dir.clone(), data_dir.clone());
+    let mut in_launcher = true;
+    let mut launcher_drawn: Option<(u32, u32, u64)> = None;
+    let mut launcher_dirty = true;
+    let mut engine_thread: Option<std::thread::JoinHandle<()>> = None;
+    let mut reqs: Vec<Request> = Vec::new();
+    // `am start ... --ez play true` (scripts): skip the launcher once when the files are there.
+    let autoplay = Arc::new(AtomicBool::new(false));
+    let mut autoplay_checked = false;
+    if let Some(u) = &ui_thread {
+        let a = autoplay.clone();
+        u.run("intent extras", Box::new(move |env, act| {
+            let intent = env.call_method(act, jni_str!("getIntent"), jni_sig!("()Landroid/content/Intent;"), &[])?.l()?;
+            if !intent.is_null() {
+                let key = env.new_string("play")?;
+                let v = env
+                    .call_method(&intent, jni_str!("getBooleanExtra"), jni_sig!("(Ljava/lang/String;Z)Z"), &[JValue::Object(&key), JValue::Bool(false)])?
+                    .z()?;
+                a.store(v, Ordering::Release);
+            }
+            Ok(())
+        }));
+    }
+    let start_t = Instant::now();
 
     let audio_dead = Arc::new(AtomicBool::new(false));
     let mut audio = open_audio(shared.audio.clone(), audio_dead.clone());
@@ -225,6 +247,52 @@ fn android_main(app: AndroidApp) {
         if let Ok(mut iter) = app.input_events_iter() {
             loop {
                 let read = iter.next(|event| match event {
+                    InputEvent::MotionEvent(me) if in_launcher => {
+                        // Launcher: the first finger only, in window pixels.
+                        let t = match me.action() {
+                            MotionAction::Down => Touch::Down,
+                            MotionAction::Move => Touch::Move,
+                            MotionAction::Up => Touch::Up,
+                            MotionAction::Cancel => Touch::Cancel,
+                            _ => return InputStatus::Handled,
+                        };
+                        let p = me.pointer_at_index(0);
+                        if t == Touch::Down {
+                            log::info!("launcher: touch at ({:.0},{:.0})", p.x(), p.y());
+                        }
+                        if let Some(r) = launcher.touch(t, p.x() as i32, p.y() as i32) {
+                            reqs.push(r);
+                        }
+                        launcher_dirty = true;
+                        InputStatus::Handled
+                    }
+                    InputEvent::KeyEvent(ke) if in_launcher => {
+                        let code: u32 = ke.key_code().into();
+                        if ke.action() != KeyAction::Down {
+                            return InputStatus::Handled;
+                        }
+                        launcher_dirty = true;
+                        if code == 4 {
+                            // Back: sub-page -> Home; on Home close the app.
+                            match launcher.back() {
+                                (true, r) => reqs.extend(r),
+                                (false, _) => reqs.push(Request::Quit),
+                            }
+                            return InputStatus::Handled;
+                        }
+                        let mapped = crate::keys::android_to_vk(code);
+                        let uni = match app.device_key_character_map(ke.device_id()).and_then(|m| m.get(ke.key_code(), ke.meta_state())) {
+                            Ok(KeyMapChar::Unicode(c)) => Some(c),
+                            _ => None,
+                        };
+                        match crate::keys::char_for_key(mapped, uni) {
+                            Some(c) => {
+                                reqs.extend(launcher.char(c));
+                                InputStatus::Handled
+                            }
+                            None => InputStatus::Unhandled,
+                        }
+                    }
                     InputEvent::MotionEvent(me) => {
                         // Screen -> game: the presenter's viewport (display mode), or the CPU fallback letterbox.
                         let Some(cur_vp) = *shared.viewport.lock().unwrap() else { return InputStatus::Handled };
@@ -393,11 +461,111 @@ fn android_main(app: AndroidApp) {
             }
         }
 
-        if shared.guest_exited.load(Ordering::Acquire) && !finishing {
-            finishing = true;
-            match &ui_thread {
-                Some(u) => u.finish(),
-                None => quit = true,
+        // The engine run ended (Exit Game, error): back to the launcher.
+        if engine_thread.is_some() {
+            if let Some(end) = shared.engine_end.lock().unwrap().take() {
+                if let Some(t) = engine_thread.take() {
+                    let _ = t.join();
+                }
+                log::info!("launcher: engine ended ({}{})", end.title, if end.exited { ", game exited" } else { "" });
+                if bg.take().is_some() {
+                    shared.background.store(false, Ordering::Release);
+                    crate::frontend::background_fps(None);
+                    bgservice::stop(&app);
+                }
+                shared.in_game.store(false, Ordering::Release);
+                shared.frame.lock().unwrap().fb = None;
+                launcher.message = Some(if end.exited {
+                    ("The game was closed. Tap Play to start it again.".to_string(), false)
+                } else {
+                    let first = end.body.lines().next().unwrap_or("").to_string();
+                    (format!("{}: {first}", end.title), true)
+                });
+                launcher.reload_settings();
+                launcher.recheck();
+                in_launcher = true;
+                launcher_drawn = None;
+                launcher_dirty = true;
+                if finishing {
+                    quit = true;
+                }
+            }
+        }
+
+        if in_launcher && !finishing {
+            if !autoplay_checked && start_t.elapsed() > Duration::from_millis(300) {
+                autoplay_checked = true;
+                if autoplay.load(Ordering::Acquire) && launcher.ready() {
+                    log::info!("launcher: autoplay (intent extra play=true)");
+                    reqs.push(Request::Play);
+                }
+            }
+            for r in std::mem::take(&mut reqs) {
+                log::info!("launcher: {r:?}");
+                match r {
+                    Request::Play if engine_thread.is_none() => {
+                        shared.engine_end.lock().unwrap().take();
+                        shared.guest_exited.store(false, Ordering::Release);
+                        shared.events.lock().unwrap().clear();
+                        shared.frame.lock().unwrap().fb = None;
+                        shared.set_status(crate::frontend::Phase::Starting, "Starting", "Loading the game ...");
+                        if *kb_visible.lock().unwrap() {
+                            if let Some(u) = &ui_thread {
+                                u.soft_keyboard(Some(false), kb_visible.clone());
+                            }
+                        }
+                        let sh = shared.clone();
+                        let (g, d) = (launcher.game_dir().to_path_buf(), data_dir.clone());
+                        engine_thread = Some(
+                            std::thread::Builder::new()
+                                .name("s3-engine".into())
+                                .stack_size(16 << 20)
+                                .spawn(move || {
+                                    let end = run_engine(sh.clone(), g, d).unwrap_or(EngineEnd {
+                                        title: "Stopped".into(),
+                                        body: String::new(),
+                                        exited: false,
+                                    });
+                                    *sh.engine_end.lock().unwrap() = Some(end);
+                                    (sh.wake)();
+                                })
+                                .expect("spawn engine thread"),
+                        );
+                        in_launcher = false;
+                        shared.set_launcher(None);
+                    }
+                    Request::Play => {}
+                    Request::Keyboard(show) => {
+                        if let Some(u) = &ui_thread {
+                            u.soft_keyboard(Some(show), kb_visible.clone());
+                        }
+                    }
+                    Request::Quit => {
+                        finishing = true;
+                        launcher.stop_upload();
+                        match &ui_thread {
+                            Some(u) => u.finish(),
+                            None => quit = true,
+                        }
+                    }
+                }
+            }
+        }
+        if in_launcher {
+            launcher_dirty |= launcher.tick();
+            let size = app.native_window().map(|w| (w.width().max(1) as u32, w.height().max(1) as u32));
+            if let Some((w, h)) = size {
+                let hz = f32::from_bits(shared.refresh_hz.load(Ordering::Relaxed));
+                launcher.refresh_hz = if hz > 0.0 { hz.round() as u32 } else { 0 };
+                let key = (w, h, shared.density_dpi.load(Ordering::Relaxed) as u64);
+                if launcher_dirty || launcher_drawn.map(|d| (d.0, d.1)) != Some((w, h)) {
+                    launcher_dirty = false;
+                    let list = launcher.draw(w, h, key.2 as u32);
+                    if launcher_drawn != Some((w, h, list.hash)) {
+                        launcher_drawn = Some((w, h, list.hash));
+                        shared.set_launcher(Some(Arc::new(list)));
+                    }
+                }
             }
         }
     }
@@ -411,10 +579,12 @@ fn android_main(app: AndroidApp) {
     if let Some(s) = audio.take() {
         let _ = s.request_stop();
     }
-    let _ = engine_thread.join();
+    if let Some(t) = engine_thread.take() {
+        let _ = t.join();
+    }
     log::info!("bye");
     if finishing {
-        // The game ended: end the process too, so the next launch starts from a clean state.
+        // Quit from the launcher: end the process too, so the next launch starts from a clean state.
         std::process::exit(0);
     }
 }

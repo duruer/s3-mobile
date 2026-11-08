@@ -10,6 +10,23 @@ Newest first. One entry per session: what was done, what was learned, links to d
   finger movement (finger up = later maps). Verified desktop 2316x904: drag up -> list moved 8 rows. Other lists
   (Load Game, LAN open games) can be added to `LISTS` once their scroll bars are measured.
 
+## 2026-11-08 — Launcher: own home screen before the game (launcher)
+
+- User request: the app should open our own screen (play, settings, provide the game files with a web UI)
+  instead of going straight into the game.
+- `s3-android/src/launcher.rs`: Home (files status + S3.EXE version by sha256, Play, Settings, Game files,
+  Quit), Settings (mods-settings.json with the in-game labels + relay-url.txt text field), Game files (upload
+  server, address + QR code, progress). Drawn as a window-layer `DrawList` through the GLES presenter; dp-based
+  sizes, scrolling, Back goes back. Engine thread starts on Play; after Exit Game / an engine error the launcher
+  returns and Play starts a new engine in the same process.
+- `upload.rs`: std::net HTTP server (port 8080, token in the URL, path sanitizing, 4 GiB per file, temp file +
+  rename, case-insensitive folder reuse); page with folder picker / drag and drop, skip-same-size, progress.
+- `--ez play true` intent extra skips the launcher (scripts); `<data>/game-dir.txt` overrides the game dir.
+- Verified: unit tests (navigation, settings save, relay field, upload round trip incl. `..` rejection and 403),
+  desktop preview PNGs of all pages at both Fold4 sizes (`scratch/launcher-*.png`). NOT yet verified on the phone
+  (adb to the Fold4 refused the connection during this session).
+- Docs: [android.md "Launcher"](porting/android.md).
+
 ## 2026-11-08 — LAN screen selects the provider by itself
 
 - `lan_autoselect.rs`: on the "Multi-player Game: LAN" screen (layout `lan-game` / `-full`) the first "Type of
