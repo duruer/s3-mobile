@@ -2,6 +2,11 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Tap, then press-and-drag = box select
+
+- `gesture.rs`: a touch down within 300 ms after a nearby tap that then drags starts the box selection at once
+  (`LongPress` + long-press pan). Test `tap_then_drag_is_box_select` → [touch](porting/touch.md).
+
 ## 2026-11-08 — Game time display, Classic Menu no longer opens Save / Quit
 
 - `game_time.rs`: `h:mm:ss` of the running game in the window layer (top left of the map; top right when the FPS

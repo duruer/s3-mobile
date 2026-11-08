@@ -127,3 +127,10 @@ own-before-enemy, move/attack/select/panel taps, placement place/✕/two-finger 
 double tap, drag kinds, pinch steps, camera clamp, follow + glide + stop, two-finger equal-timestamp samples,
 no glide after a resting finger or a slow drag. `s3-desktop`: `inject_touch_parsing` (lpdrag/drag2/tap3/dtap).
 `s3-android`: `motion_actions_map_to_pointer_phases`, `filter_drops_unchanged_moves`.
+
+## Tap, then press-and-drag = box select
+
+A one-finger touch that goes down within `double_tap_ms` (300 ms) of a tap near it (2 x `double_tap_slop`) and then
+drags starts the box selection at once, like a drag after a long press (`gesture.rs` `double_drag`: emits
+`LongPress` + `Pan { after_long_press: true }`). A plain drag stays a camera pan; a quick second tap stays a
+`DoubleTap`. Note: the first tap still does what a tap does (select / move order) (user request 2026-11-08).

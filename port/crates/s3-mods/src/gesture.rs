@@ -98,6 +98,9 @@ pub struct GestureRecognizer {
     mode: Mode,
     /// Time and place of the last single tap (for DoubleTap).
     last_tap: Option<(u64, f32, f32)>,
+    /// The current one-finger touch went down quickly after a tap near it (tap, then press-and-drag): dragging
+    /// it starts a box selection at once, like a drag after a long press (user request 2026-11-08).
+    double_drag: bool,
 }
 
 fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -106,7 +109,7 @@ fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
 
 impl GestureRecognizer {
     pub fn new(cfg: GestureConfig) -> Self {
-        GestureRecognizer { cfg, fingers: Vec::new(), mode: Mode::Idle, last_tap: None }
+        GestureRecognizer { cfg, fingers: Vec::new(), mode: Mode::Idle, last_tap: None, double_drag: false }
     }
 
     /// Number of fingers down.
@@ -183,6 +186,9 @@ impl GestureRecognizer {
         out.push(TouchEvent::Down { id, x, y });
         match (self.mode, self.fingers.len()) {
             (Mode::Idle, 1) => {
+                self.double_drag = self.last_tap.is_some_and(|(lt, lx, ly)| {
+                    t.saturating_sub(lt) <= self.cfg.double_tap_ms && dist((lx, ly), (x, y)) <= self.cfg.double_tap_slop * 2.0
+                });
                 self.mode = Mode::Single { x0: x, y0: y, t0: t, panning: false, long_fired: false, last: (x, y) }
             }
             (Mode::Single { panning, long_fired, .. }, 2) => {
@@ -222,6 +228,14 @@ impl GestureRecognizer {
             Mode::Single { x0, y0, t0, panning, long_fired, last } => {
                 if !panning {
                     if dist((x, y), (x0, y0)) > slop {
+                        // Tap, then press-and-drag: a box selection like after a long press.
+                        let long_fired = if !long_fired && self.double_drag {
+                            self.last_tap = None;
+                            out.push(TouchEvent::LongPress { x: x0, y: y0 });
+                            true
+                        } else {
+                            long_fired
+                        };
                         out.push(TouchEvent::Pan {
                             phase: Phase::Begin,
                             fingers: 1,
@@ -354,6 +368,25 @@ mod tests {
 
     fn high(v: &[TouchEvent]) -> Vec<TouchEvent> {
         v.iter().copied().filter(|e| !e.is_raw()).collect()
+    }
+
+    #[test]
+    fn tap_then_drag_is_box_select() {
+        let mut g = GestureRecognizer::new(GestureConfig::default());
+        let mut o = Vec::new();
+        g.down(1, 100.0, 100.0, 0, &mut o);
+        g.up(1, 100.0, 100.0, 80, &mut o);
+        o.clear();
+        g.down(2, 104.0, 100.0, 200, &mut o);
+        g.moved(2, 160.0, 140.0, 260, &mut o);
+        assert!(o.iter().any(|e| matches!(e, TouchEvent::LongPress { .. })));
+        assert!(o.iter().any(|e| matches!(e, TouchEvent::Pan { phase: Phase::Begin, after_long_press: true, .. })));
+        // A plain drag (no tap before) stays a camera pan.
+        let mut g = GestureRecognizer::new(GestureConfig::default());
+        let mut o = Vec::new();
+        g.down(1, 100.0, 100.0, 0, &mut o);
+        g.moved(1, 160.0, 140.0, 60, &mut o);
+        assert!(o.iter().any(|e| matches!(e, TouchEvent::Pan { phase: Phase::Begin, after_long_press: false, .. })));
     }
 
     #[test]
