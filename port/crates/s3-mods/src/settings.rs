@@ -67,6 +67,8 @@ pub struct Settings {
     pub res: crate::res::ResSettings,
     /// Game speed the speed button switches to (2..=8, `crate::speed`); chosen in the menus.
     pub fast_speed: u32,
+    /// Show the game time (`crate::game_time`); on by default.
+    pub show_game_time: bool,
 }
 
 impl Default for Settings {
@@ -81,6 +83,7 @@ impl Default for Settings {
             display: crate::display::DisplaySettings::default(),
             res: crate::res::ResSettings::default(),
             fast_speed: crate::speed::DEFAULT_FAST,
+            show_game_time: true,
         }
     }
 }

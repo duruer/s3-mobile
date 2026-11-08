@@ -21,6 +21,7 @@ pub mod cursor_layer; // the game's cursor in the window layer (docs/porting/dis
 pub mod speed; // game speed 1x-4x (single player)
 pub mod display; // display modes + shared screen<->game transform (docs/porting/display.md)
 pub mod fps; // FPS counter overlay
+pub mod game_time; // game time h:mm:ss overlay
 pub mod fallback;
 pub mod fast; // native fast paths for hot guest loops (docs/porting/performance.md)
 pub mod fast_blit;
@@ -246,6 +247,7 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     }
     ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
     ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
+    add_mod(m, Box::new(game_time::GameTimeMod::default())); // game time, drawn on top of the UI modes
     add_mod(m, Box::new(fps::FpsMod::default())); // FPS counter, drawn on top of the UI modes
     speed::install(m); // back to 1x outside a single-player game
     cursor_layer::install(m); // the game's mouse cursor at a constant size, on top of everything

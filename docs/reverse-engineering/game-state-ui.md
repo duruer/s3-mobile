@@ -410,7 +410,7 @@ render size for zoom, so everything drawn into the game frame grows and shrinks)
 | **Message lines** bottom-left (tutorial text, chat, desync / CD / ladder notices, "game already saved", ...) | ring in `logic` (below) | text into the text DIB: `0x4d82b0` (call `0x4b2833`); icons + composite: `0x4d8400` (call `0x4b422f`) | only the tutorial "arrow" corner |
 | **Chat input line** (multiplayer, Enter) | `logic+0x3f8` | the same two functions | no (keyboard) |
 | Tooltip | `logic+0x54` -> `snap+0x270` | `0x4b3de1..0x4b3f4b` (section 6) | no |
-| Game clock `hh:mm:ss` while `[0x7deb54]` is set (T key) | `[0x7dfd48]` (ms) | `0x4b3f95..0x4b412d`, rect `(W-80, H-20, W, H)`, font 1 | no |
+| Game clock `hh:mm:ss` while `[0x7deb54]` is set (T key) | `[0x7dfd48]` (logic ticks of 64 ms; VERIFIED 2026-11-08: 838 -> `00:00:53`) | `0x4b3f95..0x4b412d`, rect `(W-80, H-20, W, H)`, font 1 | no |
 | End banner "You've Lost." `0x80113` / "You've won." `0x80115` / "The game ends as a draw." `0x8015c` | `[0x730f64]` = 0 / 1 / 2 (`-1` = game running) | `0x4b412d..0x4b422c`, rect `(W-[0x730f20], 20, W, 47)` | no |
 | Panel info text (`snap+0x274` text id, printf args `+0x284..+0x290`, from `logic+0x50..0x64`) | panel rect `gfx+0x5f654..0x5f660` (set at `0x4c73da`) | `0x4b2838..0x4b2b13` | panel |
 

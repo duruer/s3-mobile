@@ -184,6 +184,8 @@ struct PanelTouch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FloatBtn {
     Menu,
+    /// Shown while the menu is open: the game's own Save / Quit page (panel page 7).
+    GameMenu,
     /// Shown while the menu is open: switch to UI mode B (the HUD's menu has the way back).
     HudMode,
     /// Shown while the menu is open: cycle the FPS counter (docs/porting/display.md).
@@ -198,6 +200,8 @@ enum FloatBtn {
     Speed,
     /// Shown while the menu is open: choose the fast speed (2x..8x).
     SpeedChoice,
+    /// Shown while the menu is open: game time display on / off.
+    GameTime,
     /// Shown while the menu is open: cycle the display mode (Fit / Fill / Stretch / Native wide).
     Screen,
     /// Shown while the menu is open: zoom in / out one level (render resolution, docs/porting/resolution-zoom.md).
@@ -213,14 +217,12 @@ pub struct ClassicTouch {
     view: GameView,
     touch: Option<PanelTouch>,
     pressed: Option<(u32, FloatBtn, bool)>,
-    /// The game's menu page was opened with our floating Menu button: only then the extra floating buttons
-    /// (UI mode, FPS, filter, zoom...) are shown; the panel's own computer icon opens just the game's page
-    /// (user report 2026-11-08).
-    menu_by_float: bool,
+    /// Our floating Menu is open: the column of extra buttons (Save / Quit, UI mode, FPS, filter, zoom...).
+    /// Independent of the game's Save / Quit page: Menu no longer opens that page by itself, "Save / Quit" in the
+    /// column does; the panel's own computer icon opens just the game's page (user reports 2026-11-08).
+    float_open: bool,
     /// Speed button state (chosen fast speed label, running fast) while it can be changed, refreshed each tick.
     speed: Option<(String, bool)>,
-    /// The menu page was seen open since `menu_by_float` was set (it is cleared when the page closes).
-    menu_seen_open: bool,
     /// Delayed host events (click button-up).
     queue: Vec<(u64, HostEvent)>,
     texts: std::collections::HashMap<u32, Option<String>>,
@@ -257,9 +259,8 @@ impl ClassicTouch {
             view: GameView::default(),
             touch: None,
             pressed: None,
-            menu_by_float: false,
+            float_open: false,
             speed: None,
-            menu_seen_open: false,
             queue: Vec::new(),
             texts: Default::default(),
             dirty: false,
@@ -306,12 +307,6 @@ impl ClassicTouch {
             .then(|| mem.read_u8(gd + gog::GD_BUILDINGS + bid * gog::BUILDING_SIZE + 6));
         let snap = mem.read_u32(logic.wrapping_add(gog::LOGIC_SNAP));
         let tip = if snap >= 0x1_0000 { mem.read_u32(snap + gog::SNAP_TOOLTIP) } else { u32::MAX };
-        if page == 7 {
-            self.menu_seen_open = true;
-        } else if self.menu_seen_open {
-            self.menu_seen_open = false;
-            self.menu_by_float = false;
-        }
         self.view = GameView {
             layout,
             panel: PanelState { page, sub: rd(gog::GD_SUBPAGE), category: rd(gog::GD_CATEGORY), race },
@@ -374,10 +369,10 @@ impl ClassicTouch {
             let sw = self.q(60.0);
             v.push((FloatBtn::Speed, (menu.0 - sw - self.q(10.0), menu.1, sw, h)));
         }
-        if self.view.panel.page == 7 && self.menu_by_float {
+        if self.float_open {
             let hw = self.q(150.0);
             let mut y = menu.1;
-            let mut ks = vec![FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut];
+            let mut ks = vec![FloatBtn::GameMenu, FloatBtn::GameTime, FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut];
             if self.speed.is_some() {
                 ks.insert(1, FloatBtn::SpeedChoice);
             }
@@ -518,11 +513,13 @@ impl ClassicTouch {
         let ui = self.ui;
         let q = move |v: f32| (v * ui).round() as i32;
         let u = self.ui;
-        let menu_open = self.view.panel.page == 7;
+        let menu_open = self.float_open;
         for (k, (x, y, w, h)) in self.float_buttons() {
             let pressed = self.pressed.is_some_and(|(_, pk, inside)| pk == k && inside);
             let (bg, text) = match k {
                 FloatBtn::Menu => (BG, if menu_open { "Close" } else { "Menu" }),
+                FloatBtn::GameMenu => (BG, "Save / Quit"),
+                FloatBtn::GameTime => (BG, if crate::game_time::enabled(m) { "Game time: on" } else { "Game time: off" }),
                 FloatBtn::HudMode => (BG, "UI: Mobile HUD"),
                 FloatBtn::Fps => (BG, match self.disp.fps_counter {
                     crate::display::FpsCounter::Off => "FPS: off",
@@ -662,13 +659,16 @@ impl Mod for ClassicTouch {
                         let (wx, wy) = crate::touch_window_pos(m, ev);
                         if self.float_at(wx, wy) == Some(k) {
                             let action = match k {
-                                FloatBtn::Menu if self.view.panel.page == 7 => {
-                                    self.menu_by_float = false;
-                                    Action::CloseMenu
-                                }
                                 FloatBtn::Menu => {
-                                    self.menu_by_float = true;
-                                    self.menu_seen_open = false;
+                                    // Only our button column; the game's page is opened by "Save / Quit".
+                                    self.float_open = !self.float_open;
+                                    return ModEvent::Consumed;
+                                }
+                                FloatBtn::GameMenu => {
+                                    self.float_open = false;
+                                    if self.view.panel.page == 7 {
+                                        return ModEvent::Consumed;
+                                    }
                                     Action::OpenMenu
                                 }
                                 FloatBtn::HudMode => {
@@ -677,6 +677,10 @@ impl Mod for ClassicTouch {
                                     s.ui_mode = UiMode::MobileHud;
                                     m.log(LogLevel::Info, "ui-classic: switching to UI mode B (Mobile HUD)");
                                     let _ = crate::set_settings(m, s);
+                                    self.float_open = false;
+                                    if self.view.panel.page != 7 {
+                                        return ModEvent::Consumed;
+                                    }
                                     Action::CloseMenu
                                 }
                                 FloatBtn::ZoomIn | FloatBtn::ZoomOut => {
@@ -686,6 +690,11 @@ impl Mod for ClassicTouch {
                                     } else {
                                         crate::zoom::zoom_out(m);
                                     }
+                                    self.dirty = true;
+                                    return ModEvent::Consumed;
+                                }
+                                FloatBtn::GameTime => {
+                                    crate::game_time::toggle(m);
                                     self.dirty = true;
                                     return ModEvent::Consumed;
                                 }

@@ -2,6 +2,16 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Game time display, Classic Menu no longer opens Save / Quit
+
+- `game_time.rs`: `h:mm:ss` of the running game in the window layer (top left of the map; top right when the FPS
+  counter is top left), from the game clock `[0x7dfd48]` = logic ticks of 64 ms (VERIFIED: 838 ticks, the game's
+  own T-key clock showed `00:00:53`). On by default (`Settings::show_game_time`); toggles: Classic menu column
+  "Game time", HUD Settings row next to Full-screen map. Follows game speed, pause and loaded games.
+- Classic floating Menu now only opens our button column; the game's Save / Quit page (panel page 7) opens from a
+  new "Save / Quit" button in that column (user report: Menu looked like it had pressed Save / Quit too).
+  Verified desktop 2316x904 / 2176x1812.
+
 ## 2026-11-08 — Fast speed up to 8x, speed button toggles
 
 - `speed.rs`: the speed button now switches normal <-> a chosen fast speed (`Settings::fast_speed`, 2x..8x,

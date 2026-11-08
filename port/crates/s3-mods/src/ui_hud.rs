@@ -114,6 +114,8 @@ pub(crate) enum Action {
     Speed,
     /// Settings: choose the fast speed (2x..8x).
     CycleFastSpeed,
+    /// Settings: game time display on / off.
+    ToggleGameTime,
     /// The full-screen map image (tap = jump there).
     MapPoint,
     MenuSettings,
@@ -553,6 +555,9 @@ impl MobileHud {
                 self.speed = crate::speed::button_state(m);
                 self.set_toast(&format!("Game speed {s}x"));
             }
+            Action::ToggleGameTime => {
+                crate::game_time::toggle(m);
+            }
             Action::CycleFastSpeed => {
                 let s = crate::speed::cycle_choice(m);
                 self.speed = crate::speed::button_state(m);
@@ -848,7 +853,9 @@ impl MobileHud {
         c.text_centered(inner.x + third + gap, row(4), third, bh, self.k() * 14.0, Weight::Bold, TEXT, &format!("HUD {:.0}%", self.scale_pref * 100.0));
         self.button(c, Rect::new(inner.x + 2 * (third + gap), row(4), third, bh), "HUD +", BTN_BG, Action::MenuScale(1));
         let fm = if self.fullscreen_map { "Full-screen map: on" } else { "Full-screen map: off" };
-        self.button(c, Rect { y: row(5), ..full }, fm, BTN_BG, Action::MenuToggleFullMap);
+        self.button(c, Rect::new(inner.x, row(5), half, bh), fm, BTN_BG, Action::MenuToggleFullMap);
+        let gt = if crate::game_time::enabled(m) { "Game time: on" } else { "Game time: off" };
+        self.button(c, Rect::new(inner.x + half + gap, row(5), half, bh), gt, BTN_BG, Action::ToggleGameTime);
         let mode = crate::settings(m).ui_mode;
         let mode_label = if mode == UiMode::MobileHud { "UI: Mobile HUD  >  Classic Touch" } else { "UI: Classic  >  Mobile HUD" };
         self.button(c, Rect { y: row(6), ..full }, mode_label, BTN_BG, Action::MenuToggleMode);

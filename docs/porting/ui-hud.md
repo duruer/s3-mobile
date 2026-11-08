@@ -224,3 +224,4 @@ trip, tiles, camera formula).
 
 Single-player game: the ">> Nx" pill right of the resource strip switches between normal speed and the chosen fast
 speed (accent colour while fast). Settings -> "Fast speed: Nx" cycles 2x..8x (`crate::speed`).
+Settings -> "Game time: on/off" shows the game time (`crate::game_time`) below the resource strip (default on).

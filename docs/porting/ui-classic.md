@@ -99,3 +99,9 @@ window layer".
 
 Single-player game: a ">> Nx" button left of Menu switches between normal speed and the chosen fast speed (gold
 while fast). The fast speed (2x..8x) is chosen with "Fast speed: Nx" in the menu column (`crate::speed`).
+
+## Menu column and game time
+
+The floating Menu button opens only our button column (Save / Quit, Game time, Fast speed, UI mode, FPS, filter,
+screen, zoom); "Save / Quit" opens the game's own menu page. The game time (`crate::game_time`, `h:mm:ss` from the
+game clock) is shown top left of the map, on by default.
