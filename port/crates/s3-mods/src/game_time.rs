@@ -3,8 +3,8 @@
 //!
 //! Source: the game's own clock `[0x7dfd48]` (logic ticks of 64 ms; what its T-key clock prints, docs/reverse-engineering/
 //! game-state-ui.md "What is drawn as text over the map"), so it follows game speed, pauses and saved games.
-//! Drawn in the window layer: top left of the map (right of the Classic panel, below the HUD's resource strip), or
-//! top right when the FPS counter sits top left.
+//! Drawn in the window layer: Classic top centre of the map part; Mobile HUD below its resource strip (top right
+//! when the FPS counter sits top left).
 
 use s3_runtime::Machine;
 
@@ -86,7 +86,16 @@ impl Mod for GameTimeMod {
         };
         let d = crate::display::display_settings(m);
         let fps_top_left = d.fps_counter != crate::display::FpsCounter::Off && d.fps_pos == crate::display::FpsPos::TopLeft;
-        let (x, y) = if fps_top_left { (vx + vw - w - m2, vy + m2) } else { (left, vy + strip + m2) };
+        let fps_top_center = d.fps_counter != crate::display::FpsCounter::Off && d.fps_pos == crate::display::FpsPos::TopCenter;
+        // Classic: top centre of the map part (its selection chip sits top left, Deselect top right); HUD: below
+        // the resource strip. Away from the FPS counter when it is placed there.
+        let (x, y) = if hud {
+            if fps_top_left { (vx + vw - w - m2, vy + m2) } else { (left, vy + strip + m2) }
+        } else if fps_top_center {
+            (left, vy + (40.0 * sk) as i32)
+        } else {
+            (left + (vx + vw - left - w) / 2, vy + m2)
+        };
         c.fill_rounded_rect(x, y, w, h, 5.0 * sk, Rgba::rgba(0, 0, 0, 140));
         c.text(x + pad, y + pad / 2, px, Weight::Bold, Rgba::rgb(240, 225, 170), &self.shown);
     }
