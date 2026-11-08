@@ -543,3 +543,56 @@ not committed): `scratch/re-messages/r1..r6`.
 Open: the chat line, its icons and the colour mark (icon `< 0x14`, drawn via `0x5fab50(0x40000)` / `0x5fac10(icon +
 0x10000)`) are STATIC only (need a two-instance MP run); the exact sprite offsets of the icons; whether other missions
 use `0x540400` (`[0x7dfdb0]` values other than 0x63).
+
+## 8. Building page, recruitment and save (hud-native, 2026-11-08)
+
+Static from the HandleInput listing (`scratch/re-ui/s3.asm`, local), effects VERIFIED in s3run through the Mobile HUD
+(which sends the same requests, [ui-hud.md](../porting/ui-hud.md) "No original panel"). Grid = panel cells as in
+section 2.
+
+### Building page (page 4, `[0x7dfd6c]` = building, sub-page `[gd+0x2d298]`)
+
+Building entry fields used by the page (`gd+0x1499e64 + id*0x3a`): `+0x21` != 0 = **construction site** (VERIFIED:
+0 on the finished tower, non-zero on a fresh site; tooltip "Crush Construction Site" vs "Crush building"), `+0x18`
+bit 0 = working / building active (1 on the tower and on a fresh site; cleared by "Stop Building", VERIFIED), bits
+1..4 = construction priority (set by "Highest Priority", VERIFIED; stopping the site cleared it too), `+0x1b/+0x1c`
+changed 0 -> 2 after "Maximum Garrison" on the Guard Tower (HYPOTHESIS: wanted bowmen / spearmen).
+
+| Button (tooltip) | Grid | Condition | Action | Status |
+| --- | --- | --- | --- | --- |
+| Maximum Garrison / Add Swordsman / Add Bowman / Add Spearman (`0x80071`, `0x80073`, `0x80075`, `0x80077`) | cols 2..7 / 12..17 / 22..27 / 32..37, rows 74..79 | finished type 0x0f, 0x10, 0x12 (`0x531450`) | command 0x0c `{id_hi, id_lo, player, action}` action 1 / 2 / 3 / 4; sounds 0x31, 0x2f | VERIFIED (1: building bytes changed) |
+| Minimum Garrison / Remove Swordsman / Bowman / Spearman (`0x80072`, `0x80074`, `0x80076`, `0x80078`) | same cols, rows 86..91 | same | command 0x0c action 5 / 6 / 7 / 8; sounds 0x32, 0x30 | STATIC (6 sent, no visible change with one swordsman inside) |
+| Stop / Resume Working (`0x80055`/`0x80056`), on sites Stop / Resume Building (`0x80053`/`0x80054`) | cols 1..6, rows 23..28 | sites, or finished types of `ui_hud_data::STOP_WORK_TYPES` (`0x531c72..0x531d1a`) | command 0x04 `{id_hi, id_lo, !bit0, player}`, sound 0x35 (resume) / 0x36 (stop) | VERIFIED (site) |
+| Highest Priority (`0x80063`) | cols 8..13, rows 23..28 | site; on: priority bits clear, bit 0 set and player record `+0x20` (u16, sites with priority) < 10 | 0xf5 `{id_hi, id_lo, owner}` sound 0x2f; with priority set 0xf6 (off) sound 0x30 | VERIFIED |
+| Set new working area (`0x80059`) | cols 17..22, rows 23..28 | finished types 0x02, 0x1e, 0x0e, 0x19, 0x24, 0x18, 0x05, 0x03, 0x33 | sound 0x34, `CLogicThread::0x523840(id)`, sub-page 2; the next map click sends command 5 (`0x53330e`) | STATIC |
+| Crush (`0x80058` / `0x80057`) | cols >= 34, rows 23..28 | own building | sub-page 1 (confirmation); YES (cols 3..16, rows 87..91, `0x52fee7`) sends command 0x06 | VERIFIED earlier (HUD Destroy) |
+| (second row) Recruitment / Population / Tools and Weapons / "Setting" | rows 23..28 (`0x532122..0x532287`) | barracks 0x13 -> page 3 tab 3; toolsmith 0x0c / weaponsmith 0x0d -> page 2 tab 2; residences 0x1a..0x1c -> page 3 tab 1; storage area 0x01 with `+0x21` != 0 -> sub-page 0x12 (`0x80175` "Setting"; HYPOTHESIS: `+0x21` has another meaning for storage areas) | panel links | STATIC |
+
+Sub-pages seen: 0 main, 1 crush confirmation, 2 work area, 3 target (command 5), 4..0xd waypoints/ships
+(`0x80096..0x80099`), 0xe siege workshops (types 0x1f, 0x2f, 0x30, 0x32: build catapult/ballista/cannon, ammo),
+0x10..0x12 ship yard / trade / storage settings (STATIC, not analysed).
+
+### Recruitment (page 3 tab 3, `0x52cbf7..0x52d5ff`)
+
+Command 0x10, 12 bytes `{0x21, 0x10, 0x0c, 0, kind, player, x_hi, x_lo, y_hi, y_lo, count, 0}`, posted with 3 dwords,
+then `CLogicThread::0x542630()`; sound 0x2f. kind 1 geologist, 2 thief, 3 pioneer, 4 pioneer -> carrier; count 1 or 5
+(buttons "1 New Geologist" `0x8007a`, "5 New Geologists" `0x80079`, ... `0x8007f`/`0x80080`; Amazons use the texts
+`0x80177..0x8017e`). x, y = tile at the centre of the map view, computed from the camera (`0x52ccbc..`):
+`q = (camY + 1600) / 18`, `x = (camX - 208) / 16 - (W - (2q - 200)) / 2 + ((H + 255) / 9 + 11) / 4 + ((mapW + 23) / 16
++ 10) / 2`, `y = 2q - 200 + ((H + 255) / 9 + 11) / 2` (camX/camY `gd+0x2d25c/0x2d260`, W world size, H `[0x730f1c]`,
+mapW `[0x730f18]`; `ui_hud_game::view_centre_tile`). VERIFIED: "1 New Geologist" + "5 New Pioneers" turned 6 carriers
+into settler types 22 (geologist) and 40 (pioneer). Not done natively: soldier recruitment (`0x8006a..0x8006f`) and
+the carrier / digger / builder limits (`0x80067..0x80069`).
+
+### Save (page 7)
+
+- "Save Game" (sub-page 0, `0x52e29a`): `0x4318d0` (thiscall `0x7a7a18`) = multiplayer session. Single player: for
+  slot 1..8 `CLogicThread::0x50b670(slot, 0, &line1, &b, &a)` (three MSVC 6 `std::string`s: 16 bytes, +4 data, +8
+  length; ctor `0x523540`, dtor `0x401b60`) returns al = slot used; line 1 = map path (`\Random`), line 2 = `a + " " +
+  b` = date/time + race ("11/08/2026 01:28:54" "Egyptians"); the panel keeps them at `logic+0x250 + 0x20*i`; sub-page 2.
+- Slot click (sub-page 2, rows `0x1c + 7*i`): `CLogicThread::0x50ac40(0, slot)` (arg0 = multiplayer flag; it formats
+  `Save\slot%2i.sav`) -> al 1 = sub-page 3 "saved" (then `[0x7deb50] = 0`, `[0x7dfd50] = [0x7dfd48]`: the "not saved
+  for N min" reminder), else sub-page 4. VERIFIED from a HUD logic-thread hook: `slot 1.sav` written (4.6 MB) and
+  listed by the reader.
+- Multiplayer (`0x52e438`): refuses within 0x3a9 time units of the last save (message `0x8012d`), checks
+  `0x435aa0`, then sound 0x30, command 0xfa `{player}`, `0x542630()`, sub-page 5. STATIC (the HUD sends the same).

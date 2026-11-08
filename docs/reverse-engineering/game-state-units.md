@@ -80,9 +80,9 @@ Settlers inside a building have a position but are not on the tile (tile `+0` = 
 | +0x08 | u16 | 2 / 0x3c on finished towers (HYPOTHESIS: occupants/strength) | |
 | +0x0a, +0x0c | u16 | door / flag tile x, y | VERIFIED (next to x,y) |
 | +0x10, +0x12 | u16 | settler ids working on a construction site (builder/digger) | VERIFIED (sites only) |
-| +0x18 | u8 | bit 0 toggled by command 4 (building panel button; HYPOTHESIS: pause/priority) | STATIC |
+| +0x18 | u8 | bit 0 = working / building active (toggled by command 4 "Stop/Resume Working/Building"), bits 1..4 = construction priority (commands 0xf5/0xf6); game-state-ui.md section 8 | VERIFIED (site) |
 | +0x18..+0x21 | u8 | construction progress bytes on sites (`01 03 01 05 04 00 00 04 00 01` on a fresh site, `01 00 01 ...` on finished) | HYPOTHESIS: build phase ("Baubauphase") |
-| +0x21 | u8 | non-zero excludes the building from command checks (`0x535b51`, `0x537307`; HYPOTHESIS: being destroyed) | STATIC |
+| +0x21 | u8 | non-zero = construction site (building page tooltips; VERIFIED 0 on a finished tower, non-zero on a fresh site); also excludes the building from some command checks (`0x535b51`, `0x537307`) | VERIFIED |
 | +0x30, +0x32 | u16 | x, y again (or a sign/target position) | VERIFIED values |
 | +0x38 | u16 | 0xfa (250) on finished buildings | ? |
 
@@ -222,9 +222,13 @@ switch at `0x535a9d`.
 | 0x0e | same | `0x534787` (Alt + right-click; a special case with a thief (settler type 0x17) on land of an allied player shows a text message `0x80174` instead) | `0x536045` (mode 2) | variant (HYPOTHESIS: patrol or steal) | STATIC |
 | 0x0f | same | `0x534814` (Ctrl + right-click) | `0x536045` (mode 3) | variant (HYPOTHESIS: forced march, no fighting) | STATIC |
 | 0x06 | building id(2), player(1); length 8 | `0x52fee7` (destroy button in the building panel, mode 4, `[gd+0x2d298] == 1`) | `0x53729c` -> `gd::CrushBuilding` `0x4d9250` | destroy building | STATIC |
-| 0x04 | building id(2), new flag(1) = bit 0 of building +0x18 toggled, player(1); length 8 | `0x531d65` (building panel, sounds 0x35/0x36) | `0x536fbf` | toggle a building flag; HYPOTHESIS: stop/resume production or construction priority | STATIC |
+| 0x04 | building id(2), new flag(1) = bit 0 of building +0x18 toggled, player(1); length 8 | `0x531d65` (building panel, sounds 0x35/0x36) | `0x536fbf` | Stop / Resume Working (Stop / Resume Building on sites) | VERIFIED (site, 2026-11-08) |
+| 0x0c | building id(2), player(1), action(1): 1 max garrison, 2/3/4 add sword/bow/spear, 5 min garrison, 6/7/8 remove | `0x531499..0x531ab6` (towers / castle) | | garrison wishes (game-state-ui.md section 8) | VERIFIED (1) |
+| 0x10 | kind(1), player(1), x(2), y(2), count(1), 0; length 12 | `0x52cbf7..0x52d5ff` (settlers page Recruitment) | | 1 geologist, 2 thief, 3 pioneer, 4 pioneer -> carrier, at the view-centre tile | VERIFIED (1, 3) |
+| 0xf5 / 0xf6 | building id(2), owner(1); length 8 | `0x531eb3` / `0x531f2c` (building page) | | construction site highest priority on / off | VERIFIED |
+| 0xfa | player(1); length 8 | `0x52e510` (multiplayer "Save Game") | | network save | STATIC |
 | 0x05 | x(2), y(2), ..., building id | `0x53330e` (building panel, `[gd+0x2d298] = 3`) | `0x5370b4` | set a building's work area / target to a tile (HYPOTHESIS) | STATIC |
-| 0x07, 0x08, 0x0a, 0x0b, 0x10, 0x11 | economy sector / goods index / value | panel code `0x528c65..0x52e040` | `0x5375c7`, `0x53767d`, `0x53919d`, `0x5395b5`, `0x539f30`, `0x537728` | economy settings in the economy sector table `gd+0xe145e8` (0x2e0 bytes each): goods distribution / transport priorities / tool and weapon production (HYPOTHESIS for which is which) | STATIC |
+| 0x07, 0x08, 0x0a, 0x0b, 0x11 | economy sector / goods index / value | panel code `0x528c65..0x52e040` | `0x5375c7`, `0x53767d`, `0x53919d`, `0x5395b5`, `0x537728` (0x10 = recruitment, below; executor `0x539f30` HYPOTHESIS) | economy settings in the economy sector table `gd+0xe145e8` (0x2e0 bytes each): goods distribution / transport priorities / tool and weapon production (HYPOTHESIS for which is which) | STATIC |
 | 0x12, 0x14, 0x15, 0x17 | player, building id, tile x/y, panel action | `0x533439`, `0x5335c9`, `0x5338f4`, `0x533729`, `0x530b43` | `0x5377cf`, `0x538e45`, `0x53888e`, `0x538f19` | building-panel actions with a target tile (0x14/0x17 only for building types 0x20/0x21: HYPOTHESIS harbour/shipyard) | STATIC |
 | 0x13, 0x16, 0x18, 0x19, 0x1a, 0x1b, 0x1c | 8-byte requests | `0x52d68b`, `0x52f5ff`, `0x5300bc`.. | see table | unknown | STATIC |
 | 0xf1..0xff | | `0x52e510` (0xfa), `0x531eb3` (0xf5), `0x531f2c` (0xf6) | `0x53a1af..0x53b34e` | system: save/load (`slot%2i.sav`), quit, game status, multiplayer save | STATIC |

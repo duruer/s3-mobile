@@ -10,8 +10,10 @@
 //!   at runtime from the game's own panel (the HUD lets the game draw each build page once and copies the slot
 //!   pixels from the presented frame); nothing is shipped. Choosing a card enters the game's build placement
 //!   mode (panel state, game-state-ui.md); the next map tap places the site.
-//! - Selection card (units / building), resource summary strip, settlers and stats sheets, in-game menu
-//!   (save / quit through the original menu page, pause, settings incl. the UI mode switch).
+//! - Selection card (units / building), building sheet (stop / resume, site priority, work area, garrison),
+//!   resource summary strip, settlers sheet (with recruitment) and goods sheet, in-game menu (save sheet with the
+//!   game's slot list, quit, pause, settings incl. the UI mode switch). The original panel is never shown
+//!   (docs/porting/ui-hud.md "No original panel").
 //!
 //! Active only while `settings.ui_mode == MobileHud`; switching modes at runtime restores the original layout.
 //!
@@ -27,7 +29,10 @@ use crate::gesture::TouchEvent;
 use crate::layer::{ImageRef, Layer};
 use crate::overlay::{measure_text, Image, Rgba, Weight};
 use crate::settings::UiMode;
-use crate::ui_hud_data::{build_type, building_text_id, good_name, inventory_icon_rect, CATEGORIES, GOODS};
+use crate::ui_hud_data::{
+    build_type, building_text_id, good_name, inventory_icon_rect, CATEGORIES, GARRISON_ACTIONS, GARRISON_TYPES, GOODS,
+    RECRUIT_ACTIONS, STOP_WORK_TYPES, WORK_AREA_TYPES,
+};
 
 /// Harvest step that reads the goods icons (after the four build categories).
 const GOODS_PAGE: u32 = 5;
@@ -94,12 +99,23 @@ pub(crate) enum Action {
     Deselect,
     MoveUnits,
     Destroy,
+    /// Open the building sheet (replaces the original panel's page 4).
     BuildingDetails,
+    /// Building sheet: Stop / Resume Working (or Building on a site), command 0x04.
+    ToggleWork,
+    /// Building sheet (construction site): Highest Priority on / off, command 0xf5 / 0xf6.
+    SitePriority,
+    /// Building sheet: Set new working area (next map tap).
+    WorkArea,
+    /// Building sheet: garrison action of command 0x0c (1..8, `ui_hud_data::GARRISON_ACTIONS`).
+    Garrison(u8),
+    /// Settlers sheet: recruit `count` specialists of `kind` (command 0x10).
+    Recruit { kind: u8, count: u8 },
     MenuResume,
-    /// Show one of the original panel pages (goods tab / settlers tab) in the panel peek.
-    PanelGoods(u32),
-    PanelSettlers(u32),
+    /// Open the save sheet (slot list read with the game's own reader).
     MenuSave,
+    /// Save into slot 1..8 (or the multiplayer save).
+    SaveSlot(u32),
     MenuQuit,
     /// Confirmation: really end the game.
     MenuQuitYes,
@@ -107,7 +123,6 @@ pub(crate) enum Action {
     MenuToggleMode,
     MenuToggleFullMap,
     MenuScale(i32),
-    PeekDone,
     /// The minimap widget (drag = pan, tap = full-screen map).
     Minimap,
     /// Game speed: normal <-> chosen fast speed (single player).
@@ -145,6 +160,10 @@ pub(crate) enum Sheet {
     QuitConfirm,
     /// Full-screen map overlay.
     Map,
+    /// Selected building: state and the original page 4's actions (stop/resume, priority, work area, garrison).
+    Building,
+    /// Save game: the 8 slots (or one multiplayer save).
+    Save,
 }
 
 /// Icon harvesting state (see module docs).
@@ -163,11 +182,12 @@ pub struct MobileHud {
     scale_pref: f32,
     fullscreen_map: bool,
     sheet: Sheet,
-    /// Original panel temporarily visible (game menu, building details); HUD shows only a "Back" button.
-    peek: bool,
-    /// Panel page the peek shows (auto-exit once the game has shown it and left it again).
-    peek_page: Option<u32>,
-    peek_seen: bool,
+    /// A save is running (slot) since this time: the save sheet shows "Saving..." until the result arrives.
+    saving: Option<(u32, u64)>,
+    /// Occupied save slot tapped once: (slot, until ms); a second tap overwrites it.
+    overwrite: Option<(u32, u64)>,
+    /// The last drawn save sheet showed the slot list (redraw once the logic thread has read it).
+    save_slots_drawn: bool,
     /// Speed button state (chosen fast speed label, running fast) while it can be changed.
     speed: Option<(String, bool)>,
     snap: Option<GameSnapshot>,
@@ -217,9 +237,9 @@ impl Default for MobileHud {
             scale_pref: 1.0,
             fullscreen_map: true,
             sheet: Sheet::None,
-            peek: false,
-            peek_page: None,
-            peek_seen: false,
+            saving: None,
+            save_slots_drawn: false,
+            overwrite: None,
             speed: None,
             snap: None,
             in_game: false,
@@ -296,16 +316,11 @@ impl MobileHud {
     }
 
     fn sync_layout(&mut self, m: &mut Machine) {
-        let want = self.active && self.fullscreen_map && !self.peek && self.harvest_done_or_idle();
+        // The original panel is never shown in this mode (except behind the "Preparing" cover while the icons are
+        // read): every former panel page has a native sheet.
+        let want = self.active && self.fullscreen_map && self.harvest_done_or_idle();
         let st = m.state::<HudShared>();
         let mut s = st.borrow_mut();
-        let peeking = self.active && self.peek;
-        if s.peeking != peeking {
-            s.peeking = peeking;
-            drop(s);
-            crate::zoom::update_target(m);
-            s = st.borrow_mut();
-        }
         if s.fullscreen_map != want {
             s.fullscreen_map = want;
             drop(s);
@@ -469,23 +484,47 @@ impl MobileHud {
                     self.destroy_armed_ms = self.now + 3000;
                 }
             }
-            Action::PanelGoods(t) => {
-                game::queue(m, LogicAction::GoodsTab(t));
-                self.sheet = Sheet::None;
-                self.start_peek(2);
+            Action::BuildingDetails => self.sheet = Sheet::Building,
+            Action::ToggleWork | Action::SitePriority | Action::Garrison(_) => {
+                if std::env::var("S3_HUD_DEBUG").is_ok() {
+                    if let Some(s) = self.snap.as_ref().filter(|s| s.building != 0) {
+                        let e = s.gd + game::GD_BUILDINGS + s.building as u32 * 0x3a;
+                        let b: Vec<String> = (0..0x3a).map(|i| format!("{:02x}", m.mem.read_u8(e + i))).collect();
+                        eprintln!("ui-hud: {a:?} building {} entry {}", s.building, b.join(" "));
+                    }
+                }
+                if let Some(req) = self.snap.as_ref().and_then(|s| building_request(s, &a)) {
+                    game::queue(m, req);
+                }
             }
-            Action::PanelSettlers(t) => {
-                game::queue(m, LogicAction::SettlersTab(t));
-                self.sheet = Sheet::None;
-                self.start_peek(3);
+            Action::WorkArea => {
+                if let Some(b) = self.snap.as_ref().map(|s| s.building).filter(|&b| b != 0) {
+                    game::queue(m, LogicAction::WorkArea { building: b });
+                    self.sheet = Sheet::None;
+                    self.set_toast("Tap the map to set the work area");
+                }
             }
-            Action::BuildingDetails => {
-                self.start_peek(4);
+            Action::Recruit { kind, count } => {
+                game::queue(m, LogicAction::Recruit { kind, count });
+                self.set_toast(&format!("Ordered {count}"));
             }
             Action::MenuSave => {
-                game::queue(m, LogicAction::Page { page: 7, sub: Some(0) });
-                self.sheet = Sheet::None;
-                self.start_peek(7);
+                m.state::<HudShared>().borrow_mut().save_slots = None;
+                game::queue(m, LogicAction::ReadSaveSlots);
+                self.sheet = Sheet::Save;
+            }
+            Action::SaveSlot(slot) => {
+                // An occupied slot needs a second tap within 3 s (the original list overwrites at once).
+                let used = m.state::<HudShared>().borrow_mut().save_slots.as_ref().is_some_and(|s| {
+                    !s.multiplayer && s.slots.get(slot.wrapping_sub(1) as usize).is_some_and(|x| x.is_some())
+                });
+                if used && !self.overwrite_armed(slot) {
+                    self.overwrite = Some((slot, self.now + 3000));
+                } else if self.saving.is_none() {
+                    self.overwrite = None;
+                    game::queue(m, LogicAction::SaveGame { slot });
+                    self.saving = Some((slot, self.now));
+                }
             }
             Action::MenuQuit => self.sheet = Sheet::QuitConfirm,
             Action::MenuQuitYes => {
@@ -517,14 +556,6 @@ impl MobileHud {
                 s.hud_scale = ((s.hud_scale * 10.0).round() / 10.0 + d as f32 * 0.1).clamp(0.7, 1.5);
                 self.scale_pref = s.hud_scale;
                 let _ = crate::set_settings(m, s);
-            }
-            Action::PeekDone => {
-                self.peek = false;
-                self.peek_page = None;
-                let page = self.snap.as_ref().map(|s| s.page).unwrap_or(0);
-                if page != 0 && page != 5 && page != 1 {
-                    game::queue(m, LogicAction::Page { page: 0, sub: Some(0) });
-                }
             }
             Action::MenuSettings => self.sheet = Sheet::Settings,
             Action::SettingsBack => self.sheet = Sheet::Menu,
@@ -568,12 +599,6 @@ impl MobileHud {
         self.sync_layout(m);
     }
 
-    fn start_peek(&mut self, page: u32) {
-        self.peek = true;
-        self.peek_page = Some(page);
-        self.peek_seen = false;
-    }
-
     /// Centre the camera on the tile under a point of a map geometry (replaces a still queued jump).
     fn center_at(&mut self, m: &mut Machine, g: &MapGeom, x: f32, y: f32) {
         let Some(world) = self.mini.as_ref().map(|d| d.world) else { return };
@@ -591,7 +616,7 @@ impl MobileHud {
 
     /// Our minimap widget is shown (full-screen layout active: the game's own minimap is hidden).
     fn widget_active(&self, m: &mut Machine) -> bool {
-        self.active && self.in_game && !self.peek && game::full_layout_active(m)
+        self.active && self.in_game && game::full_layout_active(m)
     }
 
     // ------------------------------------------------------------ drawing
@@ -724,11 +749,27 @@ impl MobileHud {
         let line = self.u(19.0);
         let cols = 3;
         let nrows = rows.len().div_ceil(cols).max(1) as i32;
-        let r = self.sheet_rect(c, self.u(110.0) + nrows * line);
+        let bh = self.u(34.0);
+        let gap = self.u(6.0);
+        let r = self.sheet_rect(c, self.u(64.0) + nrows * line + self.u(22.0) + 2 * (bh + gap));
         let inner = self.draw_sheet_frame(c, r, &format!("Settlers: {total}   Buildings: {}", s.buildings));
-        // The original settlers pages (names = the panel's own tooltips), shown in the panel peek.
-        let tabs = [(0x8005a, 1), (0x8005b, 2), (0x8005c, 3), (0x80155, 4)];
-        self.tab_row(m, c, inner, &tabs, Action::PanelSettlers);
+        // Recruitment (the original settlers page 3 tab 3, names = the game's own button tooltips).
+        let amazon = s.race == 3;
+        let grid_h = 2 * bh + gap;
+        let gy = inner.y + inner.h - grid_h;
+        let recruit = self.name(m, 0x8005c);
+        c.text(inner.x, gy - self.u(20.0), self.k() * 13.0, Weight::Bold, ACCENT, &recruit);
+        let bw = (inner.w - 3 * gap) / 4;
+        for (i, &(kind, count, tid)) in RECRUIT_ACTIONS.iter().enumerate() {
+            let label = self.name(m, if amazon { tid + 0xfe } else { tid });
+            let (col, row) = ((i / 2) as i32, (i % 2) as i32);
+            let br = Rect::new(inner.x + col * (bw + gap), gy + row * (bh + gap), bw, bh);
+            let a = Action::Recruit { kind, count };
+            let pressed = self.pressed.as_ref().is_some_and(|(_, p)| *p == a);
+            c.fill_rounded_rect(br.x, br.y, br.w, br.h, self.u(8.0) as f32, if pressed { CARD_HI } else { BTN_BG });
+            draw_wrapped(c, br.inset(self.u(4.0)), self.k() * 11.5, &label);
+            self.add(br, a);
+        }
         let cw = inner.w / cols as i32;
         for (i, (label, n)) in rows.iter().enumerate() {
             let (col, row) = ((i % cols) as i32, (i / cols) as i32);
@@ -740,34 +781,17 @@ impl MobileHud {
         }
     }
 
-    /// A row of buttons at the bottom of a sheet that open original panel pages.
-    fn tab_row(&mut self, m: &mut Machine, c: &mut Layer, inner: Rect, tabs: &[(u32, u32)], act: fn(u32) -> Action) {
-        let bh = self.u(36.0);
-        let gap = self.u(6.0);
-        let y = inner.y + inner.h - bh;
-        let bw = (inner.w - gap * (tabs.len() as i32 - 1)) / tabs.len() as i32;
-        for (i, &(tid, t)) in tabs.iter().enumerate() {
-            let label = self.name(m, tid);
-            let r = Rect::new(inner.x + i as i32 * (bw + gap), y, bw, bh);
-            let a = act(t);
-            let pressed = self.pressed.as_ref().is_some_and(|(_, p)| *p == a);
-            c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(8.0) as f32, if pressed { CARD_HI } else { BTN_BG });
-            draw_wrapped(c, r.inset(self.u(4.0)), self.k() * 11.5, &label);
-            self.add(r, a);
-        }
-    }
-
+    /// Goods in stock (the original goods page's "Inventory" tab, natively).
     fn draw_stats_sheet(&mut self, m: &mut Machine, c: &mut Layer) {
         let Some(s) = self.snap.clone() else { return };
         let rows: Vec<(usize, u32)> = s.goods.iter().enumerate().filter(|(_, &n)| n > 0).map(|(g, &n)| (g, n)).collect();
         let line = self.u(19.0);
         let cols = 4;
         let nrows = rows.len().div_ceil(cols).max(1) as i32;
-        let r = self.sheet_rect(c, self.u(110.0) + nrows * line);
+        let r = self.sheet_rect(c, self.u(64.0) + nrows * line);
         let total: u32 = rows.iter().map(|r| r.1).sum();
-        let inner = self.draw_sheet_frame(c, r, &format!("Goods in stock: {total}"));
-        let tabs = [(0x80051, 1), (0x80052, 2), (0x80081, 3), (0x80082, 4)];
-        self.tab_row(m, c, inner, &tabs, Action::PanelGoods);
+        let inv = self.name(m, 0x80051);
+        let inner = self.draw_sheet_frame(c, r, &format!("{inv}: {total}"));
         let cw = inner.w / cols as i32;
         for (i, (g, n)) in rows.iter().enumerate() {
             let (col, row) = ((i % cols) as i32, (i / cols) as i32);
@@ -788,11 +812,16 @@ impl MobileHud {
 
     /// Centred dialog over a dimmed map; returns the inner rect.
     fn dialog(&mut self, c: &mut Layer, rows: i32, title: &str) -> Rect {
+        self.dialog_w(c, rows, 320.0, title)
+    }
+
+    /// [`Self::dialog`] with a width in HUD units.
+    fn dialog_w(&mut self, c: &mut Layer, rows: i32, width: f32, title: &str) -> Rect {
         let v = self.view;
         let above_bar = v.h - self.u(BAR_H);
         c.fill_rect(v.x, v.y, v.w, above_bar, Rgba::rgba(0, 0, 0, 110));
         self.add(Rect::new(v.x, v.y, v.w, above_bar), Action::CloseSheet);
-        let mw = self.u(320.0).min(v.w - self.u(20.0));
+        let mw = self.u(width).min(v.w - self.u(20.0));
         let bh = self.u(40.0);
         let gap = self.u(7.0);
         let mh = (self.u(40.0) + rows * (bh + gap)).min(above_bar - self.u(8.0));
@@ -1029,11 +1058,169 @@ impl MobileHud {
         self.button(c, close, "Close", BTN_ACTIVE, Action::CloseSheet);
     }
 
-    fn draw_peek(&mut self, c: &mut Layer) {
-        let w = self.view.x + self.view.w;
-        let r = Rect::new(w - self.u(136.0), self.view.y + self.u(6.0), self.u(130.0), self.u(42.0));
-        c.fill_rounded_rect(r.x - 2, r.y - 2, r.w + 4, r.h + 4, self.u(12.0) as f32, Rgba::rgba(0, 0, 0, 120));
-        self.button(c, r, "Back to HUD", BTN_ACTIVE, Action::PeekDone);
+    fn overwrite_armed(&self, slot: u32) -> bool {
+        self.overwrite.is_some_and(|(s, until)| s == slot && self.now < until)
+    }
+
+    /// A grid of buttons (`cols` per row) from the top of `area`; returns the y below the last row.
+    fn button_grid(&mut self, c: &mut Layer, area: Rect, cols: i32, items: Vec<(String, Rgba, Action)>) -> i32 {
+        let bh = self.u(36.0);
+        let gap = self.u(6.0);
+        let bw = (area.w - gap * (cols - 1)) / cols;
+        let mut y = area.y;
+        for (i, (label, bg, a)) in items.into_iter().enumerate() {
+            let (col, row) = (i as i32 % cols, i as i32 / cols);
+            let r = Rect::new(area.x + col * (bw + gap), area.y + row * (bh + gap), bw, bh);
+            let pressed = self.pressed.as_ref().is_some_and(|(_, p)| *p == a);
+            c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(8.0) as f32, if pressed { CARD_HI } else { bg });
+            draw_wrapped(c, r.inset(self.u(4.0)), self.k() * 12.0, &label);
+            self.add(r, a);
+            y = r.y + r.h + gap;
+        }
+        y
+    }
+
+    /// The selected building (replaces the original panel's page 4): state line and its actions.
+    fn draw_building_sheet(&mut self, m: &mut Machine, c: &mut Layer) {
+        let Some(s) = self.snap.clone() else { return };
+        if s.page != 4 || s.building == 0 {
+            self.sheet = Sheet::None;
+            return;
+        }
+        let t = s.building_type;
+        let own = s.building_owner as u32 == s.player;
+        let working = s.building_flags & 1 != 0;
+        let has_priority = s.building_flags & 0x1e != 0;
+        let mut actions: Vec<(String, Rgba, Action)> = Vec::new();
+        let mut garrison: Vec<(String, Rgba, Action)> = Vec::new();
+        let status;
+        if s.building_site {
+            status = format!(
+                "Construction site{}{}",
+                if working { "" } else { "  -  stopped" },
+                if has_priority { "  -  highest priority" } else { "" }
+            );
+            if own {
+                actions.push((self.name(m, if working { 0x80053 } else { 0x80054 }), BTN_BG, Action::ToggleWork));
+                if has_priority {
+                    actions.push(("Normal priority".into(), BTN_ACTIVE, Action::SitePriority));
+                } else if working && s.priority_sites < 10 {
+                    actions.push((self.name(m, 0x80063), BTN_BG, Action::SitePriority));
+                }
+            }
+        } else {
+            status = if STOP_WORK_TYPES.contains(&t) {
+                if working { "Working".to_string() } else { "Stopped".to_string() }
+            } else if GARRISON_TYPES.contains(&t) {
+                "Military building".to_string()
+            } else {
+                String::new()
+            };
+            if own {
+                if STOP_WORK_TYPES.contains(&t) {
+                    let bg = if working { BTN_BG } else { BTN_ACTIVE };
+                    actions.push((self.name(m, if working { 0x80055 } else { 0x80056 }), bg, Action::ToggleWork));
+                }
+                if WORK_AREA_TYPES.contains(&t) {
+                    actions.push((self.name(m, 0x80059), BTN_BG, Action::WorkArea));
+                }
+                // The original page links: barracks -> recruitment, residences -> population (our settlers sheet).
+                if t == 0x13 || (0x1a..=0x1c).contains(&t) {
+                    actions.push((self.name(m, if t == 0x13 { 0x8005c } else { 0x8005a }), BTN_BG, Action::Settlers));
+                }
+                if GARRISON_TYPES.contains(&t) {
+                    // Original layout: "add" row above the "remove" row, Maximum / Minimum Garrison at the ends.
+                    for &(n, tid) in GARRISON_ACTIONS.iter().filter(|(n, _)| (2..=4).contains(n)).chain(&GARRISON_ACTIONS[6..7]) {
+                        garrison.push((self.name(m, tid), BTN_BG, Action::Garrison(n)));
+                    }
+                    for &(n, tid) in GARRISON_ACTIONS.iter().filter(|(n, _)| (6..=8).contains(n)).chain(&GARRISON_ACTIONS[7..8]) {
+                        garrison.push((self.name(m, tid), BTN_BG, Action::Garrison(n)));
+                    }
+                }
+            }
+        }
+        let armed = self.now < self.destroy_armed_ms;
+        let mut last: Vec<(String, Rgba, Action)> = Vec::new();
+        if own {
+            let crush = self.name(m, if s.building_site { 0x80057 } else { 0x80058 });
+            last.push((if armed { "Sure? Tap again".into() } else { crush }, BTN_DANGER, Action::Destroy));
+        }
+        last.push(("Close".into(), BTN_BG, Action::Deselect));
+        let cols = 4;
+        let bh = self.u(36.0) + self.u(6.0);
+        let rows = |n: usize| (n as i32 + cols - 1) / cols;
+        let h = self.u(64.0) + (rows(actions.len()) + rows(garrison.len()) + 1) * bh + if garrison.is_empty() { 0 } else { self.u(20.0) };
+        let r = self.sheet_rect(c, h);
+        let name = self.building_name(m, t);
+        let inner = self.draw_sheet_frame(c, r, &name);
+        c.text(inner.x, inner.y, self.k() * 13.0, Weight::Regular, TEXT_DIM, if status.is_empty() { " " } else { &status });
+        let mut y = inner.y + self.u(22.0);
+        if !actions.is_empty() {
+            y = self.button_grid(c, Rect::new(inner.x, y, inner.w, 0), cols, actions);
+        }
+        if !garrison.is_empty() {
+            c.text(inner.x, y, self.k() * 12.0, Weight::Bold, ACCENT, "Garrison");
+            y += self.u(18.0);
+            y = self.button_grid(c, Rect::new(inner.x, y, inner.w, 0), cols, garrison);
+        }
+        let _ = y;
+        let lw = (inner.w - self.u(6.0)) / 2;
+        let ly = inner.y + inner.h - self.u(36.0);
+        self.button_grid(c, Rect::new(inner.x + inner.w - lw * 2 - self.u(6.0), ly, lw * 2 + self.u(6.0), 0), 2, last);
+    }
+
+    /// Save game (replaces the original panel's page 7 slot list): the 8 slots as the game describes them.
+    fn draw_save_sheet(&mut self, m: &mut Machine, c: &mut Layer) {
+        let slots = m.state::<HudShared>().borrow_mut().save_slots.clone();
+        self.save_slots_drawn = slots.is_some();
+        let bh = self.u(40.0);
+        let gap = self.u(7.0);
+        let inner = self.dialog_w(c, 5, 560.0, "Save game");
+        let half = (inner.w - gap) / 2;
+        let row = |i: i32| inner.y + i * (bh + gap);
+        let px = self.k() * 12.0;
+        if let Some((slot, _)) = self.saving {
+            let t = if slot == 0 { "Saving...".to_string() } else { format!("Saving into slot {slot}...") };
+            c.text_centered(inner.x, row(1), inner.w, bh, self.k() * 15.0, Weight::Bold, TEXT, &t);
+        } else {
+            match slots {
+                None => c.text_centered(inner.x, row(1), inner.w, bh, px, Weight::Regular, TEXT_DIM, "Reading save slots..."),
+                Some(sl) if sl.multiplayer => {
+                    self.button(c, Rect::new(inner.x, row(1), inner.w, bh), "Save multiplayer game", BTN_ACTIVE, Action::SaveSlot(0));
+                }
+                Some(sl) => {
+                    for (i, info) in sl.slots.iter().enumerate().take(8) {
+                        let (col, rr) = ((i / 4) as i32, (i % 4) as i32);
+                        let r = Rect::new(inner.x + col * (half + gap), row(rr), half, bh);
+                        let a = Action::SaveSlot(i as u32 + 1);
+                        let pressed = self.pressed.as_ref().is_some_and(|(_, p)| *p == a);
+                        c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(8.0) as f32, if pressed { CARD_HI } else { BTN_BG });
+                        let (l1, l2) = match info {
+                            Some([a1, b, c2]) => {
+                                // Line 1 is the map path (e.g. "\Random"): show its last part.
+                                let map = a1.trim().rsplit(['\\', '/']).next().unwrap_or("").to_string();
+                                let l1 = if map.is_empty() { format!("{}. Saved game", i + 1) } else { format!("{}. {map}", i + 1) };
+                                let l1 = if self.overwrite_armed(i as u32 + 1) { format!("{}. Tap again to overwrite", i + 1) } else { l1 };
+                                (l1, format!("{} {}", b.trim(), c2.trim()).trim().to_string())
+                            }
+                            None => (format!("{}. Empty slot", i + 1), String::new()),
+                        };
+                        c.set_clip(r.x, r.y, r.w, r.h);
+                        let tx = r.x + self.u(8.0);
+                        if l2.is_empty() {
+                            let th = measure_text(px, Weight::Bold, &l1).1;
+                            c.text(tx, r.y + (r.h - th) / 2, px, Weight::Bold, TEXT, &l1);
+                        } else {
+                            c.text(tx, r.y + self.u(4.0), px, Weight::Bold, TEXT, &l1);
+                            c.text(tx, r.y + self.u(21.0), self.k() * 11.0, Weight::Regular, TEXT_DIM, &l2);
+                        }
+                        c.reset_clip();
+                        self.add(r, a);
+                    }
+                }
+            }
+        }
+        self.button(c, Rect::new(inner.x, row(4), inner.w, bh), "< Back", BTN_BG, Action::Menu);
     }
 
     fn draw_preparing(&mut self, c: &mut Layer) {
@@ -1080,7 +1267,6 @@ impl Mod for MobileHud {
         if active != self.active {
             self.active = active;
             self.sheet = Sheet::None;
-            self.peek = false;
             self.dirty = true;
         }
         self.scale_pref = scale;
@@ -1100,7 +1286,7 @@ impl Mod for MobileHud {
             self.dirty = true;
             if !in_game {
                 self.sheet = Sheet::None;
-                self.peek = false;
+                self.saving = None;
             }
         }
         if now.saturating_sub(self.last_snap_ms) >= 200 {
@@ -1114,17 +1300,33 @@ impl Mod for MobileHud {
                 self.dump_texts(m);
             }
         }
-        // Leave the panel peek automatically when the game left the peeked page (e.g. after saving).
-        if self.peek {
-            if let (Some(s), Some(p)) = (&self.snap, self.peek_page) {
-                if s.page == p {
-                    self.peek_seen = true;
-                } else if self.peek_seen {
-                    self.peek = false;
-                    self.peek_page = None;
-                    self.dirty = true;
-                }
+        // Save sheet: result of a queued save, or slot list read by the logic thread.
+        let (result, slots_ready) = {
+            let st = m.state::<HudShared>();
+            let mut s = st.borrow_mut();
+            (s.save_result.take(), s.save_slots.is_some())
+        };
+        if let Some((slot, ok)) = result {
+            self.saving = None;
+            let msg = match (slot, ok) {
+                (0, _) => "Saving the multiplayer game".to_string(),
+                (n, true) => format!("Game saved (slot {n})"),
+                (n, false) => format!("Saving into slot {n} failed"),
+            };
+            self.set_toast(&msg);
+            if self.sheet == Sheet::Save {
+                self.sheet = Sheet::None;
             }
+        } else if self.saving.is_some_and(|(_, t)| now.saturating_sub(t) > 20_000) {
+            self.saving = None;
+            self.dirty = true;
+        }
+        if self.overwrite.is_some_and(|(_, until)| now >= until) {
+            self.overwrite = None;
+            self.dirty = true;
+        }
+        if self.sheet == Sheet::Save && slots_ready != self.save_slots_drawn {
+            self.dirty = true;
         }
         // Minimap image + camera rectangle (only while our widget / full-screen map can show it).
         if in_game && now.saturating_sub(self.last_mini_ms) >= MINI_REFRESH_MS {
@@ -1172,10 +1374,6 @@ impl Mod for MobileHud {
             self.draw_preparing(c);
             return;
         }
-        if self.peek {
-            self.draw_peek(c);
-            return;
-        }
         let pw = m.mem.read_u32(game::L_PANEL_W) as i32;
         if pw != 0 {
             // Cover mode (full-screen map off, or the landscape buffer is still too narrow until the next
@@ -1214,6 +1412,8 @@ impl Mod for MobileHud {
             Sheet::Menu => self.draw_menu(c),
             Sheet::Settings => self.draw_settings(m, c),
             Sheet::QuitConfirm => self.draw_quit_confirm(c),
+            Sheet::Building => self.draw_building_sheet(m, c),
+            Sheet::Save => self.draw_save_sheet(m, c),
             Sheet::Map | Sheet::None => {}
         }
         self.draw_bar(c);
@@ -1314,7 +1514,7 @@ impl Mod for MobileHud {
         }
         let next = match self.sheet {
             Sheet::None => return ModEvent::Pass,
-            Sheet::Settings | Sheet::QuitConfirm => Sheet::Menu,
+            Sheet::Settings | Sheet::QuitConfirm | Sheet::Save => Sheet::Menu,
             _ => Sheet::None,
         };
         if !down {
@@ -1348,6 +1548,44 @@ impl MobileHud {
 }
 
 // ---------------------------------------------------------------- helpers
+
+/// The player-command request a building-sheet button sends, built like the original page 4 handlers
+/// (docs/reverse-engineering/game-state-units.md "Player commands"); `None` if it does not apply.
+pub(crate) fn building_request(s: &GameSnapshot, a: &Action) -> Option<LogicAction> {
+    let b = s.building;
+    if b == 0 || s.building_owner as u32 != s.player {
+        return None;
+    }
+    let (hi, lo, player) = ((b >> 8) as u8, b as u8, s.player as u8);
+    let working = s.building_flags & 1 != 0;
+    let (bytes, sound) = match *a {
+        // 0x531d4a: sound 0x35 (resume) / 0x36 (stop), new bit 0 = !bit 0.
+        Action::ToggleWork => (vec![0x21, 0x04, 0x08, 0, hi, lo, (!s.building_flags) & 1, player], if working { 0x36 } else { 0x35 }),
+        // 0x531e72: priority bits clear -> 0xf5 (only while building and below 10 priority sites), else 0xf6.
+        Action::SitePriority if s.building_site => {
+            if s.building_flags & 0x1e == 0 {
+                if !working || s.priority_sites >= 10 {
+                    return None;
+                }
+                (vec![0x21, 0xf5, 0x08, 0, hi, lo, s.building_owner, 0], 0x2f)
+            } else {
+                (vec![0x21, 0xf6, 0x08, 0, hi, lo, s.building_owner, 0], 0x30)
+            }
+        }
+        // 0x531499..0x531ab6: command 0x0c {building, player, action}; sounds 0x31 max, 0x2f add, 0x32 min, 0x30 remove.
+        Action::Garrison(n) if (1..=8).contains(&n) && GARRISON_TYPES.contains(&s.building_type) && !s.building_site => {
+            let sound = match n {
+                1 => 0x31,
+                5 => 0x32,
+                2..=4 => 0x2f,
+                _ => 0x30,
+            };
+            (vec![0x21, 0x0c, 0x08, 0, hi, lo, player, n], sound)
+        }
+        _ => return None,
+    };
+    Some(LogicAction::Request { bytes, sound })
+}
 
 /// Pixel rectangle of build-list slot `slot` (1..12) in the original panel (game-state-ui.md §2 grid map).
 pub(crate) fn slot_rect(slot: u32, cell: i32, gx: i32, gy: i32) -> Rect {
@@ -1496,6 +1734,9 @@ fn settler_label(hud: &mut MobileHud, m: &mut Machine, t: u8) -> String {
         5 => "Swordsmen".into(),
         8 => "Bowmen".into(),
         15 => "Soldiers (3rd)".into(),
+        // VERIFIED 2026-11-08 (hud-native): "1 New Geologist" / "5 New Pioneers" turned carriers into these types.
+        22 => "Geologists".into(),
+        40 => "Pioneers".into(),
         t => format!("Type {t}"),
     }
 }
@@ -1536,5 +1777,45 @@ mod tests {
     fn rect_contains() {
         let r = Rect::new(10, 10, 20, 20);
         assert!(r.contains(10.0, 10.0) && r.contains(29.9, 29.9) && !r.contains(30.0, 15.0));
+    }
+
+    fn snap(btype: u8, site: bool, flags: u8) -> GameSnapshot {
+        GameSnapshot { player: 0, building: 0x0102, building_type: btype, building_owner: 0, building_site: site, building_flags: flags, ..Default::default() }
+    }
+
+    fn req(s: &GameSnapshot, a: Action) -> Option<(Vec<u8>, u32)> {
+        match building_request(s, &a)? {
+            LogicAction::Request { bytes, sound } => Some((bytes, sound)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn building_requests_match_panel_handlers() {
+        // Stop working (bit 0 set -> new flag 0, sound 0x36), resume (-> 1, sound 0x35).
+        assert_eq!(req(&snap(2, false, 1), Action::ToggleWork), Some((vec![0x21, 4, 8, 0, 1, 2, 0, 0], 0x36)));
+        assert_eq!(req(&snap(2, false, 0), Action::ToggleWork), Some((vec![0x21, 4, 8, 0, 1, 2, 1, 0], 0x35)));
+        // Site priority on (0xf5) / off (0xf6); not on finished buildings, not while the site is stopped.
+        assert_eq!(req(&snap(2, true, 1), Action::SitePriority), Some((vec![0x21, 0xf5, 8, 0, 1, 2, 0, 0], 0x2f)));
+        assert_eq!(req(&snap(2, true, 3), Action::SitePriority), Some((vec![0x21, 0xf6, 8, 0, 1, 2, 0, 0], 0x30)));
+        assert_eq!(req(&snap(2, true, 0), Action::SitePriority), None);
+        assert_eq!(req(&snap(2, false, 1), Action::SitePriority), None);
+        // Garrison only on finished towers/castle.
+        assert_eq!(req(&snap(0x0f, false, 1), Action::Garrison(1)), Some((vec![0x21, 0x0c, 8, 0, 1, 2, 0, 1], 0x31)));
+        assert_eq!(req(&snap(0x0f, false, 1), Action::Garrison(6)), Some((vec![0x21, 0x0c, 8, 0, 1, 2, 0, 6], 0x30)));
+        assert_eq!(req(&snap(2, false, 1), Action::Garrison(1)), None);
+        // Not for buildings of other players.
+        let mut other = snap(2, false, 1);
+        other.building_owner = 1;
+        assert_eq!(req(&other, Action::ToggleWork), None);
+    }
+
+    #[test]
+    fn centre_tile_formula_matches_game_arithmetic() {
+        // camY 0 -> q = 1600/18 = 88, ebx = -24; rows = (480+255)/9 + 11 = 92; cols = ((640+23)/16 + 10)/2 = 25;
+        // x = (1000-208)/16 - (384+24)/2 + 92/4 + 25 = 49 - 204 + 23 + 25 = -107 -> 0 (clamped); y = -24 + 46 = 22.
+        assert_eq!(crate::ui_hud_game::centre_tile_formula(1000, 0, 384, 640, 480), (0, 22));
+        // camX 5000, camY 1800: q = 188, ebx = 176; x = 299 - 104 + 23 + 25 = 243; y = 176 + 46 = 222.
+        assert_eq!(crate::ui_hud_game::centre_tile_formula(5000, 1800, 384, 640, 480), (243, 222));
     }
 }

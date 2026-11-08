@@ -36,11 +36,11 @@ Screenshots (local only, game pixels 640x480 unless noted): `scratch/ui-modes/B-
 | `B-03-build-military` | Same for Military |
 | `B-04-placement` | After choosing Guard Tower: banner with icon + name + "Tap the map to place" + red Cancel; the game shows its placement markers; the next map tap places the site (VERIFIED in earlier runs: site created, banner closes) |
 | `B-05-unit-card` | Box-selected soldiers: card "14 selected: 10 x Swordsmen, 2 x Bowmen, 2 x Soldiers (3rd)" with "Move to..." (next map tap = right click = move/attack) and "Deselect" |
-| `B-06-settlers` | Settlers sheet: total settlers and buildings, counts by settler type, and four buttons with the game's own names (Population, Occupations, Recruitment, Production statistics) that open those original pages |
-| `B-07-stats` | Goods sheet: stock per good (icon + name + amount, own land only), buttons Inventory / Tools and Weapons / Priority of Buildings / Priority of Goods (original pages) |
+| `B-06-settlers` | Settlers sheet: total settlers and buildings, counts by settler type, and four buttons with the game's own names (Population, Occupations, Recruitment, Production statistics) that open those original pages (**replaced 2026-11-08**, see "No original panel") |
+| `B-07-stats` | Goods sheet: stock per good (icon + name + amount, own land only), buttons Inventory / Tools and Weapons / Priority of Buildings / Priority of Goods (original pages; **removed 2026-11-08**) |
 | `B-08-menu` | Game menu: Resume, Save game, Pause, Quit game, UI mode switch (Mobile HUD > Classic Touch), Full-screen map on/off, HUD size -/+ |
-| `B-09-save-peek` | "Save game" opens the original Save/Quit page in the restored panel ("panel peek"); a "Back to HUD" button top right |
-| `B-10-building-card` | Tapped Guard Tower: card with the name, Details (original building page in the peek), Destroy (tap twice: "Sure?"), Close |
+| `B-09-save-peek` | (obsolete since 2026-11-08: native save sheet) "Save game" opened the original Save/Quit page in the restored panel ("panel peek") |
+| `B-10-building-card` | Tapped Guard Tower: card with the name, Details (since 2026-11-08 the native building sheet), Destroy (tap twice: "Sure?"), Close |
 | `B-11-800x600-ingame`, `B-12-800x600-build` | Same HUD at 800x600 (registry `Resolution=1`): everything scales with the frame (factor = height/480 x `hud_scale`) |
 
 Touch targets: bar buttons ~86x46 game px, cards ~146x56, card/menu buttons >= 36 px high (x2.25 on a 1080p phone).
@@ -94,8 +94,8 @@ Findings (VERIFIED in s3run, 2026-11-05):
 - The panel is only redrawn when `[gd+0x2d27c]` (panel dirty) is set: after restoring the layout the HUD sets it,
   otherwise the panel area kept map pixels.
 - The panel renderer does not use `[0x730f24]` (all panel art is at fixed positions), so it can draw on top of the
-  full-screen map for the "panel peek" and icon sampling; panel clicks need the original layout (HandleInput tests
-  `x < [0x730f24]`), so peek mode restores it.
+  full-screen map for the icon sampling (the former "panel peek" used this too); panel clicks need the original
+  layout (HandleInput tests `x < [0x730f24]`).
 - Runtime resolution switch (F1-F3) in HUD mode: the 800x600 frame after F2 showed a black band with a zigzag edge
   around x ~ 515..650 (screenshots `scratch/ui-hud/r9-*.png`); starting directly at 800x600 (registry
   `Resolution=1`) is correct. HYPOTHESIS: another buffer (fog of war / visibility) is sized at game start from the
@@ -139,9 +139,12 @@ UI state changes are queued (`ui_hud_game::queue`) and run in a hook at `CLogicT
 | Deselect | UI selection count 0 + dirty, `[0x7dfd6c]` = 0, page 0 | STATIC |
 | Destroy building | command `0x06` `{0x21, 0x06, 0x08, 0, id_hi, id_lo, player, 0}` posted with `Queue::Post 0x4309c0` on `[logic+0x3c4]` (`ndwords` 2, flag 1) | VERIFIED (Guard Tower destroyed, game reported "You've Lost") |
 | Minimap widget drag / full map tap | `gd::CenterOn 0x51b560` | VERIFIED (view jumped / followed the drag, 2026-11-05) |
-| Save / Quit | page 7, sub-page 0 / 1 in the panel peek (then the original buttons) | VERIFIED (page shown) |
+| Save | slot list `CLogicThread::0x50b670`, save `0x50ac40(0, slot)` (multiplayer: command 0xfa), no panel page | VERIFIED (slot 1 written and listed, 2026-11-08) |
+| Quit | `0x53e720` like the panel's YES | VERIFIED |
+| Building sheet | commands 0x04 (stop/resume), 0xf5/0xf6 (site priority), 0x0c (garrison), work area `0x523840` + sub-page 2 | VERIFIED except work area (STATIC) |
+| Recruitment (settlers sheet) | command 0x10 at the view-centre tile, then `0x542630` | VERIFIED (geologist, pioneers) |
 | Pause | key `P` (0x50) down/up into `m.input` | STATIC |
-| Settlers / goods pages | page 3 + `[gd+0x2d2a0]` tab, page 2 + `[gd+0x2d290]` tab, in the peek | VERIFIED (Inventory) |
+| Goods tab 1 (icon harvest only) | page 2 + `[gd+0x2d290]` = 1 behind the "Preparing" cover | VERIFIED |
 | UI mode switch | `settings.ui_mode` saved with `s3_mods::set_settings`; the HUD goes inactive and restores the layout + panel | VERIFIED (panel back, Classic mode's Menu button shown) |
 
 Load game: there is no in-game load in the original panel; the menu says "load: main menu" (quit, then Load).
@@ -183,6 +186,36 @@ When the full-screen map is off (menu toggle) or not possible yet (buffer too na
 Classic mid-game until the next display setup), the HUD covers the panel below the minimap with a dark sidebar and
 keeps the game's minimap usable.
 
+## No original panel (hud-native, 2026-11-08)
+
+User report: "Details", "Save game" and the goods / settlers tab buttons opened the original left panel ("panel
+peek"): not in wide mode, and scaled by the zoom. Since 2026-11-08 the original panel is **never** shown in this
+mode (only behind the "Preparing touch HUD" cover during the icon harvest). The peek (`start_peek`, `PeekDone`,
+`HudShared::peeking`, the zoom's peek minimum height) is gone; RE in
+[game-state-ui.md](../reverse-engineering/game-state-ui.md) section 8.
+
+| Former peek | Now | Status |
+| --- | --- | --- |
+| Building card "Details" (page 4) | **Building sheet**: name, state ("Construction site - stopped - highest priority", "Working" / "Stopped", "Military building"), buttons with the game's own tooltip texts: Stop / Resume Working (or Building), Highest Priority / Normal priority (sites), Set new working area (woodcutter, stonecutter, forester, fisher, farms, winery, waterworks, beekeeper: next map tap), Garrison: Add / Remove Swordsman / Bowman / Spearman + Maximum / Minimum Garrison (towers, castle), link Recruitment (barracks) / Population (residences) to the settlers sheet, Crush building (tap twice), Close. Only for own buildings. Closes when the game deselects the building | VERIFIED: stop building, priority on, Maximum Garrison (building bytes changed); work area STATIC |
+| Menu "Save game" (page 7) | **Save sheet**: 8 slots in two columns, each with the game's own description (map name, date/time + race from `0x50b670`) or "Empty slot"; tap = save (`0x50ac40`), an occupied slot needs a second tap ("Tap again to overwrite"); "Saving..." then the toast "Game saved (slot N)"; multiplayer: one "Save multiplayer game" button (command 0xfa); Back = game menu | VERIFIED single player (slot 1 written, listed afterwards); multiplayer STATIC |
+| Settlers sheet tabs (page 3) | Counts per type stay (Population / Occupations); **Recruitment** natively: 1 / 5 New Geologists, Thieves, Pioneers, Pioneers to Carriers (game texts; Amazon texts for race 3) | VERIFIED (geologist + 5 pioneers created) |
+| Goods sheet tabs (page 2) | The sheet itself is the Inventory (title = the game's "Inventory"); the other tabs are dropped | – |
+
+Left (not native yet; no button any more): goods tabs Tools and Weapons, Priority of Buildings, Priority of Goods
+(economy commands 0x07/0x08/0x0a/0x0b/0x11, not RE'd), settlers tab Production statistics, soldier recruitment and
+carrier / digger / builder limits on the Recruitment page, building-specific pages (siege workshops "Build
+Catapult...", shipyard / harbour waypoints and ships, storage area "Setting", trade), the building picture and the
+workers / goods in-out numbers of the original page 4 (renderer page-4 block not analysed), garrison occupancy numbers.
+
+Screenshots (local, 2316x904 window): `scratch/hud-native/` — `bs1.png` Guard Tower sheet, `l4.png` construction
+site sheet, `l5.png` after Highest Priority, `l6.png` after Stop Building, `st1.png` / `st2.png` settlers sheet
+before / after recruiting, `sv1.png` empty slot list, `sv2.png` "Game saved (slot 1)", `sv3.png` slot 1 described.
+
+Recipe (window 2316x904, start taps as below, game ~30 s): tower `wtap 1148 383` (centre of the start view),
+Details `wtap 1923 747`; Settlers `wtap 1486 855`, Menu `wtap 2146 855`, then Save game `wtap 1013 374`, slot 1
+`wtap 899 240`. A fixed map: load the save (`tap 165 355; tap 300 126` from the main menu, in game at ~20 s).
+`S3_HUD_DEBUG=1` logs the building entry bytes on every building-sheet action.
+
 ## Testing on desktop
 
 ```sh
@@ -212,13 +245,12 @@ trip, tiles, camera formula).
   own mods; if another mod is added later it gets events first). Taps on HUD elements are consumed by the HUD.
 - Settler type and remaining good names; tooltips for building cards (cost) — needs the panel's goods counters / cost
   tables (not RE'd).
-- Building card: more actions (priority/stop = command 0x04, work area = 0x05) once verified.
+- ~~Building card: more actions~~: done 2026-11-08 (building sheet). Left: see "No original panel" below.
 - ~~Try on the Android emulator~~: done (ux-verify1). Note: map taps in the HUD are handled by touch-context
   (tap = select / move / place); that needed `touch_game::layout` to accept panel width 0. In multiplayer
   `[0x7e3408]` is 0, so `gd()` falls back to `[logic+0x3a0]` (ux-verify1).
 - touch.rs' ✕ placement cancel is not drawn in this mode (the banner has Cancel), but its hit area top right is
   still active during placement.
-
 
 ## Game speed
 

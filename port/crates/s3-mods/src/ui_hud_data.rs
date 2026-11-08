@@ -128,3 +128,44 @@ pub fn inventory_icon_rect(row: u8, col: u8, cell: i32, gx: i32, gy: i32) -> (i3
     let s = |v: i32| v * cell / 3;
     (gx + s(6 + 18 * col as i32), gy + s(95 + 27 * row as i32), s(16), s(16))
 }
+
+// ---------------------------------------------------------------- building panel (page 4) buttons
+
+/// Building types whose panel has "Stop / Resume Working" (command 0x04), from the type list at `0x531c72..0x531d1a`
+/// (construction sites always have "Stop / Resume Building").
+pub const STOP_WORK_TYPES: [u8; 36] = [
+    0x02, 0x03, 0x04, 0x05, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x11, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+    0x1d, 0x1e, 0x1f, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2f, 0x30, 0x31, 0x13, 0x32, 0x33, 0x34, 0x35, 0x38,
+];
+
+/// Building types with "Set new working area" (`0x5320ac..0x5320d4`): woodcutter, stonecutter, forester,
+/// fisherman, grain farm, rice farm, winery, waterworks, beekeeper.
+pub const WORK_AREA_TYPES: [u8; 9] = [0x02, 0x1e, 0x0e, 0x19, 0x24, 0x18, 0x05, 0x03, 0x33];
+
+/// Military buildings with garrison buttons (`0x531450`): guard tower, large guard tower, castle.
+pub const GARRISON_TYPES: [u8; 3] = [0x0f, 0x10, 0x12];
+
+/// Garrison actions of command 0x0c (`0x531499..0x531ab6`, byte +7) with their tooltip text ids.
+pub const GARRISON_ACTIONS: [(u8, u32); 8] = [
+    (2, 0x80073), // Add Swordsman
+    (6, 0x80074), // Remove Swordsman
+    (3, 0x80075), // Add Bowman
+    (7, 0x80076), // Remove Bowman
+    (4, 0x80077), // Add Spearman
+    (8, 0x80078), // Remove Spearman
+    (1, 0x80071), // Maximum Garrison
+    (5, 0x80072), // Minimum Garrison
+];
+
+/// Settlers page "Recruitment" buttons: (command 0x10 kind, count, text id). Amazons (race 3) use the text ids
+/// `+0xfe` (`0x80177..0x8017e`, same meaning).
+pub const RECRUIT_ACTIONS: [(u8, u8, u32); 8] = [
+    (1, 1, 0x8007a),
+    (1, 5, 0x80079),
+    (2, 1, 0x8007c),
+    (2, 5, 0x8007b),
+    (3, 1, 0x8007e),
+    (3, 5, 0x8007d),
+    (4, 1, 0x80080),
+    (4, 5, 0x8007f),
+];

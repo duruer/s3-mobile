@@ -240,15 +240,11 @@ pub fn target_size(m: &mut Machine) -> Option<(u32, u32)> {
 fn wanted_height(m: &mut Machine) -> u32 {
     let a = aspect(m);
     // The Mobile HUD reads its building icons from the game's panel once: that needs >= 480 px for a moment.
-    let (harvesting, peeking) = {
-        let st = m.state::<crate::ui_hud_game::HudShared>();
-        let s = st.borrow_mut();
-        (s.harvesting, s.peeking)
-    };
+    let harvesting = m.state::<crate::ui_hud_game::HudShared>().borrow_mut().harvesting;
     if harvesting {
         return m.state::<PinchState>().borrow_mut().height.unwrap_or(0).max(crate::ui_hud_game::HARVEST_MIN_H);
     }
-    let h = (|| {
+    (|| {
         if let Some(h) = m.state::<PinchState>().borrow_mut().height {
             return h;
         }
@@ -259,9 +255,7 @@ fn wanted_height(m: &mut Machine) -> u32 {
             return h.clamp(lo, hi);
         }
         size_for(level(m), a, ml).1
-    })();
-    // An original panel page shown by the HUD needs the whole 480 px art.
-    if peeking { h.max(crate::ui_hud_game::HARVEST_MIN_H) } else { h }
+    })()
 }
 
 /// Render height a pinch in progress asks for (overrides the level until the pinch ends).

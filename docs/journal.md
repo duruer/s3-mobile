@@ -19,6 +19,19 @@ Newest first. One entry per session: what was done, what was learned, links to d
   Settings row next to FPS position). Button gold / accent while fast. Verified desktop 2316x904 Classic: tap ->
   `speed: 2x`, gold button, menu row shown. If the device cannot keep up at 8x the game runs as fast as it can.
 
+## 2026-11-08 — Mobile HUD: no original panel any more (hud-native)
+
+- User report: in UI mode B the "Details" / "Save game" / goods and settlers tab buttons opened the original left
+  panel ("panel peek"), not wide and scaled by the zoom. The peek is removed; every former panel page has a native
+  sheet or its buttons were dropped → [ui-hud](porting/ui-hud.md) "No original panel (hud-native)".
+- RE (static from the HandleInput listing, effects VERIFIED in s3run): building page 4 buttons (command 0x04 stop /
+  resume working or building, 0xf5 / 0xf6 construction priority, 0x0c garrison actions 1..8, work area via
+  `CLogicThread::0x523840` + sub-page 2), building `+0x21` = construction site, `+0x18` bit 0 = working, bits 1..4 =
+  priority; recruitment command 0x10 (geologist / thief / pioneer / pioneer -> carrier, at the view-centre tile);
+  save path `0x50b670` (slot description) and `0x50ac40(0, slot)` (save) → [game-state-ui](reverse-engineering/game-state-ui.md)
+  section 8, [game-state-units](reverse-engineering/game-state-units.md) command table.
+- Settler types 22 = geologist, 40 = pioneer (VERIFIED by recruiting).
+
 ## 2026-11-08 — Main menu borders along the whole height (tablet / unfolded)
 
 - On tall windows the 800x600 main menu leaves bands above and below; the Greek-key side borders stopped at the

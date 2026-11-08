@@ -171,7 +171,45 @@ pub enum LogicAction {
     /// End the game like "Quit Game -> YES" on the original panel (page 7 sub-page 1): `0x53e720` (thiscall logic,
     /// the handler at `0x52e993` calls it; then the statistics screen and the main menu follow).
     QuitGame,
+    /// Post a player-command request (8 or 12 bytes, docs/reverse-engineering/game-state-units.md "Player
+    /// commands"), play UI sound `sound` first (0 = none) and mark the panel dirty, like the panel buttons do.
+    Request { bytes: Vec<u8>, sound: u32 },
+    /// Building panel "Set new working area" (`0x5320dd`): sound 0x34, `CLogicThread::0x523840(building)`,
+    /// building sub-page 2; the next left click on the map sends command 5 (`0x53330e`).
+    WorkArea { building: u16 },
+    /// Settlers page "Recruitment" (`0x52cbf7..0x52d4ae`): command 0x10 `{kind, player, x, y, count}` at the tile
+    /// in the view centre; kind 1 geologist, 2 thief, 3 pioneer, 4 pioneer -> carrier; count 1 or 5.
+    Recruit { kind: u8, count: u8 },
+    /// Read the 8 save slot descriptions with the game's slot reader `0x50b670` (into `HudShared::save_slots`).
+    ReadSaveSlots,
+    /// Save into slot 1..8 like the panel's slot list (`0x52e69a`): `CLogicThread::0x50ac40(0, slot)`
+    /// (single player); in multiplayer the network save command 0xfa (`0x52e510`).
+    SaveGame { slot: u32 },
 }
+
+/// The save slot list (index 0 = slot 1).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SaveSlots {
+    /// Multiplayer game (`0x4318d0` on `0x7a7a18`): one network save instead of slots.
+    pub multiplayer: bool,
+    /// Per slot: `None` = empty, else the reader's three strings (line 1, then the two parts of line 2).
+    pub slots: Vec<Option<[String; 3]>>,
+}
+
+/// `0x50b670` (thiscall logic): `(slot, 0, &line1, &part_b, &part_a)` -> al = slot exists. The strings are MSVC 6
+/// `std::string` (16 bytes: +4 data pointer, +8 length), constructed by `0x523540`, destroyed by `0x401b60`.
+pub const FN_SAVE_SLOT_INFO: u32 = 0x0050_b670;
+/// `0x50ac40` (thiscall logic): `(multiplayer = 0, slot)` -> al = 1 saved (panel sub-page 3) / else failed (4).
+pub const FN_SAVE_GAME: u32 = 0x0050_ac40;
+/// `0x4318d0` (thiscall, `ecx = 0x7a7a18`): multiplayer session active.
+pub const FN_IS_MULTIPLAYER: u32 = 0x0043_18d0;
+pub const MP_OBJECT: u32 = 0x007a_7a18;
+pub const FN_STRING_CTOR: u32 = 0x0052_3540;
+pub const FN_STRING_DTOR: u32 = 0x0040_1b60;
+/// `CLogicThread::0x523840(building)`: start choosing a new work area (marks the area on the map).
+pub const FN_WORK_AREA_START: u32 = 0x0052_3840;
+/// `CLogicThread::0x542630()`: called after recruit / network-save requests (HYPOTHESIS: refresh/notify).
+pub const FN_LOGIC_NOTIFY: u32 = 0x0054_2630;
 
 /// Render height the HUD icon harvest needs (the 640x480 panel art must fit).
 pub const HARVEST_MIN_H: u32 = 480;
@@ -184,10 +222,11 @@ pub struct HudShared {
     /// The HUD is reading building icons from the game's panel: the zoom keeps the render size at least
     /// [`HARVEST_MIN_H`] high meanwhile (the panel art needs it; `crate::zoom::target_size`).
     pub harvesting: bool,
-    /// The HUD shows an original panel page (save list, goods / settlers tabs, building details): like
-    /// `harvesting`, the zoom keeps the render size at least [`HARVEST_MIN_H`] high, else the 480 px panel art
-    /// is cut and scaled huge in a small zoomed-in frame (user report 2026-11-08: "Save Game" huge, half hidden).
-    pub peeking: bool,
+    /// Save slots as the game's own slot reader `0x50b670` describes them (filled by
+    /// [`LogicAction::ReadSaveSlots`]; `None` = not read yet).
+    pub save_slots: Option<SaveSlots>,
+    /// Result of the last [`LogicAction::SaveGame`]: (slot, success). Taken by the HUD for its message.
+    pub save_result: Option<(u32, bool)>,
     /// Wanted: full-screen map (panel hidden).
     pub fullscreen_map: bool,
     /// The full-screen layout is currently written to the layout globals (with this original panel width).
@@ -498,8 +537,105 @@ fn run_action(m: &mut Machine, logic: u32, a: &LogicAction) -> Result<(), String
             w(m, GD_SUBPAGE, 0);
             w(m, GD_PANEL_DIRTY, 1);
         }
+        LogicAction::Request { ref bytes, sound } => {
+            if sound != 0 {
+                crate::call::call_thiscall(m, FN_UI_SOUND, logic, &[sound]);
+            }
+            post_request(m, logic, bytes)?;
+            w(m, GD_PANEL_DIRTY, 1);
+        }
+        LogicAction::WorkArea { building } => {
+            crate::call::call_thiscall(m, FN_UI_SOUND, logic, &[0x34]);
+            crate::call::call_thiscall(m, FN_WORK_AREA_START, logic, &[building as u32]);
+            w(m, GD_SUBPAGE, 2);
+            w(m, GD_PANEL_DIRTY, 1);
+        }
+        LogicAction::Recruit { kind, count } => {
+            let (x, y) = view_centre_tile(m, g);
+            let player = m.mem.read_u32(g + GD_LOCAL_PLAYER) as u8;
+            let req = [0x21, 0x10, 0x0c, 0, kind, player, (x >> 8) as u8, x as u8, (y >> 8) as u8, y as u8, count, 0];
+            crate::call::call_thiscall(m, FN_UI_SOUND, logic, &[0x2f]);
+            post_request(m, logic, &req)?;
+            crate::call::call_thiscall(m, FN_LOGIC_NOTIFY, logic, &[]);
+        }
+        LogicAction::ReadSaveSlots => {
+            let mp = crate::call::call_thiscall(m, FN_IS_MULTIPLAYER, MP_OBJECT, &[]) & 0xff != 0;
+            let mut slots = Vec::new();
+            if !mp {
+                let buf = m.mem.alloc(0x30);
+                for slot in 1..=8u32 {
+                    for i in 0..3 {
+                        crate::call::call_thiscall(m, FN_STRING_CTOR, buf + i * 0x10, &[]);
+                    }
+                    // Same argument order as the panel (0x52e2fc): line 1 = third string argument.
+                    let ok = crate::call::call_thiscall(m, FN_SAVE_SLOT_INFO, logic, &[slot, 0, buf, buf + 0x10, buf + 0x20]) & 0xff;
+                    let strs = [guest_string(m, buf), guest_string(m, buf + 0x20), guest_string(m, buf + 0x10)];
+                    for i in 0..3 {
+                        crate::call::call_thiscall(m, FN_STRING_DTOR, buf + i * 0x10, &[]);
+                    }
+                    slots.push((ok != 0).then_some(strs));
+                }
+            }
+            m.state::<HudShared>().borrow_mut().save_slots = Some(SaveSlots { multiplayer: mp, slots });
+        }
+        LogicAction::SaveGame { slot } => {
+            let mp = crate::call::call_thiscall(m, FN_IS_MULTIPLAYER, MP_OBJECT, &[]) & 0xff != 0;
+            let ok = if mp {
+                // 0x52e507: sound 0x30, command 0xfa {player}, 0x542630.
+                let player = m.mem.read_u32(g + GD_LOCAL_PLAYER) as u8;
+                crate::call::call_thiscall(m, FN_UI_SOUND, logic, &[0x30]);
+                post_request(m, logic, &[0x21, 0xfa, 0x08, 0, player, 0, 0, 0])?;
+                crate::call::call_thiscall(m, FN_LOGIC_NOTIFY, logic, &[]);
+                true
+            } else {
+                let ok = crate::call::call_thiscall(m, FN_SAVE_GAME, logic, &[0, slot]) & 0xff == 1;
+                if ok {
+                    // 0x52e958: clear the "not saved for N min" reminder, remember the save time.
+                    m.mem.write_u32(0x007d_eb50, 0);
+                    let t = m.mem.read_u32(0x007d_fd48);
+                    m.mem.write_u32(0x007d_fd50, t);
+                }
+                ok
+            };
+            let st = m.state::<HudShared>();
+            let mut s = st.borrow_mut();
+            s.save_result = Some((slot, ok));
+            s.save_slots = None;
+        }
     }
     Ok(())
+}
+
+/// MSVC 6 `std::string` at `p` (+4 data pointer, +8 length) as text.
+fn guest_string(m: &Machine, p: u32) -> String {
+    let (ptr, len) = (m.mem.read_u32(p + 4), m.mem.read_u32(p + 8).min(200));
+    if ptr == 0 || !readable(m, ptr, len.max(1)) {
+        return String::new();
+    }
+    (0..len).map(|i| m.mem.read_u8(ptr + i)).take_while(|&b| b != 0).map(cp1252).collect()
+}
+
+/// The tile at the centre of the map view, computed like the recruitment buttons do (`0x52ccbc..0x52cd4a`):
+/// `q = (camY + 1600) / 18`, `x = (camX - 208) / 16 - (W - (2q - 200)) / 2 + ((H + 255) / 9 + 11) / 4 +
+/// ((mapW + 23) / 16 + 10) / 2`, `y = 2q - 200 + ((H + 255) / 9 + 11) / 2` (W world size, H/mapW map view).
+pub fn view_centre_tile(m: &Machine, g: u32) -> (u32, u32) {
+    let cam_x = m.mem.read_u32(g + GD_CAM_X) as i32;
+    let cam_y = m.mem.read_u32(g + GD_CAM_Y) as i32;
+    let world = m.mem.read_u32(g + GD_WORLD_W) as i32;
+    let view_h = m.mem.read_u32(0x0073_0f1c) as i32;
+    let view_w = m.mem.read_u32(L_MAP_W) as i32;
+    centre_tile_formula(cam_x, cam_y, world, view_w, view_h)
+}
+
+pub(crate) fn centre_tile_formula(cam_x: i32, cam_y: i32, world: i32, view_w: i32, view_h: i32) -> (u32, u32) {
+    let q = (cam_y + 0x640) / 18;
+    let ebx = 2 * q - 200;
+    let edi = (cam_x - 0xd0) / 16 - (((world - ebx) as u32) >> 1) as i32;
+    let rows = (view_h + 0xff) / 9 + 0xb;
+    let cols = ((((view_w + 0x17) / 16) + 0xa) as u32 >> 1) as i32;
+    let x = ((rows as u32) >> 2) as i32 + edi + cols;
+    let y = ebx + ((rows as u32) >> 1) as i32;
+    (x.max(0) as u32, y.max(0) as u32)
 }
 
 /// Post a player-command request (`Queue::Post` on `[logic+0x3c4]`, like HandleInput). Logic thread only.
@@ -616,6 +752,14 @@ pub struct GameSnapshot {
     /// Selected building id (0 = none) and its type.
     pub building: u16,
     pub building_type: u8,
+    /// Selected building: owner (+0x00), construction site (+0x21 != 0), flags (+0x18: bit 0 = working / building
+    /// active, bits 1..4 = construction priority; building panel `0x531d4a`, `0x531e72`).
+    pub building_owner: u8,
+    pub building_site: bool,
+    pub building_flags: u8,
+    /// Construction sites with highest priority of the local player (player record +0x20; the panel allows
+    /// another one only below 10, `0x531e8d`).
+    pub priority_sites: u16,
     /// Settlers of the local player by type (index = type).
     pub settlers: Vec<u32>,
     /// Buildings of the local player (finished + sites).
@@ -669,8 +813,13 @@ pub fn snapshot(m: &mut Machine) -> Option<GameSnapshot> {
     let bmax = r(GD_BUILDING_MAX).min(0x10000);
     if b != 0 && b <= bmax {
         s.building = b as u16;
-        s.building_type = m.mem.read_u8(g + GD_BUILDINGS + b * 0x3a + 6);
+        let e = g + GD_BUILDINGS + b * 0x3a;
+        s.building_type = m.mem.read_u8(e + 6);
+        s.building_owner = m.mem.read_u8(e);
+        s.building_site = m.mem.read_u8(e + 0x21) != 0;
+        s.building_flags = m.mem.read_u8(e + 0x18);
     }
+    s.priority_sites = m.mem.read_u16(g + GD_PLAYERS + player * 0x148 + 0x20);
     // Settlers of the local player.
     let smax = r(GD_SETTLER_MAX).min(0x10000);
     s.settlers = vec![0; 64];
