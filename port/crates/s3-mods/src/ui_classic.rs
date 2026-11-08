@@ -285,10 +285,17 @@ impl ClassicTouch {
         };
         let frame = m.last_frame_size();
         let vp = crate::draw_viewport(m);
-        self.vis = Some(vp.dst_rect_clipped());
+        // Window rect: the shown frame's rect changes with the zoom (crop) and must not move the buttons.
+        self.vis = Some((0, 0, vp.win_w as i32, vp.win_h as i32));
         self.ui = vp.win_h as f32 / 600.0;
         self.disp = crate::display::display_settings(m);
-        let layout = Layout::read(&m.mem).filter(|l| (l.screen_w as u32, l.screen_h as u32) == frame);
+        let any_layout = Layout::read(&m.mem);
+        // During a zoom step the layout globals already have the next size while the old frame is shown: stay in
+        // game with the last matching layout (the panel is the same 640x480 variant at every size), so the floating
+        // Menu / speed buttons do not blink (user report 2026-11-08).
+        let layout = any_layout
+            .filter(|l| (l.screen_w as u32, l.screen_h as u32) == frame)
+            .or_else(|| self.view.layout.filter(|_| any_layout.is_some() && crate::res::in_game_frame(m)));
         self.in_game = hooked
             && layout.is_some()
             && valid_gd(m, gd)
@@ -850,7 +857,8 @@ impl Mod for ClassicTouch {
             return;
         }
         let vp = crate::draw_viewport(m);
-        self.vis = Some(vp.dst_rect_clipped());
+        // Window rect: the shown frame's rect changes with the zoom (crop) and must not move the buttons.
+        self.vis = Some((0, 0, vp.win_w as i32, vp.win_h as i32));
         self.ui = vp.win_h as f32 / 600.0;
         if self.touch.is_some() {
             self.draw_panel_touch(m, c, frame);

@@ -5,6 +5,8 @@ Newest first. One entry per session: what was done, what was learned, links to d
 
 ## 2026-11-08 — Group buttons fixed on screen
 
+- Same for the Classic floating buttons (Menu, speed, menu column, chip): `ui_classic` keeps the last matching layout
+  while `res::in_game_frame` during a zoom step, and places them in the window rect, not the shown frame's rect.
 - No blinking while zooming: during a zoom step the layout globals already have the next size while the old
   frame is shown; `UnitOrders` stays "in game" then (`res::in_game_frame`) and only skips the paths. Classic x =
   panel width from the window height alone. Verified with 8 window shots during a 1.5 s pinch.
