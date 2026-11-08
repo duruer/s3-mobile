@@ -27,6 +27,8 @@ S3App *s3ios_create(const char *game_dir, const char *data_dir);
 void s3ios_destroy(S3App *app);
 /* View size in pixels and the screen density. */
 void s3ios_resize(S3App *app, uint32_t w, uint32_t h, uint32_t dpi);
+/* The screen's maximum refresh rate (UIScreen.maximumFramesPerSecond). */
+void s3ios_set_refresh(S3App *app, uint32_t hz);
 /* Once per display refresh, before drawing. */
 S3Out s3ios_tick(S3App *app);
 /* Draw into the bound framebuffer (GLKView draw, its EAGLContext current). */

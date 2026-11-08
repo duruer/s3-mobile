@@ -49,6 +49,7 @@ final class GameView: GLKView, UIKeyInput, UIDocumentPickerDelegate {
         if (w, h, dpi) != lastSize {
             lastSize = (w, h, dpi)
             s3ios_resize(Core.shared.app, w, h, dpi)
+            s3ios_set_refresh(Core.shared.app, UInt32(window?.screen.maximumFramesPerSecond ?? UIScreen.main.maximumFramesPerSecond))
         }
     }
 

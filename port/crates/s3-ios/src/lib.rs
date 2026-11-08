@@ -227,6 +227,8 @@ impl App {
         }
         if self.in_launcher {
             self.launcher_dirty |= self.launcher.tick();
+            let hz = f32::from_bits(self.shared.refresh_hz.load(Ordering::Relaxed));
+            self.launcher.refresh_hz = if hz > 0.0 { hz.round() as u32 } else { 0 };
             let (w, h) = self.size;
             if self.launcher_dirty || self.launcher_drawn.map(|d| (d.0, d.1)) != Some((w, h)) {
                 self.launcher_dirty = false;
@@ -421,6 +423,17 @@ pub unsafe extern "C" fn s3ios_destroy(app: *mut App) {
 #[no_mangle]
 pub unsafe extern "C" fn s3ios_resize(app: *mut App, w: u32, h: u32, dpi: u32) {
     (*app).resize(w, h, dpi);
+}
+
+/// The screen's maximum refresh rate (`UIScreen.maximumFramesPerSecond`, 120 on ProMotion iPhones): shown by the
+/// FPS counter and offered by the FPS limit setting.
+///
+/// # Safety
+/// `app` comes from [`s3ios_create`].
+#[no_mangle]
+pub unsafe extern "C" fn s3ios_set_refresh(app: *mut App, hz: u32) {
+    let app = &*app;
+    app.shared.refresh_hz.store((hz as f32).to_bits(), Ordering::Relaxed);
 }
 
 /// Once per display refresh (CADisplayLink), before drawing.
