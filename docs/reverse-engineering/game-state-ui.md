@@ -309,6 +309,22 @@ cursor composer (see [user32-gdi32.md](../porting/user32-gdi32.md)); the game ca
   180x20 px around the pointer (`x-90..x+90`, `y-15..y+5`, clamped to the screen), saves the background (`0x4d65e0`),
   draws the string with `0x4a87d0` (flags 9) and restores (`0x4d6740`). Hook `0x4b3de1` region or read `snap+0x270` to
   draw our own tooltip.
+- **Text DIB composite (panel-text, 2026-11-08; STATIC unless marked).** Every in-game text goes the same way:
+  `0x4d65e0(x, y, w, h)` (thiscall gfx, `ret 0x10`) clears a DIB rectangle, `0x4a87d0` / `0x4a8090` draws into the
+  DIB (the only `DrawTextA` call is `0x4a8725` in `0x4a8090`: `[esp]` hdc, `+4` string, `+8` count, `+0xc` RECT*,
+  `+0x10` format; DIB pixel = frame pixel), then `0x4d6740(x, y, w, h)` (thiscall gfx, `ret 0x10`) walks the DIB
+  bytes of the rectangle and calls `0x4d6950(byte x, y, bits)` per non-zero byte, which writes colour
+  `0x4c7b00(0xe6, 0xe6, 0xe6)` = RGB(230, 230, 230) for each set bit straight into the locked frame surface
+  `[gfx+0xec]` (pitch in bytes `[gfx+0x90]`) and a black pixel at (x+1, y+1) (shadow; not on the last screen row).
+  Call triples clear/draw/composite: tooltip `0x4b3ef4/0x4b3f20/0x4b3f46`, clock `0x4b40e5/0x4b4104/0x4b4122`, end
+  banner `0x4b4167/0x4b41eb/0x4b4227`, panel renderer helpers `0x4d6a30`, `0x4d6b10` (font 0 / 1, rect from
+  `[0x730f38]`, `[0x730f3c]`, `[0x730f40]`, text id via `0x5faaa0`, flags 9) and further ones up to `0x4d79a6`,
+  `0x4b56e4..0x4b588e`, map labels `0x4bffe3..0x4c0111`, `0x4c2841..0x4c2d20`, `0x4c8bad..0x4c8c08`,
+  `0x4c9058..0x4c90b3`. The panel info text (`0x4b2838..0x4b2b13`) is only drawn into the DIB there (when
+  `snap+0x274 != -1`); its composite is elsewhere. The panel renderer `0x4b4d00` is called once per frame at
+  `0x4b2dc5` (frame renderer `0x4b26c0`, the only caller is `0x42c73d`); its texts stay on the frame until it
+  redraws, the map part (tooltip, clock, map labels) is redrawn every frame. Skipping `0x4d6740` (`ret 0x10`) keeps
+  the text out of the frame without other effects (VERIFIED with `s3-mods/src/panel_text.rs`).
 - Other text users: `0x41xxxx..0x42xxxx` (TextOutA/DrawTextA; main menu screens, HYPOTHESIS), `0x5a1970..` (TextOutA +
   `CreateFontA`; HYPOTHESIS: debug/statistics overlay).
 

@@ -12,6 +12,8 @@ s3-cpu.workspace = true
 s3-runtime.workspace = true
 # Frame limiter (`s3_dx::ddraw::set_fps_cap`) for the FPS limit setting.
 s3-dx.workspace = true
+# DrawTextA layout of the game's texts (`s3_win32::user32::draw_text_layout`) for `panel_text`.
+s3-win32.workspace = true
 # Overlay text (bundled Liberation Sans, SIL OFL 1.1; same files as s3-win32). MIT/Apache/Zlib.
 fontdue = "0.9"
 # Settings JSON. MIT/Apache.

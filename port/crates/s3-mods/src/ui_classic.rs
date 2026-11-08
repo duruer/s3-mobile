@@ -492,6 +492,8 @@ impl ClassicTouch {
         let iy = by + q(6.0);
         // The frontend draws the frame region there with the display filter (xBR / AI like the panel itself).
         c.frame_inset([sx as f32, sy as f32, sw as f32, sh as f32], ix, iy, mw, mh);
+        // The panel texts are not in the frame while the window layer is shown (`panel_text`): draw them too.
+        crate::panel_text::draw_inset(m, c, [sx as f32, sy as f32, sw as f32, sh as f32], (ix, iy, mw, mh));
         // Outline of the chosen button inside the magnified view.
         if let Some(i) = t.target {
             let (rx, ry, rw, rh) = l.rect(&t.buttons[i]);

@@ -1727,28 +1727,37 @@ fn strip_prefix_amp(line: &[u8]) -> Vec<u8> {
     out
 }
 
-/// DrawTextA(hdc, str, count, rect, format) -> height of the text.
-fn draw_text_a(m: &mut Machine) -> ThunkResult {
-    let (hdc, sp, n, prc, fmt) = (m.arg_u32(0), m.arg_u32(1), m.arg_i32(2), m.arg_u32(3), m.arg_u32(4));
-    let text = if n < 0 { m.mem.read_cstr_bytes(sp) } else { m.mem.read_bytes(sp, (n as usize).min(0x10000)) };
-    let mut rect = Rect::read(m, prc);
-    let Some((_, line_h)) = gdi32::text_extent(m, hdc, b"") else { return ThunkResult::stdcall(0, 5) };
+/// One laid-out line of a `DrawTextA` call: text (prefix `&` removed), left x, top y and width in DC pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrawTextLine {
+    pub text: Vec<u8>,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+}
+
+/// Layout of a `DrawTextA` call in the DC's font, exactly as `DrawTextA` draws it. Host mods use it to redraw the
+/// game's texts at another resolution (`s3-mods/src/panel_text.rs`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrawTextLayout {
+    pub lines: Vec<DrawTextLine>,
+    /// Line height in DC pixels.
+    pub line_h: i32,
+    /// fontdue em size of the DC's font (pixels) and whether it uses the bold face.
+    pub px: f32,
+    pub bold: bool,
+}
+
+/// Lay out `text` in `rect` with the DT_* flags `fmt` (DT_CALCRECT is not looked at) in the font selected into
+/// `hdc`. `None` for an unknown DC.
+pub fn draw_text_layout(m: &mut Machine, hdc: u32, text: &[u8], rect: Rect, fmt: u32) -> Option<DrawTextLayout> {
+    let mt = m.state::<gdi32::GdiState>().borrow_mut().dc_metrics(hdc)?;
+    let line_h = mt.height;
     let width = rect.r - rect.l;
     let mut measure = |s: &[u8]| -> i32 { gdi32::text_extent(m, hdc, s).map(|e| e.0).unwrap_or(0) };
-    let mut lines = layout_lines(&text, fmt, width, &mut measure);
+    let mut lines = layout_lines(text, fmt, width, &mut measure);
     if fmt & DT_NOPREFIX == 0 {
         lines = lines.iter().map(|l| strip_prefix_amp(l)).collect();
-    }
-    let widths: Vec<i32> = lines.iter().map(|l| gdi32::text_extent(m, hdc, l).map(|e| e.0).unwrap_or(0)).collect();
-    let total_h = line_h * lines.len() as i32;
-    if fmt & DT_CALCRECT != 0 {
-        let maxw = widths.iter().copied().max().unwrap_or(0);
-        if fmt & DT_SINGLELINE != 0 || fmt & DT_WORDBREAK == 0 || maxw > width {
-            rect.r = rect.l + maxw;
-        }
-        rect.b = rect.t + total_h;
-        rect.write(m, prc);
-        return ThunkResult::stdcall(total_h as u32, 5);
     }
     let mut y = rect.t;
     if fmt & DT_SINGLELINE != 0 {
@@ -1758,14 +1767,9 @@ fn draw_text_a(m: &mut Machine) -> ThunkResult {
             y = rect.b - line_h;
         }
     }
-    let clip = if fmt & DT_NOCLIP != 0 { None } else { Some(rect) };
-    // DrawText ignores TA_* alignment: temporarily force TA_LEFT|TA_TOP.
-    let saved_align = {
-        let st = m.state::<gdi32::GdiState>();
-        let mut g = st.borrow_mut();
-        g.dc(hdc).map(|d| std::mem::replace(&mut d.text_align, 0))
-    };
-    for (line, w) in lines.iter().zip(widths) {
+    let mut out = Vec::with_capacity(lines.len());
+    for text in lines {
+        let w = gdi32::text_extent(m, hdc, &text).map(|e| e.0).unwrap_or(0);
         let x = if fmt & DT_CENTER != 0 {
             rect.l + (width - w) / 2
         } else if fmt & DT_RIGHT != 0 {
@@ -1773,8 +1777,38 @@ fn draw_text_a(m: &mut Machine) -> ThunkResult {
         } else {
             rect.l
         };
-        gdi32::draw_text_at(m, hdc, x, y, line, None, clip);
+        out.push(DrawTextLine { text, x, y, w });
         y += line_h;
+    }
+    Some(DrawTextLayout { lines: out, line_h, px: mt.px, bold: mt.bold })
+}
+
+/// DrawTextA(hdc, str, count, rect, format) -> height of the text.
+fn draw_text_a(m: &mut Machine) -> ThunkResult {
+    let (hdc, sp, n, prc, fmt) = (m.arg_u32(0), m.arg_u32(1), m.arg_i32(2), m.arg_u32(3), m.arg_u32(4));
+    let text = if n < 0 { m.mem.read_cstr_bytes(sp) } else { m.mem.read_bytes(sp, (n as usize).min(0x10000)) };
+    let mut rect = Rect::read(m, prc);
+    let Some(lay) = draw_text_layout(m, hdc, &text, rect, fmt) else { return ThunkResult::stdcall(0, 5) };
+    let width = rect.r - rect.l;
+    let total_h = lay.line_h * lay.lines.len() as i32;
+    if fmt & DT_CALCRECT != 0 {
+        let maxw = lay.lines.iter().map(|l| l.w).max().unwrap_or(0);
+        if fmt & DT_SINGLELINE != 0 || fmt & DT_WORDBREAK == 0 || maxw > width {
+            rect.r = rect.l + maxw;
+        }
+        rect.b = rect.t + total_h;
+        rect.write(m, prc);
+        return ThunkResult::stdcall(total_h as u32, 5);
+    }
+    let clip = if fmt & DT_NOCLIP != 0 { None } else { Some(rect) };
+    // DrawText ignores TA_* alignment: temporarily force TA_LEFT|TA_TOP.
+    let saved_align = {
+        let st = m.state::<gdi32::GdiState>();
+        let mut g = st.borrow_mut();
+        g.dc(hdc).map(|d| std::mem::replace(&mut d.text_align, 0))
+    };
+    for line in &lay.lines {
+        gdi32::draw_text_at(m, hdc, line.x, line.y, &line.text, None, clip);
     }
     if let Some(a) = saved_align {
         let st = m.state::<gdi32::GdiState>();

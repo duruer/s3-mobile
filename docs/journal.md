@@ -9,6 +9,16 @@ Newest first. One entry per session: what was done, what was learned, links to d
   `[ebp-0x1c]`, y `esi`, w `[ebp-0x2c]`, h `[ebp-0x44]`, minimap image px) scales it to the shown part
   (`display::Viewport::map_src` fractions). Verified desktop: small rectangle at deep zoom, unchanged at >= 480.
   s3det fast vs S3_FAST=0: IDENTICAL (also covers the guest clock change of the speed feature at 1x).
+## 2026-11-08 — Crisp panel texts and tooltips (panel-text)
+
+- RE: all in-game texts go DIB clear `0x4d65e0` -> `DrawTextA` (only call `0x4a8725`) -> composite `0x4d6740`, which
+  writes RGB(230, 230, 230) + black (+1, +1) shadow into the frame `[gfx+0xec]`. Panel renderer `0x4b4d00` (call
+  `0x4b2dc5`) redraws only when `[snap+0x40] == 1` and once more after (`[gfx+0xf8]`); tooltip drawn every frame
+  while `snap+0x278` is set → [game-state-ui](reverse-engineering/game-state-ui.md) section 6.
+- `s3-mods/src/panel_text.rs`: records each DrawText (layout through the new `s3_win32::user32::draw_text_layout`),
+  skips the composite and draws the texts in the window layer (also in the Classic magnifier). Verified desktop at
+  2316x904, Classic: Save/Quit page, build/goods/settlers tabs, settlers page numbers, tooltips; page changes leave
+  no stale texts. `S3_PANEL_TEXT=0` = old look → [display](porting/display.md).
 
 ## 2026-11-08 — Game speed 1x-4x, long press 350 ms, no FPS counter in menus
 

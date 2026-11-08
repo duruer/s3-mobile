@@ -72,6 +72,12 @@ Log lines `ui-classic: panel click at 32,167 (page 0)`, `… 23,197 (page 1)`, `
 Tests: `cargo test -p s3-mods` (`ui_classic::panel::tests`: grid rects vs. the integration-log recipe, build list
 per race, snapping, layouts, cp1252).
 
+## Panel texts (2026-11-08)
+
+The panel's texts and tooltips are drawn at window resolution (crisp at every panel scale) instead of the game's
+1-bit text upscaled with the panel; also inside the magnifier. See [display.md](display.md) "Panel texts in the
+window layer".
+
 ## Known issues / next
 
 - On pages we did not map (4, 5, 8), the bubble has no name. The game's own tooltip id (`snap+0x270`, read through

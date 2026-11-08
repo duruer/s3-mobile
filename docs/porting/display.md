@@ -148,6 +148,28 @@ frame, so it grew, shrank and moved with the zoom. With a window layer, `cursor_
 The window position is kept while the game position does not change, so a zoom does not move it on screen.
 Without a window layer (old frontends) the frame cursor stays.
 
+**Panel texts in the window layer (2026-11-08, panel-text).** The game draws its in-game texts (panel labels and
+numbers, save slots, "Settlers / > 20 % Carriers", tooltips, clock, end banner, map labels) with `DrawTextA` into a
+1-bpp DIB and copies its set bits onto the frame (RE: game-state-ui.md section 6 "Text DIB composite"). Enlarged
+2-4x with the Classic panel these were blocky. `s3-mods/src/panel_text.rs` (GOG patch set, only while a frontend
+shows the window layer):
+
+- hook at the `DrawTextA` call `0x4a8725`: records string, rect, DT_* flags and the layout of the call in the DC's
+  font (`s3_win32::user32::draw_text_layout`, the same code and font as our `DrawTextA`); the DIB clear
+  `0x4d65e0` drops the records in its rectangle. The DIB still gets every text (guest state unchanged).
+- hook at the composite `0x4d6740(x, y, w, h)`: when records lie in the rectangle, the copy onto the frame is skipped
+  (`ret 0x10`) and they become frame texts clipped to that rectangle.
+- lifetime: texts composited inside the panel renderer (call `0x4b2dc5`) stay until the panel redraws fully
+  (`[snap+0x40] == 1` or `[gfx+0xf8] == 1` at that call), a new composite overlaps them, or the frame pixels under
+  them change (hash in `draw_window`); all others (tooltip, clock, map labels) live for one frame (frame renderer
+  `0x4b26c0` .. call `0x4b422f`). Dropped after 300 ms without a game frame (left the game).
+- drawing: each line at `game_to_window` of its DIB position, size = font em size times the mapped line height,
+  centred / right aligned like the game, colour RGB(230, 230, 230) with a black shadow (the game's colours). A text
+  starting in the Classic panel (`x < PanelSplit::w`) is drawn wholly at the panel scale (the 180 px tooltip box at
+  the panel's bottom reaches into the map part). The Classic magnifier draws the texts into its frame inset
+  (`panel_text::draw_inset`).
+- `S3_PANEL_TEXT=0` turns it off (comparison), `S3_PANEL_TEXT_LOG=1` logs every captured composite.
+
 `window_to_game` / `game_to_window` / `scale()` (= map part) / `quads()` (source -> destination rectangles: one, or
 panel + map) handle it, so touch mapping, the GPU presenter (one quad per part, sharp-bilinear scale per part), the
 CPU scaler (`scale_to_xrgb`) and the mods agree. Fit, Fill, Stretch and menus (layouts) are unchanged.

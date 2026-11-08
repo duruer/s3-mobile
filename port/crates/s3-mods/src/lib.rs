@@ -16,6 +16,7 @@
 pub mod call;
 pub mod menu_layout;
 pub mod messages; // game message lines in the window layer (game-state-ui.md section 7) // full-screen layouts of the 800x600 menus (docs/porting/menu-layout.md)
+pub mod panel_text; // panel / tooltip texts of the text DIB in the window layer (docs/porting/display.md)
 pub mod cursor_layer; // the game's cursor in the window layer (docs/porting/display.md)
 pub mod speed; // game speed 1x-4x (single player)
 pub mod display; // display modes + shared screen<->game transform (docs/porting/display.md)
@@ -241,6 +242,7 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     // the touch mod.
     if applied == Some("gog-base") {
         messages::install(m);
+        panel_text::install(m);
     }
     ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
     ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
