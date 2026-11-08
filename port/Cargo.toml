@@ -11,8 +11,10 @@ members = [
     "crates/s3-mods",
     "crates/s3-desktop",
     "crates/s3-android",
+    "crates/s3-frontend",
     "crates/s3-net",
     "crates/s3-relay",
+    "crates/s3-ios",
 ]
 
 [workspace.package]
@@ -28,6 +30,7 @@ s3-runtime = { path = "crates/s3-runtime" }
 s3-pe = { path = "crates/s3-pe" }
 s3-win32 = { path = "crates/s3-win32" }
 s3-dx = { path = "crates/s3-dx" }
+s3-frontend = { path = "crates/s3-frontend", default-features = false }
 s3-engine = { path = "crates/s3-engine" }
 s3-mods = { path = "crates/s3-mods" }
 s3-net = { path = "crates/s3-net" }

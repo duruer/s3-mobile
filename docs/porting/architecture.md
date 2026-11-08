@@ -17,7 +17,9 @@ APIs S3.EXE uses. The user's own `S3.EXE` and data run unmodified; nothing of th
 | `s3-engine` | `Engine::new(host, exe)`: registers modules, loads PE, creates the main thread, installs `s3-mods`; `run_slice`, `run_for_ms`, `summary` | runtime |
 | `s3-mods` | Mod/hook framework: guest-address hooks, struct views, guest calls, per-exe-sha256 patch sets, overlay drawing, touch gestures + fallback touch->mouse, settings JSON ([mods.md](mods.md)) | mods |
 | `s3-desktop` | `s3run` binary: headless or minifb window, PNG screenshots, input injection | desktop |
-| `s3-android` | `libs3android.so` (NativeActivity via android-activity): engine thread, letterboxed RGB565 window, touch -> mouse, AAudio. See [android.md](android.md) | android |
+| `s3-frontend` | Mobile frontend parts shared by Android and iOS (plain rlib): `Shared` state + `AndroidHost`, engine thread body, launcher + upload server, touch -> pointer events, audio ring, status screen, GLES bindings and renderer (`glrender`: draws into any current GL context) | android / ios |
+| `s3-android` | `libs3android.so` (NativeActivity via android-activity): lifecycle, EGL presenter (`present.rs` on `glrender`), input, AAudio, background service; re-exports `s3-frontend` modules under their old paths. See [android.md](android.md) | android |
+| `s3-ios` | `libs3ios.a` (staticlib) for the Swift shell `port/ios`: C API (`port/ios/Sources/CS3iOS/include/s3ios.h`). See [ios.md](ios.md) | ios |
 
 Dependency direction: `s3-mem` <- `s3-cpu` <- `s3-runtime` <- `s3-pe`, `s3-win32`, `s3-dx` (s3-dx does not depend on s3-win32; they meet through `s3_runtime::gdi` and `s3_runtime::audio`) <- `s3-engine` <- frontends.
 

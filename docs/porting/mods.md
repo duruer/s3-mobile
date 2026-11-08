@@ -176,7 +176,7 @@ three-finger taps). Android now sends raw pointers too (old `TouchMapper` remove
 Unconsumed gestures map like the former Android mapper: Tap = left click (button-up 60 ms later), LongPress / TwoFingerTap = right click (`long_press_right_click`
 setting), ThreeFingerTap = keyboard request (`take_keyboard_request`), one-finger Pan = left drag, or right drag on the
 in-game map (x >= 170, not 800x600), mirrored and halved = "grab" scrolling. `set_right_next(m, true)` = RMB button.
-Android sends `HostEvent::Pointer` since 2026-11-05 (`s3-android/src/touch.rs`, RMB/keyboard flags via
+Android sends `HostEvent::Pointer` since 2026-11-05 (`s3-frontend/src/touch.rs`, RMB/keyboard flags via
 `Shared::keyboard_req` <-> `s3_mods::take_keyboard_request`; the RMB flags went with the letterbox buttons 2026-11-07).
 
 ## Settings (`settings.rs`)

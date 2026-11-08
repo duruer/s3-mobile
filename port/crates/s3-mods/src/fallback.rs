@@ -1,5 +1,5 @@
 //! Fallback touch->mouse mapping for touch events no mod consumed. Mirrors the legacy Android mapping
-//! (`s3-android/src/touch.rs`) so behaviour stays the same until W3's context-aware input replaces it:
+//! (`s3-frontend/src/touch.rs`) so behaviour stays the same until W3's context-aware input replaces it:
 //! - Tap: left click (right click when "right-click next" is armed);
 //! - LongPress: right click (if `long_press_right_click`), TwoFingerTap: right click;
 //! - ThreeFingerTap: keyboard request flag for the frontend;

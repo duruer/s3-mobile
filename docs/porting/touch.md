@@ -13,7 +13,7 @@ Code (`port/crates/s3-mods/src/`):
 | `touch_game.rs` | GOG S3.EXE memory reads/writes (addresses below) -> `View` snapshot |
 | `touch_fx.rs` | overlay drawing: ripple, move/attack flag, selection rings, long-press ring, selection box, ✕ cancel button |
 
-Frontends deliver raw pointers only (`HostEvent::Pointer`): Android `s3-android/src/touch.rs` (MotionEvent ->
+Frontends deliver raw pointers only (`HostEvent::Pointer`): Android `s3-frontend/src/touch.rs` (MotionEvent ->
 pointer events, see [android.md](android.md)) and desktop `s3run --inject` touch commands
 (`s3-desktop/src/touch_inject.rs`). The gesture recognizer and everything below run in `s3-mods` on the engine
 thread, so desktop tests exercise exactly the Android code path.

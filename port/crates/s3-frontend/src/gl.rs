@@ -1,5 +1,6 @@
 //! Minimal EGL + GLES 2.0 bindings (only what the presenter uses) and a small textured-quad renderer.
-//! Linked against the NDK's libEGL.so / libGLESv2.so (always present on Android). See docs/porting/display.md.
+//! Linked against the NDK's libEGL.so / libGLESv2.so (always present on Android); on iOS the GLES functions come from
+//! OpenGLES.framework (EGL is Android only). See docs/porting/display.md.
 #![allow(non_camel_case_types, non_snake_case, dead_code)]
 
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
@@ -94,6 +95,7 @@ pub const GL_RGBA16F: GLenum = 0x881A;
 pub const GL_HALF_FLOAT: GLenum = 0x140B;
 
 #[cfg_attr(target_os = "android", link(name = "GLESv2"))]
+#[cfg_attr(target_os = "ios", link(name = "OpenGLES", kind = "framework"))]
 extern "C" {
     pub fn glGenTextures(n: GLsizei, t: *mut GLuint);
     pub fn glDeleteTextures(n: GLsizei, t: *const GLuint);

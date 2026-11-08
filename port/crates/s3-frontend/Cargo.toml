@@ -1,0 +1,32 @@
+[package]
+name = "s3-frontend"
+description = "Mobile frontend parts shared by the Android and iOS apps (launcher, engine thread, GLES renderer, touch, audio ring)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+s3-runtime.workspace = true
+s3-engine = { workspace = true, optional = true }
+# fps cap for the CPU performance hint (perf_hint.rs).
+s3-dx = { workspace = true, optional = true }
+# Gesture recognition / context-aware touch run on the engine thread (RMB button, keyboard request flags);
+# display modes + the shared screen<->game transform (s3_mods::display) are used by the presenter in every build.
+s3-mods.workspace = true
+# LAN addresses for the upload server URL.
+s3-net.workspace = true
+log = "0.4"
+# 8x8 bitmap font (MIT) for the status / test-pattern screen.
+font8x8 = { version = "0.3", default-features = false }
+# QR code of the upload server address on the launcher (MIT / Apache-2.0).
+qrcode = { version = "0.14", default-features = false }
+
+[features]
+# The real engine. Without it (--no-default-features) the frontend is only the shell: status screen, input, audio.
+default = ["engine"]
+engine = ["dep:s3-engine", "dep:s3-dx"]
+
+[dev-dependencies]
+# Launcher preview PNGs (`S3_LAUNCHER_PREVIEW=<dir> cargo test -p s3-frontend launcher_preview -- --ignored`).
+png = "0.17"

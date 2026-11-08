@@ -103,7 +103,7 @@ settings / Classic (CLI `--filter xbr`).
 **AI upscaling filter (2026-11-08).** `ScaleFilter::Ai` ("AI (Anime4K)"): the small CNN x2 upscaler of Anime4K
 v3.2 (`Anime4K_Upscale_CNN_x2_S`, https://github.com/bloc97/Anime4K, **MIT**, license text kept in the generated
 file) on the GPU. `tools/anime4k_to_gles.py` converts the mpv user shader into GLSL ES 3.00 fragment shaders
-(`s3-android/src/anime4k.rs`, generated: 4 conv passes + depth-to-space); `s3-android/src/upscale_ai.rs` runs
+(`s3-frontend/src/anime4k.rs`, generated: 4 conv passes + depth-to-space); `s3-frontend/src/upscale_ai.rs` runs
 them per presented game frame: 4 passes at the frame size into RGBA16F textures (ping-pong, FBO), then
 depth-to-space into an RGBA8 texture of twice the frame size (= bilinear frame + the network's luma residual),
 which the presenter draws instead of the frame (same normalized coordinates, so the Classic split / quads work).

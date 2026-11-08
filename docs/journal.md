@@ -3,6 +3,19 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — iOS: Rust core + Swift shell (ios)
+
+- Toolchain without a Mac: WSL Ubuntu 26.04 aarch64 + swiftly Swift 6.4.2 + xtool 1.24.0 (AppImage). The iOS SDK
+  comes from the user's Xcode.xip via `xtool setup` (pending, needs Apple login).
+- `cargo check --target aarch64-apple-ios` of engine/mods/net/relay passed unchanged.
+- New crate `s3-frontend`: the platform-neutral modules moved out of `s3-android` (a cdylib dependency forced an
+  Apple linker for the iOS staticlib). `s3-android` re-exports them. GLES drawing split from `present.rs` into
+  `s3-frontend/src/glrender.rs` (`GlRenderer` + `Composer`), reused by iOS inside a GLKView.
+- New crate `s3-ios` (`libs3ios.a`, 13 C functions, `port/ios/Sources/CS3iOS/include/s3ios.h`) and the SwiftPM/xtool
+  app `port/ios`; build script `port/scripts/build-ios.sh`. The static lib builds on Windows (34 MB).
+- Android APK rebuilt and installed after the move: starts, presenter + AAudio up (screen check pending; phone locked).
+- Docs: [ios](porting/ios.md), [architecture](porting/architecture.md).
+
 ## 2026-11-08 — Finger scrolling of the map list
 
 - `menu_scroll.rs`: a one-finger vertical drag on the Game Setup map picker list (game 118..242 x 242..442; SP

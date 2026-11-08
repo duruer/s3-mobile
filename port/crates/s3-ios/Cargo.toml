@@ -1,0 +1,19 @@
+[package]
+name = "s3-ios"
+description = "iOS frontend core for the Settlers III port (libs3ios.a, driven by the Swift shell in port/ios)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "s3ios"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Platform-independent frontend parts (shared state, engine thread, launcher, upload server, audio ring, touch
+# mapping) and the GLES renderer (`glrender`, any current GL context).
+s3-frontend = { workspace = true, features = ["engine"] }
+s3-runtime.workspace = true
+s3-mods.workspace = true
+log = "0.4"

@@ -399,7 +399,7 @@ Ranked ideas (estimated gain on the phone at zoom 10):
 
 ### Done in perf-r2 (2026-11-07)
 
-- **Item 3, CPU hint** (`s3-android/src/perf_hint.rs`): `APerformanceHint` session for the engine thread (dlsym,
+- **Item 3, CPU hint** (`s3-frontend/src/perf_hint.rs`): `APerformanceHint` session for the engine thread (dlsym,
   API 33+), reports engine-thread CPU time per presented frame against `1000 / cap` ms. On the Fold4 it does
   nothing: `adb shell dumpsys performance_hint` says `HintSessionPreferredRate: -1`, `HAL Support: false`, and
   `createSession` returns NULL (logged "perf hint: session 0x0"). Kept for devices with the HAL (Pixel etc.).

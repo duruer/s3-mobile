@@ -22,15 +22,12 @@ use std::time::{Duration, Instant};
 
 use ndk::hardware_buffer_format::HardwareBufferFormat;
 use ndk::native_window::NativeWindow;
-use s3_mods::display::{DisplayMode, ScaleFilter, Viewport};
-use s3_mods::menu_layout::Background;
-use s3_mods::LayerRaster;
-use s3_runtime::FrameBuffer;
+use s3_mods::display::{DisplayMode, Viewport};
 
-use crate::frontend::{Phase, Shared};
+use crate::frontend::Shared;
 use crate::gl::*;
+use crate::glrender::{Composer, GlRenderer};
 use crate::layout::{blit_letterboxed, Letterbox};
-use crate::screen;
 
 struct CtlState {
     window: Option<NativeWindow>,
@@ -139,25 +136,10 @@ struct Gles {
     config: EGLConfig,
     context: EGLContext,
     surface: EGLSurface,
-    plain: Program,
-    sharp: Program,
-    /// xBR-lv2 upscaler (`gl::FS_XBR`); id 0 if it failed to compile (then sharp bilinear is used).
-    xbr: Program,
     /// The context is GLES 3 (needed by the AI filter).
     es3: bool,
-    /// AI upscaler (created on first use; `ai_failed` after an error, then sharp bilinear is used).
-    ai: Option<crate::upscale_ai::AiUpscaler>,
-    ai_failed: bool,
-    /// AI output texture for the current game frame (`None` = run the network on the next draw).
-    ai_out: Option<GLuint>,
-    tex: GLuint,
-    tex_size: (u32, u32),
-    tex_filter: GLint,
-    /// Window layer texture (RGBA8, premultiplied) and its size.
-    ltex: GLuint,
-    ltex_size: (u32, u32),
-    /// Generated stone tile behind menu layouts (`s3_mods::stone`, `GL_REPEAT`), 0 until first needed.
-    stex: GLuint,
+    /// Programs and textures (`crate::glrender`), created on the first attach.
+    r: Option<GlRenderer>,
 }
 
 impl Gles {
@@ -212,25 +194,7 @@ impl Gles {
             return Err(format!("eglCreateContext: {:#x}", eglGetError()));
         }
         log::info!("present: GLES {} context", if es3 { 3 } else { 2 });
-        Ok(Gles {
-            display,
-            config,
-            context,
-            surface: EGL_NO_SURFACE,
-            plain: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
-            sharp: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
-            xbr: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
-            es3,
-            ai: None,
-            ai_failed: false,
-            ai_out: None,
-            tex: 0,
-            tex_size: (0, 0),
-            tex_filter: -1,
-            ltex: 0,
-            ltex_size: (0, 0),
-            stex: 0,
-        })
+        Ok(Gles { display, config, context, surface: EGL_NO_SURFACE, es3, r: None })
     }
 
     /// Create the window surface (and on first use the GL objects). Returns the surface size.
@@ -250,32 +214,8 @@ impl Gles {
         }
         self.surface = s;
         eglSwapInterval(self.display, 1);
-        if self.plain.id == 0 {
-            self.plain = program(FS_PLAIN)?;
-            self.sharp = program(FS_SHARP)?;
-            match program(FS_XBR) {
-                Ok(p) => self.xbr = p,
-                Err(e) => log::warn!("xBR shader unavailable: {e}"),
-            }
-            let mut t = 0;
-            glGenTextures(1, &mut t);
-            self.tex = t;
-            glBindTexture(GL_TEXTURE_2D, t);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            let mut lt = 0;
-            glGenTextures(1, &mut lt);
-            self.ltex = lt;
-            glBindTexture(GL_TEXTURE_2D, lt);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glBindTexture(GL_TEXTURE_2D, t);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
-            glDisable(GL_DITHER);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 2, GL_FLOAT, 0, 0, QUAD.as_ptr() as *const c_void);
+        if self.r.is_none() {
+            self.r = Some(GlRenderer::new(self.es3)?);
         }
         Ok(self.size())
     }
@@ -293,238 +233,6 @@ impl Gles {
             eglDestroySurface(self.display, self.surface);
             self.surface = EGL_NO_SURFACE;
         }
-    }
-
-    unsafe fn upload(&mut self, fb: &FrameBuffer) {
-        self.ai_out = None;
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, self.tex);
-        let p = fb.pixels.as_ptr() as *const c_void;
-        if self.tex_size != (fb.width, fb.height) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB as GLint, fb.width as i32, fb.height as i32, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, p);
-            self.tex_size = (fb.width, fb.height);
-        } else {
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fb.width as i32, fb.height as i32, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, p);
-        }
-    }
-
-    /// Bring the layer texture up to date: whole texture after a size change, else only the rows of `dirty`.
-    unsafe fn upload_layer(&mut self, r: &LayerRaster, dirty: Option<(i32, i32, i32, i32)>) {
-        if r.width == 0 || r.height == 0 {
-            return;
-        }
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, self.ltex);
-        if self.ltex_size != (r.width, r.height) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA as GLint, r.width as i32, r.height as i32, 0, GL_RGBA, GL_UNSIGNED_BYTE, r.rgba.as_ptr() as *const c_void);
-            self.ltex_size = (r.width, r.height);
-        } else if let Some((_, y0, _, y1)) = dirty {
-            let (y0, y1) = (y0.clamp(0, r.height as i32), y1.clamp(0, r.height as i32));
-            if y1 > y0 {
-                let p = r.rgba[(y0 as usize * r.width as usize * 4)..].as_ptr() as *const c_void;
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y0, r.width as i32, y1 - y0, GL_RGBA, GL_UNSIGNED_BYTE, p);
-            }
-        }
-    }
-
-    /// Blend the layer texture over the whole window.
-    unsafe fn draw_layer(&mut self, ww: u32, wh: u32) {
-        if self.ltex_size != (ww, wh) {
-            return;
-        }
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, self.ltex);
-        glUseProgram(self.plain.id);
-        glUniform1i(self.plain.u_tex, 0);
-        glUniform4f(self.plain.u_rect, -1.0, 1.0, 1.0, -1.0);
-        glUniform4f(self.plain.u_uv, 0.0, 0.0, 1.0, 1.0);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glDisable(GL_BLEND);
-        glBindTexture(GL_TEXTURE_2D, self.tex);
-    }
-
-    /// AI filter: the 2x texture of the current game frame (runs the network once per new frame), `None` when it
-    /// does not apply (not wanted, scale below 1.2, menu layout, no GLES 3, or it failed).
-    unsafe fn ai_frame(&mut self, vp: &Viewport, filter: ScaleFilter) -> Option<GLuint> {
-        // Run when any part is enlarged >= 1.2x: the map, the Classic panel (shown at ~2-4x even when the map is
-        // zoomed out) or a menu layout.
-        let up = if vp.layout.is_some() {
-            let (sx, sy) = vp.scale();
-            sx.min(sy)
-        } else {
-            vp.quads().iter().map(|(s, d)| (d[2] / s[2].max(1.0)).min(d[3] / s[3].max(1.0))).fold(0.0, f32::max)
-        };
-        if filter != ScaleFilter::Ai || up < 1.2 || !self.es3 || self.ai_failed {
-            return None;
-        }
-        if let Some(t) = self.ai_out {
-            return Some(t);
-        }
-        if self.ai.is_none() {
-            match crate::upscale_ai::AiUpscaler::new() {
-                Ok(a) => self.ai = Some(a),
-                Err(e) => {
-                    log::warn!("AI upscaler unavailable: {e}");
-                    self.ai_failed = true;
-                    return None;
-                }
-            }
-        }
-        let (w, h) = self.tex_size;
-        let r = self.ai.as_mut().unwrap().run(self.tex, w, h);
-        self.tex_filter = -1; // the passes changed the frame texture's filtering
-        match r {
-            Ok(t) => {
-                self.ai_out = Some(t);
-                Some(t)
-            }
-            Err(e) => {
-                log::warn!("AI upscaler failed: {e}");
-                self.ai_failed = true;
-                None
-            }
-        }
-    }
-
-    /// Select and bind the program (+ frame texture filtering) for a part shown at `sx` x `sy` window px per game
-    /// px; sets `u_tex`, `u_size`, `u_scale`. Returns the program's uniform locations.
-    unsafe fn use_filter(&mut self, filter: ScaleFilter, sx: f32, sy: f32, ai: bool, vp: &Viewport) -> Program {
-        let integer = (sx - sx.round()).abs() < 1e-3 && (sy - sy.round()).abs() < 1e-3;
-        let down = sx < 1.0 || sy < 1.0;
-        let (prog, tf) = match filter {
-            _ if ai => (&self.plain, GL_LINEAR),
-            ScaleFilter::Nearest => (&self.plain, GL_NEAREST),
-            ScaleFilter::Linear => (&self.plain, GL_LINEAR),
-            ScaleFilter::SharpBilinear if integer || down => (&self.plain, if down { GL_LINEAR } else { GL_NEAREST }),
-            ScaleFilter::SharpBilinear => (&self.sharp, GL_LINEAR),
-            ScaleFilter::Xbr if down => (&self.plain, GL_LINEAR),
-            ScaleFilter::Xbr if self.xbr.id != 0 => (&self.xbr, GL_NEAREST),
-            ScaleFilter::Xbr => (&self.sharp, GL_LINEAR),
-            ScaleFilter::Ai if down => (&self.plain, GL_LINEAR),
-            ScaleFilter::Ai => (&self.sharp, GL_LINEAR),
-        };
-        let p = Program { id: prog.id, u_rect: prog.u_rect, u_uv: prog.u_uv, u_tex: prog.u_tex, u_size: prog.u_size, u_scale: prog.u_scale };
-        if !ai && self.tex_filter != tf {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, tf);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, tf);
-            self.tex_filter = tf;
-        }
-        glUseProgram(p.id);
-        glUniform1i(p.u_tex, 0);
-        if p.u_size >= 0 {
-            glUniform2f(p.u_size, vp.game_w as f32, vp.game_h as f32);
-            glUniform2f(p.u_scale, sx.max(1.0), sy.max(1.0));
-        }
-        p
-    }
-
-    unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter, insets: &[([f32; 4], [f32; 4])]) {
-        let ai = self.ai_frame(vp, filter);
-        let (ww, wh) = (vp.win_w as f32, vp.win_h as f32);
-        glViewport(0, 0, vp.win_w as i32, vp.win_h as i32);
-        match vp.layout.map(|l| l.background) {
-            Some(Background::Color([r, g, b])) => glClearColor(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0),
-            _ => glClearColor(0.0, 0.0, 0.0, 1.0),
-        }
-        glClear(GL_COLOR_BUFFER_BIT);
-        // Game frame.
-        let (sx, sy) = vp.scale();
-        glActiveTexture(GL_TEXTURE0);
-        if let Some(t) = ai {
-            // The 2x network output (linear filtering set at creation); same normalized coordinates.
-            glBindTexture(GL_TEXTURE_2D, t);
-        } else {
-            glBindTexture(GL_TEXTURE_2D, self.tex);
-        }
-        let Some(l) = vp.layout else {
-            // The whole frame, or (UI mode A panel split) the panel and the map part at their own scales: the
-            // filter is chosen per part (the panel is enlarged even when the map is zoomed out).
-            let (gw, gh) = (vp.game_w as f32, vp.game_h as f32);
-            for (s, d) in vp.quads() {
-                let (qx, qy) = (d[2] / s[2].max(1.0), d[3] / s[3].max(1.0));
-                let prog = self.use_filter(filter, qx, qy, ai.is_some(), vp);
-                let r = clip_rect(d[0], d[1], d[2], d[3], ww, wh);
-                glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
-                glUniform4f(prog.u_uv, s[0] / gw, s[1] / gh, (s[0] + s[2]) / gw, (s[1] + s[3]) / gh);
-                if prog.u_size >= 0 {
-                    glUniform2f(prog.u_scale, qx.max(1.0), qy.max(1.0));
-                }
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            }
-            // The layer's frame insets (Classic magnifier), same texture and filter choice, below the layer.
-            for &(s, d) in insets {
-                let (qx, qy) = (d[2] / s[2].max(1.0), d[3] / s[3].max(1.0));
-                let prog = self.use_filter(filter, qx, qy, ai.is_some(), vp);
-                let r = clip_rect(d[0], d[1], d[2], d[3], ww, wh);
-                glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
-                glUniform4f(prog.u_uv, s[0] / gw, s[1] / gh, (s[0] + s[2]) / gw, (s[1] + s[3]) / gh);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            }
-            return;
-        };
-        if l.background == Background::Stone {
-            self.draw_stone(vp, sx);
-            glBindTexture(GL_TEXTURE_2D, ai.unwrap_or(self.tex));
-        }
-        let prog = self.use_filter(filter, sx, sy, ai.is_some(), vp);
-        // Full-screen menu layout (s3_mods::menu_layout): background, then one quad per piece.
-        let (gw, gh) = (vp.game_w as f32, vp.game_h as f32);
-        let uv = |x: u16, y: u16, w: u16, h: u16| [x as f32 / gw, y as f32 / gh, (x + w) as f32 / gw, (y + h) as f32 / gh];
-        if let Background::Stretch([x, y, w, h]) = l.background {
-            let r = clip_rect(0.0, 0.0, ww, wh, ww, wh);
-            let t = uv(x, y, w, h);
-            glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
-            glUniform4f(prog.u_uv, t[0], t[1], t[2], t[3]);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
-        // Edge strips repeated over the bands above / below the canvas (main menu borders).
-        for (s, d) in s3_mods::menu_layout::band_quads(l, vp.win_w, vp.win_h) {
-            let r = clip_rect(d[0], d[1], d[2], d[3], ww, wh);
-            glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
-            glUniform4f(prog.u_uv, s[0] / gw, s[1] / gh, (s[0] + s[2]) / gw, (s[1] + s[3]) / gh);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
-        for p in l.pieces {
-            let [x, y, w, h] = p.src;
-            let r = clip_rect(vp.dst_x + p.at[0] as f32 * sx, vp.dst_y + p.at[1] as f32 * sy, w as f32 * sx, h as f32 * sy, ww, wh);
-            let t = uv(x, y, w, h);
-            glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
-            glUniform4f(prog.u_uv, t[0], t[1], t[2], t[3]);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
-    }
-
-    /// The generated stone texture over the whole window, one texel per game pixel, aligned to the layout's canvas
-    /// (same mapping as the CPU renderer `menu_layout::render_xrgb`).
-    unsafe fn draw_stone(&mut self, vp: &Viewport, s: f32) {
-        use s3_mods::stone::{tile_rgba, TILE};
-        if self.stex == 0 {
-            let mut t = 0;
-            glGenTextures(1, &mut t);
-            self.stex = t;
-            glBindTexture(GL_TEXTURE_2D, t);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            let px = tile_rgba();
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA as GLint, TILE as i32, TILE as i32, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.as_ptr() as *const c_void);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
-        } else {
-            glBindTexture(GL_TEXTURE_2D, self.stex);
-        }
-        let (ww, wh) = (vp.win_w as f32, vp.win_h as f32);
-        let span = s.max(0.01) * TILE as f32;
-        let (u0, v0) = (-vp.dst_x / span, -vp.dst_y / span);
-        glUseProgram(self.plain.id);
-        glUniform1i(self.plain.u_tex, 0);
-        let r = clip_rect(0.0, 0.0, ww, wh, ww, wh);
-        glUniform4f(self.plain.u_rect, r[0], r[1], r[2], r[3]);
-        glUniform4f(self.plain.u_uv, u0, v0, u0 + ww / span, v0 + wh / span);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 
     /// Swap; `false` if the surface is gone (re-attach needed).
@@ -550,63 +258,13 @@ impl Drop for Gles {
 
 // ---------------------------------------------------------------- the thread
 
-/// Frame sequence number held in the presenter's local buffer (only the render thread uses it).
-static LOCAL_SEQ: AtomicU64 = AtomicU64::new(u64::MAX);
-
-/// What to show: the game frame, the frame with the "engine stopped" panel, or a status screen.
-fn pick_image(shared: &Shared, local: &mut Option<FrameBuffer>, status_cache: &mut Option<(u64, FrameBuffer)>, frame_seq: &mut u64) -> (bool, u64) {
-    let status = shared.status.lock().unwrap().clone();
-    let mut slot = shared.frame.lock().unwrap();
-    *frame_seq = slot.seq;
-    let seq = slot.seq;
-    match &mut slot.fb {
-        Some(fb) => {
-            match local {
-                // A new frame of the same size: swap buffers with the slot instead of copying (perf-r2). The slot
-                // then holds an older frame, which the engine overwrites completely on its next present.
-                Some(l) if l.width == fb.width && l.height == fb.height => {
-                    if LOCAL_SEQ.swap(seq, Ordering::AcqRel) != seq {
-                        std::mem::swap(&mut l.pixels, &mut fb.pixels);
-                    }
-                }
-                _ => {
-                    *local = Some(fb.clone());
-                    LOCAL_SEQ.store(seq, Ordering::Release);
-                }
-            }
-            drop(slot);
-            if status.phase == Phase::Stopped {
-                screen::draw_panel(local.as_mut().unwrap(), &status.title, &status.body, true);
-            }
-            (true, status.seq)
-        }
-        None => {
-            drop(slot);
-            if status_cache.as_ref().map(|c| c.0) != Some(status.seq) {
-                let img = if status.phase == Phase::MissingExe {
-                    screen::first_run_screen(&status.title, &status.body)
-                } else {
-                    screen::status_screen(&status.title, &status.body)
-                };
-                *status_cache = Some((status.seq, img));
-            }
-            *local = Some(status_cache.as_ref().unwrap().1.clone());
-            (false, status.seq)
-        }
-    }
-}
-
 fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
     let mut gles: Option<Gles> = None;
     let mut gl_failed = false;
     let mut window: Option<NativeWindow> = None;
     let mut my_gen = 0u64;
     let mut win_size = (1u32, 1u32);
-    let mut local: Option<FrameBuffer> = None;
-    let mut status_cache: Option<(u64, FrameBuffer)> = None;
-    let mut shown = (u64::MAX, u64::MAX, u64::MAX, u64::MAX); // frame seq, status seq, display seq, layer seq
-    let mut raster = LayerRaster::new();
-    let mut layer_dirty: Option<(i32, i32, i32, i32)> = None;
+    let mut comp = Composer::new();
     let mut cpu_geometry: Option<(u32, u32)> = None;
     let mut fps_t0 = Instant::now();
     let mut fps_n = 0u32;
@@ -628,11 +286,10 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
             }
             window = w;
             cpu_geometry = None;
-            shown = (u64::MAX, u64::MAX, u64::MAX, u64::MAX);
             // New surface: re-upload the whole layer texture.
-            raster = LayerRaster::new();
-            if let Some(g) = gles.as_mut() {
-                g.ltex_size = (0, 0);
+            comp.reset();
+            if let Some(r) = gles.as_mut().and_then(|g| g.r.as_mut()) {
+                r.ltex_size = (0, 0);
             }
             requested_hz = None;
             if let Some(w) = &window {
@@ -672,22 +329,15 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
             continue;
         };
         // 2. Wait for something new.
-        let disp_seq = shared.display_seq.load(Ordering::Acquire);
-        {
-            let status_seq = shared.status.lock().unwrap().seq;
-            let layer_seq = shared.layer.seq().wrapping_add(shared.launcher_seq.load(Ordering::Acquire) << 32);
-            let g = shared.frame.lock().unwrap();
-            if g.seq == shown.0 && status_seq == shown.1 && disp_seq == shown.2 && layer_seq == shown.3 {
-                let _ = shared.frame_cv.wait_timeout(g, Duration::from_millis(250)).unwrap();
-                // Keep the display rate current while nothing new arrives (paused game, menus).
-                let el = fps_t0.elapsed();
-                if el >= Duration::from_secs(1) {
-                    shared.host_fps.store((fps_n as f32 / el.as_secs_f32()).to_bits(), Ordering::Relaxed);
-                    fps_n = 0;
-                    fps_t0 = Instant::now();
-                }
-                continue;
+        if !comp.wait_news(&shared, Duration::from_millis(250)) {
+            // Keep the display rate current while nothing new arrives (paused game, menus).
+            let el = fps_t0.elapsed();
+            if el >= Duration::from_secs(1) {
+                shared.host_fps.store((fps_n as f32 / el.as_secs_f32()).to_bits(), Ordering::Relaxed);
+                fps_n = 0;
+                fps_t0 = Instant::now();
             }
+            continue;
         }
         let display = *shared.display.lock().unwrap();
         let want_hz = if display.refresh_hz == 0 { 120 } else { display.refresh_hz };
@@ -695,57 +345,13 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
             request_frame_rate(&win, want_hz as f32);
             requested_hz = Some(want_hz);
         }
-        let mut frame_seq = 0;
-        let mut scene = shared.layer.latest();
-        let launcher_seq = shared.launcher_seq.load(Ordering::Acquire);
-        let launcher = shared.launcher.lock().unwrap().clone();
-        let launcher_on = launcher.is_some();
-        let (game_frame, status_seq) = match &launcher {
-            // Launcher (crate::launcher): its draw list covers the whole window; the frame below is a plain fill.
-            Some(_) => {
-                let mut fb = FrameBuffer::new(4, 4);
-                fb.pixels.fill(screen::rgb(14, 20, 34));
-                local = Some(fb);
-                LOCAL_SEQ.store(u64::MAX, Ordering::Release);
-                frame_seq = shared.frame.lock().unwrap().seq;
-                (false, shared.status.lock().unwrap().seq)
-            }
-            None => pick_image(&shared, &mut local, &mut status_cache, &mut frame_seq),
-        };
-        let fb = local.as_ref().unwrap();
-        shown = (frame_seq, status_seq, disp_seq, scene.seq.wrapping_add(launcher_seq << 32));
-        let panel = if game_frame { s3_mods::display::panel_for_frame(scene.panel, scene.frame, (fb.width, fb.height)) } else { None };
-        if let Some(l) = launcher {
-            scene.list = l;
-        }
-        // Window layer for this window size (a scene made for another size waits for the next one).
-        let layer_on = (game_frame || launcher_on) && !scene.list.is_empty();
+        let picked = comp.pick(&shared);
 
         if let Some(g) = gles.as_mut() {
             // GPU path.
             let sz = unsafe { g.size() };
             win_size = sz;
-            let mode = if game_frame { display.mode } else { DisplayMode::Fit };
-            let vp = Viewport::for_frame_split(mode, &fb.pixels, fb.width, fb.height, sz.0, sz.1, panel);
-            let layer_fits = layer_on && (scene.list.width, scene.list.height) == sz;
-            if layer_fits {
-                if let Some(d) = raster.update(&scene.list) {
-                    layer_dirty = Some(layer_dirty.map_or(d, |o| (o.0.min(d.0), o.1.min(d.1), o.2.max(d.2), o.3.max(d.3))));
-                }
-            }
-            unsafe {
-                g.upload(fb);
-                let insets = if layer_fits { scene.list.insets() } else { Vec::new() };
-                g.draw(&vp, if game_frame { display.filter } else { ScaleFilter::Linear }, &insets);
-                if layer_fits {
-                    g.upload_layer(&raster, layer_dirty.take());
-                    if !raster.is_empty() {
-                        g.draw_layer(sz.0, sz.1);
-                    }
-                }
-            }
-            shared.set_viewport(if game_frame { Some(vp) } else { None });
-            *shared.letterbox.lock().unwrap() = None;
+            unsafe { comp.draw_gl(&shared, g.r.as_mut().unwrap(), sz, &picked) };
             if !unsafe { g.swap() } {
                 // Surface lost: wait for the activity to give us a window again.
                 unsafe { g.detach() };
@@ -754,6 +360,7 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
             }
         } else {
             // CPU fallback: letterbox into the window buffer, the compositor scales (Fit only).
+            let fb = comp.local.as_ref().unwrap();
             let lb = Letterbox::new(fb.width, fb.height, win_size.0, win_size.1);
             if cpu_geometry != Some((lb.buf_w, lb.buf_h)) {
                 if let Err(e) = win.set_buffers_geometry(lb.buf_w as i32, lb.buf_h as i32, Some(HardwareBufferFormat::R5G6B5_UNORM)) {
@@ -770,15 +377,15 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
                     let dst = unsafe { std::slice::from_raw_parts_mut(guard.bits() as *mut u16, stride * bh) };
                     blit_letterboxed(&l, &fb.pixels, dst, stride, bh);
                     // Window layer, sampled down to the buffer the compositor scales to the window.
-                    if layer_on && (scene.list.width, scene.list.height) == win_size {
-                        raster.update(&scene.list);
-                        raster.blend_onto_rgb565_scaled(dst, stride, bw as u32, bh as u32);
+                    if picked.layer_on && (picked.scene.list.width, picked.scene.list.height) == win_size {
+                        comp.raster.update(&picked.scene.list);
+                        comp.raster.blend_onto_rgb565_scaled(dst, stride, bw as u32, bh as u32);
                     }
                 }
                 Err(e) => log::error!("ANativeWindow_lock: {e}"),
             }
             *shared.letterbox.lock().unwrap() = Some(lb);
-            shared.set_viewport(if game_frame { Some(Viewport::new(DisplayMode::Fit, fb.width, fb.height, win_size.0, win_size.1)) } else { None });
+            shared.set_viewport(if picked.game_frame { Some(Viewport::new(DisplayMode::Fit, fb.width, fb.height, win_size.0, win_size.1)) } else { None });
         }
         // 3. Display rate.
         fps_n += 1;
