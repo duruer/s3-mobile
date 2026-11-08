@@ -192,6 +192,9 @@ pub struct MobileHud {
     scale_pref: f32,
     fullscreen_map: bool,
     sheet: Sheet,
+    /// UI mode A: only the game menu dialogs (menu, save slots, quit confirm) are shown, over the Classic UI
+    /// (`HudShared::classic_menu`).
+    classic_dialog: bool,
     /// A save is running (slot) since this time: the save sheet shows "Saving..." until the result arrives.
     saving: Option<(u32, u64)>,
     /// Occupied save slot tapped once: (slot, until ms); a second tap overwrites it.
@@ -249,6 +252,7 @@ impl Default for MobileHud {
             scale_pref: 1.0,
             fullscreen_map: true,
             sheet: Sheet::None,
+            classic_dialog: false,
             saving: None,
             save_slots_drawn: false,
             overwrite: None,
@@ -899,15 +903,20 @@ impl MobileHud {
     fn draw_menu(&mut self, c: &mut Layer) {
         let bh = self.u(40.0);
         let gap = self.u(7.0);
-        let inner = self.dialog(c, 4, "Game menu");
+        let inner = self.dialog(c, if self.classic_dialog { 3 } else { 4 }, "Game menu");
         let full = Rect::new(inner.x, inner.y, inner.w, bh);
         let half = (inner.w - gap) / 2;
         let row = |i: i32| inner.y + i * (bh + gap);
         self.button(c, Rect { y: row(0), ..full }, "Resume", BTN_ACTIVE, Action::MenuResume);
         self.button(c, Rect::new(inner.x, row(1), half, bh), "Save game", BTN_BG, Action::MenuSave);
         self.button(c, Rect::new(inner.x + half + gap, row(1), half, bh), "Pause", BTN_BG, Action::MenuPause);
-        self.button(c, Rect { y: row(2), ..full }, "Settings...", BTN_BG, Action::MenuSettings);
-        self.button(c, Rect { y: row(3), ..full }, "Quit game", BTN_DANGER, Action::MenuQuit);
+        if self.classic_dialog {
+            // UI mode A has its own settings column (floating Menu).
+            self.button(c, Rect { y: row(2), ..full }, "Quit game", BTN_DANGER, Action::MenuQuit);
+        } else {
+            self.button(c, Rect { y: row(2), ..full }, "Settings...", BTN_BG, Action::MenuSettings);
+            self.button(c, Rect { y: row(3), ..full }, "Quit game", BTN_DANGER, Action::MenuQuit);
+        }
     }
 
     /// "Quit this game?" with Yes / No (No goes back to the game menu).
@@ -1373,8 +1382,23 @@ impl Mod for MobileHud {
         }
         self.scale_pref = scale;
         if !self.active {
-            self.sync_layout(m);
-            return;
+            let req = std::mem::take(&mut m.state::<HudShared>().borrow_mut().classic_menu);
+            if req {
+                self.classic_dialog = true;
+                self.sheet = Sheet::Menu;
+                self.dirty = true;
+            }
+            if self.classic_dialog && !matches!(self.sheet, Sheet::Menu | Sheet::Save | Sheet::QuitConfirm) {
+                self.classic_dialog = false;
+                self.sheet = Sheet::None;
+                self.dirty = true;
+            }
+            if !self.classic_dialog {
+                self.sync_layout(m);
+                return;
+            }
+        } else {
+            self.classic_dialog = false;
         }
         let (last_panel, hooked) = {
             let st = m.state::<HudShared>();
@@ -1451,16 +1475,18 @@ impl Mod for MobileHud {
                 self.dirty = true;
             }
         }
-        self.harvest_tick(m);
+        if self.active {
+            self.harvest_tick(m);
+        }
         self.sync_layout(m);
     }
 
     fn wants_draw(&self) -> bool {
-        self.active && self.in_game
+        (self.active || self.classic_dialog) && self.in_game
     }
 
     fn needs_redraw(&self) -> bool {
-        self.active && self.dirty
+        (self.active || self.classic_dialog) && self.dirty
     }
 
     fn draw_window(&mut self, m: &mut Machine, c: &mut Layer, frame: &FrameBuffer) {
@@ -1471,6 +1497,17 @@ impl Mod for MobileHud {
         self.targets.clear();
         self.mini_geom = None;
         self.map_geom = None;
+        if self.classic_dialog && !self.active && self.in_game {
+            // UI mode A: only the game menu dialogs, over the Classic UI.
+            match self.sheet {
+                Sheet::Menu => self.draw_menu(c),
+                Sheet::QuitConfirm => self.draw_quit_confirm(c),
+                Sheet::Save => self.draw_save_sheet(m, c),
+                _ => {}
+            }
+            self.draw_toast(c);
+            return;
+        }
         if !self.active || !self.in_game {
             return;
         }
@@ -1526,7 +1563,7 @@ impl Mod for MobileHud {
     }
 
     fn on_touch(&mut self, m: &mut Machine, ev: &TouchEvent) -> ModEvent {
-        if !self.active || !self.in_game {
+        if !(self.active || self.classic_dialog) || !self.in_game {
             return ModEvent::Pass;
         }
         // HUD elements live in window pixels.
@@ -1614,7 +1651,7 @@ impl Mod for MobileHud {
 
     fn on_key(&mut self, _m: &mut Machine, vk: u32, down: bool) -> ModEvent {
         // Back (Android) / Esc closes the full-screen map, the settings page (back to the menu) or a sheet.
-        if vk != 0x1b || !self.active || !self.in_game {
+        if vk != 0x1b || !(self.active || self.classic_dialog) || !self.in_game {
             return ModEvent::Pass;
         }
         let next = match self.sheet {

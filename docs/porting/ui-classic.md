@@ -103,7 +103,7 @@ while fast). The fast speed (2x..8x) is chosen with "Fast speed: Nx" in the menu
 ## Menu column and game time
 
 The floating Menu button opens only our button column (Save / Quit, Game time, Fast speed, UI mode, FPS, filter,
-screen, zoom); "Save / Quit" opens the game's own menu page. The game time (`crate::game_time`, `h:mm:ss` from the
+screen, zoom); "Save / Quit" opens the Mobile HUD's game menu dialog (Resume / Save game / Pause / Quit game with its own confirm; `ui_hud` `classic_dialog`), not the original panel page. The game time (`crate::game_time`, `h:mm:ss` from the
 game clock) is shown top centre of the map part (the selection chip sits top left), on by default.
 
 ## Unit orders and group buttons (2026-11-08)

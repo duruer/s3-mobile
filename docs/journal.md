@@ -3,6 +3,14 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — Classic "Save / Quit" opens the HUD game menu dialog
+
+- UI mode A's "Save / Quit" (floating menu column) no longer opens the original panel page 7: it sets
+  `HudShared::classic_menu`, and `MobileHud` (inactive in mode A) shows only its game menu dialogs over the Classic
+  UI (`classic_dialog`: Resume / Save game (8 native slots) / Pause / Quit game -> "Quit this game?" Yes / No; no
+  Settings row, mode A has its own column). Verified desktop 2316x904: menu, save slots, quit confirm, Yes -> the
+  statistics screen.
+
 ## 2026-11-08 — Group buttons fixed on screen
 
 - Same for the Classic floating buttons (Menu, speed, menu column, chip): `ui_classic` keeps the last matching layout

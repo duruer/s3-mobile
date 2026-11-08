@@ -693,11 +693,12 @@ impl Mod for ClassicTouch {
                                     return ModEvent::Consumed;
                                 }
                                 FloatBtn::GameMenu => {
+                                    // The Mobile HUD's game menu dialog (Resume / Save / Pause / Quit with its
+                                    // own confirm), not the original panel's page 7 (user request 2026-11-08).
                                     self.float_open = false;
-                                    if self.view.panel.page == 7 {
-                                        return ModEvent::Consumed;
-                                    }
-                                    Action::OpenMenu
+                                    m.state::<crate::ui_hud_game::HudShared>().borrow_mut().classic_menu = true;
+                                    self.dirty = true;
+                                    return ModEvent::Consumed;
                                 }
                                 FloatBtn::HudMode => {
                                     // Close the menu page, then hand over to mode B (settings are saved).

@@ -219,6 +219,9 @@ pub const HARVEST_MIN_H: u32 = 480;
 pub struct HudShared {
     /// The hooks are installed (GOG exe and patches enabled).
     pub hooked: bool,
+    /// UI mode A asks for the HUD's game menu dialog (Resume / Save / Pause / Quit) instead of the original panel's
+    /// Save / Quit page (user request 2026-11-08). Taken by `ui_hud::MobileHud::tick`.
+    pub classic_menu: bool,
     /// The HUD is reading building icons from the game's panel: the zoom keeps the render size at least
     /// [`HARVEST_MIN_H`] high meanwhile (the panel art needs it; `crate::zoom::target_size`).
     pub harvesting: bool,
