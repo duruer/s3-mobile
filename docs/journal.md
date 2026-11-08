@@ -17,6 +17,23 @@ Newest first. One entry per session: what was done, what was learned, links to d
   new "Save / Quit" button in that column (user report: Menu looked like it had pressed Save / Quit too).
   Verified desktop 2316x904 / 2176x1812.
 
+## 2026-11-08 — Background play: game keeps running, notifications (android-background)
+
+- In a game, `Pause` no longer stops the engine. A foreground service (`GameService`, the app's first Java class,
+  javac + d8 in `build-apk.sh`, `hasCode=true`, type `specialUse`, partial wake lock) shows "Settlers III — running"
+  with a chronometer of the game time (`[0x7dfd48]` * 64 ms; re-synced on more than 3 s drift). New game message
+  lines (`s3_mods::messages::take_new_lines`) become "Game events" notifications (max one per 4 s, up to 6 lines,
+  word-wrapped lines joined). In the background: sound muted, 10 fps. Menus pause as before; after 5 s out of a game
+  in the background the engine pauses too. → [android](porting/android.md#background-play-2026-11-08)
+- Verified on the Galaxy Z Fold4 (cover screen, Android 14): POST_NOTIFICATIONS asked at first start (granted);
+  tutorial -> Home: `bgservice: start ok`, `dumpsys activity services`: `isForeground=true types=40000000`, the
+  ongoing notification showed "Settlers III — running 00:58" after about 45 s (13 s game time at start); tap on it ->
+  app resumes, `back in the foreground (game time 80 s)` after 67 s wall, service gone. Tutorial "Next" then Home:
+  notification "Settlers III — 2 messages" ("To help you on your mission, ..." / "Please press F1 ... greater
+  detail."). Screen off (Dozing): game time 18 -> 98 s in 80 s wall (`engine: ... game time N s (background)`),
+  100 presents per 10 s, wake lock `s3port:game` held. Not yet exercised: drift re-sync at fast speed, the
+  5 s out-of-game pause, swipe-away from recents.
+
 ## 2026-11-08 — Fast speed up to 8x, speed button toggles
 
 - `speed.rs`: the speed button now switches normal <-> a chosen fast speed (`Settings::fast_speed`, 2x..8x,

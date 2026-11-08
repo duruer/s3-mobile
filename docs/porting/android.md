@@ -218,7 +218,11 @@ Parts:
 - Build: `build-apk.sh` step 3 `javac --release 11 -classpath android.jar` + `d8 --release --min-api 26` ->
   `classes.dex` in the APK (JDK 25 on the dev PC works).
 
-Verification on the phone: see the journal entry 2026-11-08 "Background play".
+Verified on the Galaxy Z Fold4 (2026-11-08, journal "Background play"): service foreground (`dumpsys activity
+services`: `isForeground=true`), chronometer notification, tap returns to the game, message notification from the
+tutorial, game time keeps advancing with the screen off (1 s game per 1 s wall at 1x). Not yet exercised: drift
+re-sync at fast speed, the 5 s out-of-game pause, swipe-away. The engine's 10 s log line shows
+`game time N s (background)`. Screenshots (local only): `scratch/android-shots/bg/`.
 
 ## Foldables, resizing (2026-11-08)
 

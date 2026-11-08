@@ -503,11 +503,20 @@ fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
             last_report = Instant::now();
             let s = &engine.machine.stats;
             log::info!(
-                "engine: {} instructions, {} thunk calls, {} presents, {} input events delivered",
+                "engine: {} instructions, {} thunk calls, {} presents, {} input events delivered{}",
                 s.instructions,
                 s.thunk_calls,
                 s.presents,
-                shared.delivered.load(Ordering::Relaxed)
+                shared.delivered.load(Ordering::Relaxed),
+                if shared.in_game.load(Ordering::Acquire) {
+                    format!(
+                        ", game time {} s{}",
+                        shared.game_ms.load(Ordering::Acquire) / 1000,
+                        if shared.background.load(Ordering::Acquire) { " (background)" } else { "" }
+                    )
+                } else {
+                    String::new()
+                }
             );
         }
     }

@@ -112,12 +112,20 @@ pub fn install(m: &mut Machine) {
             let s = read_snapshot(c.m, snap);
             let mut cur = sh.shown.lock().unwrap();
             // A text not shown in the previous frame is a new message (an expired one coming back counts again).
-            let fresh: Vec<String> = s
-                .lines
-                .iter()
-                .filter(|l| !cur.lines.iter().any(|p| p.text == l.text))
-                .map(|l| l.text.clone())
-                .collect();
+            // Oldest first (slot 0 is the newest, bottom line); a long message is word-wrapped over several
+            // lines, so a new line without sentence end is joined with the next new one.
+            let mut fresh: Vec<String> = Vec::new();
+            let mut open = false;
+            for l in s.lines.iter().rev().filter(|l| !cur.lines.iter().any(|p| p.text == l.text)) {
+                match fresh.last_mut() {
+                    Some(last) if open => {
+                        last.push(' ');
+                        last.push_str(&l.text);
+                    }
+                    _ => fresh.push(l.text.clone()),
+                }
+                open = !l.text.ends_with(['.', '!', '?', ':']);
+            }
             *cur = s;
             drop(cur);
             if !fresh.is_empty() {
