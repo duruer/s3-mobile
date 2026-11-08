@@ -395,13 +395,50 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
 #[derive(Default)]
 pub struct ZoomMod {
     last: (Option<(u32, u32)>, Option<(u32, u32)>),
+    /// Since when no game frame was rendered (ms; 0 = in game).
+    out_since: u64,
+    /// The start zoom was set for the next game.
+    start_zoom_set: bool,
+}
+
+/// Time outside a game (no game frame) before the start zoom is set: longer than any zoom step's pause.
+const START_ZOOM_AFTER_MS: u64 = 3000;
+
+/// Size of a starting territory (castle area incl. its border) in game pixels, with a small margin; measured on
+/// the random 384 maps (border about 1130 x 800 px).
+const START_AREA: (f32, f32) = (1250.0, 850.0);
+
+/// Render height that shows the whole start area: the Mobile HUD's bars take ~15 % of the height, the Classic
+/// panel ~12 % of the width.
+pub fn start_height(m: &mut Machine) -> u32 {
+    let a = aspect(m);
+    let map_w = if classic_split_window(m).is_some() { 0.88 } else { 1.0 };
+    let h = (START_AREA.1 / 0.85).max(START_AREA.0 / (a * map_w));
+    (((h / 8.0).round() as u32) * 8).clamp(res::MIN_H, res::MAX_H)
 }
 
 impl crate::Mod for ZoomMod {
     fn name(&self) -> &str {
         "zoom"
     }
-    fn tick(&mut self, m: &mut Machine, _now: u64) {
+    fn tick(&mut self, m: &mut Machine, now: u64) {
+        // Outside a game (menus) for a while: the next game starts at the zoom that shows the whole start area,
+        // not at the last zoom of the previous game (user request 2026-11-08). The game centres the camera on
+        // the castle itself (res switch hook, anchor centre).
+        if res::in_game(m) {
+            self.out_since = 0;
+            self.start_zoom_set = false;
+        } else if self.out_since == 0 {
+            self.out_since = now.max(1);
+        } else if !self.start_zoom_set && now.saturating_sub(self.out_since) >= START_ZOOM_AFTER_MS && enabled(m) {
+            self.start_zoom_set = true;
+            let h = start_height(m);
+            let ml = min_level(m);
+            let st = m.state::<crate::ModsState>();
+            let mut s = st.borrow_mut();
+            s.settings.res.zoom_height = Some(h);
+            s.settings.res.zoom_level = nearest_level(h, ml);
+        }
         let t = target_size(m);
         let mode = mode_size(m);
         if (t, mode) != self.last {

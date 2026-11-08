@@ -2,6 +2,12 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Start zoom shows the whole start territory
+
+- Games started at the previous game's zoom. Now the zoom is reset in the menus to `zoom::start_height` (start
+  territory 1250 x 850 game px fits, per window aspect and UI mode). Verified desktop (2316x904, 2176x1812) and on
+  the phone (inner screen, Classic): the red border is fully visible, castle centred.
+
 ## 2026-11-08 — Zoom on near-square screens: no bars
 
 - Fold4 inner screen (1.2:1) zoomed far in showed black bars above and below: the zoom size at 200 px height was

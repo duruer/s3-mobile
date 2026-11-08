@@ -29,6 +29,13 @@ pinch hook in `touch.rs`. RE details: [game-state-ui.md](../reverse-engineering/
 | Persisted | `mods-settings.json` `"res": {"enabled": true, "zoom_level": 6}`; `enabled: false` = the game's own sizes (F1-F3 work again) |
 | Mode A minimum | 200 with the panel split (`NativeWide`): below 480 the frame stays 480 high (the panel art needs it) and the map part is cropped, `zoom::classic_crop` / `PanelSplit::crop_h` (2026-11-08; same map pixels as a smaller render, and instant). Without the split (Fit etc.) 480, levels 0-6 skipped |
 
+**Start zoom (2026-11-08).** A new or loaded game no longer starts at the last game's zoom: after 3 s without a
+game frame (menus), `ZoomMod` sets the in-memory zoom height to `zoom::start_height` = the height that shows the
+whole start territory (`START_AREA` 1250 x 850 game px, measured border ~1130 x 800 on random 384 maps; Mobile HUD
+bars ~15 % of the height, Classic panel ~12 % of the width), so the first game frame already uses it; the game
+centres the camera on the castle. Pinching afterwards works as before (and is saved). Fold4 cover: 2560x1000,
+inner screen: 1248x1040 (VERIFIED desktop + phone: border fully visible).
+
 Panel at custom sizes: the panel art, minimap and panel button grid of the largest original layout whose height
 fits ("variant": < 600 -> 640x480 art, < 768 -> 800x600 art, else 1024x768 art); the map view takes the rest of the
 width. Below the panel art (heights between the variants) the area stays black. **UI mode A uses the 640x480
