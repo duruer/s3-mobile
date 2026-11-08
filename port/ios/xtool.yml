@@ -1,3 +1,4 @@
 version: 1
 bundleID: com.settlers3port.app
 infoPath: Info.plist
+iconPath: Resources/AppIcon.png

@@ -38,6 +38,9 @@ pub struct S3Out {
     pub in_game: u8,
     /// Vibrate this long (ms, 0 = no).
     pub haptic_ms: u32,
+    /// Game folder: 1 = show the folder picker, 2 = forget the picked folder (use the app's own folder); the shell
+    /// answers with [`s3ios_set_game_dir`].
+    pub pick_folder: u8,
 }
 
 /// Frontend state owned by the shell (one per process).
@@ -61,6 +64,7 @@ pub struct App {
     gl_failed: bool,
     comp: Composer,
     keyboard: u8,
+    pick_folder: u8,
     quit: bool,
     fps_t0: Instant,
     fps_n: u32,
@@ -130,8 +134,10 @@ impl App {
         log::info!("Settlers 3 Mobile {} (iOS) starting; game dir {}, data dir {}", env!("CARGO_PKG_VERSION"), game_dir.display(), data_dir.display());
         // The audio unit pulls from the ring from the start (silence until the engine plays something).
         shared.audio.running.store(true, Ordering::Release);
+        let mut launcher = Launcher::new(game_dir, data_dir.clone());
+        launcher.folder_picker = Some(false);
         App {
-            launcher: Launcher::new(game_dir, data_dir.clone()),
+            launcher,
             shared,
             woken,
             data_dir,
@@ -148,6 +154,7 @@ impl App {
             gl_failed: false,
             comp: Composer::new(),
             keyboard: 0,
+            pick_folder: 0,
             quit: false,
             fps_t0: Instant::now(),
             fps_n: 0,
@@ -209,6 +216,8 @@ impl App {
                     Request::Play if self.engine_thread.is_none() => self.start_engine(),
                     Request::Play => {}
                     Request::Keyboard(show) => self.keyboard = if show { 1 } else { 2 },
+                    Request::PickFolder => self.pick_folder = 1,
+                    Request::UseAppFolder => self.pick_folder = 2,
                     Request::Quit => {
                         self.launcher.stop_upload();
                         self.quit = true;
@@ -234,6 +243,7 @@ impl App {
         let buzz = std::mem::take(&mut *self.shared.haptic.lock().unwrap());
         out.haptic_ms = buzz.iter().copied().max().unwrap_or(0);
         out.keyboard = std::mem::take(&mut self.keyboard);
+        out.pick_folder = std::mem::take(&mut self.pick_folder);
         out.quit = self.quit as u8;
         out.in_game = !self.in_launcher as u8;
         self.woken.store(false, Ordering::Release);
@@ -490,6 +500,26 @@ pub unsafe extern "C" fn s3ios_char(app: *mut App, c: u32) {
     } else {
         app.shared.push_event(HostEvent::Char(if c == 10 { 13 } else { c }));
     }
+}
+
+/// Use `dir` as the game folder: a folder the user picked (`external` = 1, security-scoped access already started by
+/// the shell) or the app's own one (0). Ignored while a game runs.
+///
+/// # Safety
+/// `app` comes from [`s3ios_create`]; `dir` is a NUL-terminated UTF-8 path.
+#[no_mangle]
+pub unsafe extern "C" fn s3ios_set_game_dir(app: *mut App, dir: *const c_char, external: u8) {
+    let app = &mut *app;
+    if !app.in_launcher {
+        log::warn!("set_game_dir while a game runs: ignored");
+        return;
+    }
+    let d = path_arg(dir);
+    if external == 0 {
+        let _ = std::fs::create_dir_all(&d);
+    }
+    app.launcher.set_game_dir(d, external != 0);
+    app.launcher_dirty = true;
 }
 
 /// App goes to the background (`background` = 1) or comes back (0).

@@ -35,7 +35,16 @@ AI filter falls back to sharp bilinear on iOS.
 - Background: scene phase not active -> `s3ios_set_background(1)`: the game pauses (no background play on iOS yet:
   iOS stops apps without a background mode), audio engine paused.
 - Files: `Documents/Settlers3/` = game dir (Files app "On My iPhone > Settlers 3 Mobile", `UIFileSharingEnabled`,
-  or the launcher's upload server), `Documents/Data/` = settings + `log.txt` of the last run.
+  or the launcher's upload server), `Documents/Data/` = settings + `log.txt` of the last run. Both are deleted with
+  the app (re-signing after 7 days keeps them).
+- Game folder outside the app: launcher > Game files > "Choose game folder..." opens `UIDocumentPickerViewController`
+  for a folder; `Core.usePickedFolder` starts security-scoped access, stores a bookmark in UserDefaults
+  (`gameFolderBookmark`) and calls `s3ios_set_game_dir(..., 1)`; restored at every start. "Use app folder" forgets
+  it. Such a folder (e.g. On My iPhone/Settlers3) survives deleting the app. Avoid iCloud Drive (files can be
+  evicted). `S3Out.pick_folder` carries the launcher's `Request::PickFolder` / `UseAppFolder`.
+- Pushing the game files from a PC: `python3 -P tools/upload_game_files.py <game folder> "<URL shown on the phone>"`
+  (8 parallel connections, skips files already there): 1.6 GB in ~2 min at ~17 MB/s. A curl-per-file loop managed
+  only a few files per second (process start + 2 requests per file, 1673 mostly small files).
 
 ## Setup (once, in WSL Ubuntu 26.04 aarch64)
 

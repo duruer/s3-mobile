@@ -19,6 +19,7 @@ typedef struct S3Out {
     uint8_t quit;      /* the launcher's Quit was tapped */
     uint8_t in_game;   /* the game runs (not the launcher) */
     uint32_t haptic_ms; /* vibrate (0 = no) */
+    uint8_t pick_folder; /* game folder: 1 show the folder picker, 2 use the app's own folder again */
 } S3Out;
 
 /* game_dir: the user's Settlers III files (Documents/Settlers3); data_dir: settings, logs (Documents/Data). */
@@ -40,6 +41,8 @@ void s3ios_text(S3App *app, uint32_t c);
 void s3ios_key(S3App *app, uint32_t vk, uint8_t down);
 /* Character a hardware key produced (after s3ios_key): WM_CHAR only. */
 void s3ios_char(S3App *app, uint32_t c);
+/* Game folder: a folder the user picked (external = 1, security-scoped access started) or the app's own (0). */
+void s3ios_set_game_dir(S3App *app, const char *dir, uint8_t external);
 /* 1 = the app goes to the background (the game pauses), 0 = back in the foreground. */
 void s3ios_set_background(S3App *app, uint8_t background);
 

@@ -47,6 +47,10 @@ pub enum Request {
     Play,
     Keyboard(bool),
     Quit,
+    /// iOS: show the system folder picker; the shell then calls [`Launcher::set_game_dir`].
+    PickFolder,
+    /// iOS: forget the picked folder and use the app's own one again.
+    UseAppFolder,
 }
 
 /// Finger phase (primary pointer only).
@@ -81,6 +85,8 @@ enum Act {
     Hud(i32),
     EditRelay,
     RelayDefault,
+    PickFolder,
+    AppFolder,
     None,
 }
 
@@ -155,6 +161,9 @@ pub struct Launcher {
     pub message: Option<(String, bool)>,
     /// Display refresh rate (adds it to the FPS limit choices like the in-game menu).
     pub refresh_hz: u32,
+    /// Platform folder picker (iOS): `None` = not available (Android); `Some(false)` = the app's own game folder
+    /// is used, `Some(true)` = a folder the user picked outside the app (it survives deleting the app).
+    pub folder_picker: Option<bool>,
     scroll: i32,
     max_scroll: i32,
     hits: Vec<(Rect, Act)>,
@@ -188,6 +197,7 @@ impl Launcher {
             files: FilesInfo::default(),
             message: None,
             refresh_hz: 0,
+            folder_picker: None,
             scroll: 0,
             max_scroll: 0,
             hits: Vec::new(),
@@ -207,6 +217,18 @@ impl Launcher {
 
     pub fn game_dir(&self) -> &Path {
         &self.game_dir
+    }
+
+    /// Use another game folder (iOS folder picker): stops the upload server (it serves the old folder).
+    pub fn set_game_dir(&mut self, dir: PathBuf, external: bool) {
+        log::info!("launcher: game dir {} ({})", dir.display(), if external { "picked folder" } else { "app folder" });
+        self.stop_upload();
+        self.game_dir = dir;
+        if self.folder_picker.is_some() {
+            self.folder_picker = Some(external);
+        }
+        self.files.key = None;
+        self.recheck();
     }
 
     pub fn ready(&self) -> bool {
@@ -354,6 +376,8 @@ impl Launcher {
                 self.recheck();
                 return None;
             }
+            Act::PickFolder => return Some(Request::PickFolder),
+            Act::AppFolder => return Some(Request::UseAppFolder),
             Act::EditRelay => {
                 self.editing = true;
                 return Some(Request::Keyboard(true));
@@ -745,6 +769,25 @@ impl Launcher {
         let (rx, ry) = if wide { (m + bw + gap, yy) } else { (m, yy + bh + gap) };
         self.button(c, Rect::new(rx, ry, bw, bh), "Check again", BTN, Act::Recheck, k);
         yy = ry + bh + gap;
+        if let Some(external) = self.folder_picker {
+            // iOS: the game can run from a folder outside the app (kept when the app is deleted).
+            self.button(c, Rect::new(m, yy, bw, bh), "Choose game folder...", BTN, Act::PickFolder, k);
+            let (ax, ay) = if wide { (m + bw + gap, yy) } else { (m, yy + bh + gap) };
+            if external {
+                self.button(c, Rect::new(ax, ay, bw, bh), "Use app folder", BTN, Act::AppFolder, k);
+                yy = ay + bh + gap;
+            } else {
+                yy += bh + gap;
+            }
+            let t = if external {
+                format!("Game folder (picked): {}", self.game_dir.display())
+            } else {
+                "Game folder: the app's own folder (Files app: On My iPhone > Settlers 3 Mobile > Settlers3). It is \
+                 deleted with the app; choose a folder of your own to keep the files."
+                    .to_string()
+            };
+            yy = Self::para(c, m, yy, w - 2 * m, 13.0 * k, Weight::Regular, DIM, &t) + gap;
+        }
         if let Some(e) = &self.server_err {
             yy = Self::para(c, m, yy, w - 2 * m, 14.0 * k, Weight::Regular, BAD, e) + gap;
         }
@@ -782,11 +825,18 @@ impl Launcher {
             yy += gap;
         }
         yy = Self::para(c, m, yy + d(6.0), w - 2 * m, 15.0 * k, Weight::Bold, TEXT, "Other ways") + d(2.0);
-        let adb = format!(
-            "From a PC with adb: adb push \"<Settlers III folder>/.\" /sdcard/{}\nOr copy the folder over USB (MTP) into {}. Files already there are kept; the upload overwrites files with the same name.",
-            user_visible_path(&self.game_dir),
-            user_visible_path(&self.game_dir)
-        );
+        let adb = if self.folder_picker.is_some() {
+            "Files app: copy the contents of your Settlers III folder (S3.EXE, GFX, SND, Map, ...) into the game \
+             folder, e.g. from a USB drive, a zip or iCloud Drive. Files already there are kept; the upload overwrites \
+             files with the same name."
+                .to_string()
+        } else {
+            format!(
+                "From a PC with adb: adb push \"<Settlers III folder>/.\" /sdcard/{}\nOr copy the folder over USB (MTP) into {}. Files already there are kept; the upload overwrites files with the same name.",
+                user_visible_path(&self.game_dir),
+                user_visible_path(&self.game_dir)
+            )
+        };
         let mut yy2 = yy;
         for l in adb.split('\n') {
             yy2 = Self::para(c, m, yy2, w - 2 * m, 13.0 * k, Weight::Regular, DIM, l) + d(4.0);

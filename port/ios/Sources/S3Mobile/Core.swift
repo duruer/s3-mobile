@@ -11,8 +11,14 @@ final class Core {
     let app: OpaquePointer
     let audio = AudioOut()
     private var background = false
+    /// The app's own game folder.
+    let appGameDir: URL
+    /// A folder the user picked in the Files picker (outside the app, kept when the app is deleted), with its
+    /// security-scoped access running.
+    private var picked: URL?
+    private static let bookmarkKey = "gameFolderBookmark"
 
-    /// Documents/Settlers3: the user's Settlers III files (Files app, upload server).
+    /// Documents/Settlers3: the user's Settlers III files (Files app, upload server), unless a folder was picked.
     /// Documents/Data: settings, logs (log.txt of the last run).
     private init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -20,8 +26,48 @@ final class Core {
         let data = docs.appendingPathComponent("Data", isDirectory: true)
         try? FileManager.default.createDirectory(at: game, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        appGameDir = game
         app = s3ios_create(game.path, data.path)
         audio.start(ring: s3ios_audio_handle(app))
+        restorePickedFolder()
+    }
+
+    /// Re-open the folder picked in an earlier run (its bookmark).
+    private func restorePickedFolder() {
+        guard let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else { return }
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale),
+              url.startAccessingSecurityScopedResource() else {
+            NSLog("s3: picked game folder no longer accessible; using the app folder")
+            return
+        }
+        if stale, let fresh = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+            UserDefaults.standard.set(fresh, forKey: Self.bookmarkKey)
+        }
+        picked = url
+        s3ios_set_game_dir(app, url.path, 1)
+    }
+
+    /// The user picked `url` in the folder picker: keep access (bookmark) and use it as the game folder.
+    func usePickedFolder(_ url: URL) {
+        guard url.startAccessingSecurityScopedResource() else {
+            NSLog("s3: no access to the picked folder \(url.path)")
+            return
+        }
+        picked?.stopAccessingSecurityScopedResource()
+        picked = url
+        if let data = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+            UserDefaults.standard.set(data, forKey: Self.bookmarkKey)
+        }
+        s3ios_set_game_dir(app, url.path, 1)
+    }
+
+    /// Back to the app's own game folder.
+    func useAppFolder() {
+        picked?.stopAccessingSecurityScopedResource()
+        picked = nil
+        UserDefaults.standard.removeObject(forKey: Self.bookmarkKey)
+        s3ios_set_game_dir(app, appGameDir.path, 0)
     }
 
     func setBackground(_ bg: Bool) {

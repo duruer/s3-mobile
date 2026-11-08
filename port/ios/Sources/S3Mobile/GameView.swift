@@ -4,8 +4,9 @@
 import CS3iOS
 import GLKit
 import UIKit
+import UniformTypeIdentifiers
 
-final class GameView: GLKView, UIKeyInput {
+final class GameView: GLKView, UIKeyInput, UIDocumentPickerDelegate {
     private var link: CADisplayLink?
     /// Fingers down, in touch order: (touch, id).
     private var fingers: [(UITouch, Int32)] = []
@@ -66,8 +67,30 @@ final class GameView: GLKView, UIKeyInput {
         default: break
         }
         UIApplication.shared.isIdleTimerDisabled = out.in_game != 0
+        switch out.pick_folder {
+        case 1: showFolderPicker()
+        case 2: Core.shared.useAppFolder()
+        default: break
+        }
         if out.quit != 0 {
             exit(0)
+        }
+    }
+
+    // MARK: game folder picker
+
+    private func showFolderPicker() {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        var vc = window?.rootViewController
+        while let p = vc?.presentedViewController { vc = p }
+        vc?.present(picker, animated: true)
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        if let url = urls.first {
+            Core.shared.usePickedFolder(url)
         }
     }
 

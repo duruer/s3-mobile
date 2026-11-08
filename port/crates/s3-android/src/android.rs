@@ -540,6 +540,8 @@ fn android_main(app: AndroidApp) {
                             u.soft_keyboard(Some(show), kb_visible.clone());
                         }
                     }
+                    // iOS only (folder picker).
+                    Request::PickFolder | Request::UseAppFolder => {}
                     Request::Quit => {
                         finishing = true;
                         launcher.stop_upload();
