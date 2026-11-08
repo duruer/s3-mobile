@@ -7,6 +7,10 @@
 //!   sharp bilinear shader); `eglSwapBuffers` with swap interval 1
 //!   paces it to the display (60/90/120 Hz). It requests the panel's high refresh rate with
 //!   `ANativeWindow_setFrameRate[WithChangeStrategy]` (looked up with dlsym: API 30/31).
+//! - The mods' window layer (`s3_mods::layer`: HUD, FPS counter, touch feedback, Classic floating UI at window
+//!   resolution) is rasterized here ([`LayerRaster`], only the changed rectangle), uploaded as a second RGBA texture
+//!   (only the changed rows) and blended over the game quad (premultiplied alpha). In UI mode A the scene's panel
+//!   split draws the panel part of the frame at its own scale ([`Viewport::quads`]).
 //! - If EGL / GLES fails, it falls back to the old CPU path (`ANativeWindow_lock`, letterbox, compositor scaling).
 //! - Window changes come from the activity thread through [`Presenter::set_window`]; losing the window waits until
 //!   the EGL surface is destroyed (Android requires that before `onNativeWindowDestroyed` returns).
@@ -20,6 +24,7 @@ use ndk::hardware_buffer_format::HardwareBufferFormat;
 use ndk::native_window::NativeWindow;
 use s3_mods::display::{DisplayMode, ScaleFilter, Viewport};
 use s3_mods::menu_layout::Background;
+use s3_mods::LayerRaster;
 use s3_runtime::FrameBuffer;
 
 use crate::frontend::{Phase, Shared};
@@ -139,6 +144,9 @@ struct Gles {
     tex: GLuint,
     tex_size: (u32, u32),
     tex_filter: GLint,
+    /// Window layer texture (RGBA8, premultiplied) and its size.
+    ltex: GLuint,
+    ltex_size: (u32, u32),
 }
 
 impl Gles {
@@ -186,6 +194,8 @@ impl Gles {
             tex: 0,
             tex_size: (0, 0),
             tex_filter: -1,
+            ltex: 0,
+            ltex_size: (0, 0),
         })
     }
 
@@ -215,6 +225,15 @@ impl Gles {
             glBindTexture(GL_TEXTURE_2D, t);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            let mut lt = 0;
+            glGenTextures(1, &mut lt);
+            self.ltex = lt;
+            glBindTexture(GL_TEXTURE_2D, lt);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glBindTexture(GL_TEXTURE_2D, t);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
             glDisable(GL_DITHER);
             glEnableVertexAttribArray(0);
@@ -250,6 +269,43 @@ impl Gles {
         }
     }
 
+    /// Bring the layer texture up to date: whole texture after a size change, else only the rows of `dirty`.
+    unsafe fn upload_layer(&mut self, r: &LayerRaster, dirty: Option<(i32, i32, i32, i32)>) {
+        if r.width == 0 || r.height == 0 {
+            return;
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, self.ltex);
+        if self.ltex_size != (r.width, r.height) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA as GLint, r.width as i32, r.height as i32, 0, GL_RGBA, GL_UNSIGNED_BYTE, r.rgba.as_ptr() as *const c_void);
+            self.ltex_size = (r.width, r.height);
+        } else if let Some((_, y0, _, y1)) = dirty {
+            let (y0, y1) = (y0.clamp(0, r.height as i32), y1.clamp(0, r.height as i32));
+            if y1 > y0 {
+                let p = r.rgba[(y0 as usize * r.width as usize * 4)..].as_ptr() as *const c_void;
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y0, r.width as i32, y1 - y0, GL_RGBA, GL_UNSIGNED_BYTE, p);
+            }
+        }
+    }
+
+    /// Blend the layer texture over the whole window.
+    unsafe fn draw_layer(&mut self, ww: u32, wh: u32) {
+        if self.ltex_size != (ww, wh) {
+            return;
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, self.ltex);
+        glUseProgram(self.plain.id);
+        glUniform1i(self.plain.u_tex, 0);
+        glUniform4f(self.plain.u_rect, -1.0, 1.0, 1.0, -1.0);
+        glUniform4f(self.plain.u_uv, 0.0, 0.0, 1.0, 1.0);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisable(GL_BLEND);
+        glBindTexture(GL_TEXTURE_2D, self.tex);
+    }
+
     unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter) {
         let (ww, wh) = (vp.win_w as f32, vp.win_h as f32);
         glViewport(0, 0, vp.win_w as i32, vp.win_h as i32);
@@ -281,10 +337,17 @@ impl Gles {
             glUniform2f(prog.u_scale, sx.max(1.0), sy.max(1.0));
         }
         let Some(l) = vp.layout else {
-            let r = clip_rect(vp.dst_x, vp.dst_y, vp.dst_w, vp.dst_h, ww, wh);
-            glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
-            glUniform4f(prog.u_uv, 0.0, 0.0, 1.0, 1.0);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            // The whole frame, or (UI mode A panel split) the panel and the map part at their own scales.
+            let (gw, gh) = (vp.game_w as f32, vp.game_h as f32);
+            for (s, d) in vp.quads() {
+                let r = clip_rect(d[0], d[1], d[2], d[3], ww, wh);
+                glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
+                glUniform4f(prog.u_uv, s[0] / gw, s[1] / gh, (s[0] + s[2]) / gw, (s[1] + s[3]) / gh);
+                if prog.u_size >= 0 {
+                    glUniform2f(prog.u_scale, (d[2] / s[2].max(1.0)).max(1.0), (d[3] / s[3].max(1.0)).max(1.0));
+                }
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            }
             return;
         };
         // Full-screen menu layout (s3_mods::menu_layout): background, then one quad per piece.
@@ -384,7 +447,9 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
     let mut win_size = (1u32, 1u32);
     let mut local: Option<FrameBuffer> = None;
     let mut status_cache: Option<(u64, FrameBuffer)> = None;
-    let mut shown = (u64::MAX, u64::MAX, u64::MAX); // frame seq, status seq, display seq
+    let mut shown = (u64::MAX, u64::MAX, u64::MAX, u64::MAX); // frame seq, status seq, display seq, layer seq
+    let mut raster = LayerRaster::new();
+    let mut layer_dirty: Option<(i32, i32, i32, i32)> = None;
     let mut cpu_geometry: Option<(u32, u32)> = None;
     let mut fps_t0 = Instant::now();
     let mut fps_n = 0u32;
@@ -406,7 +471,12 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
             }
             window = w;
             cpu_geometry = None;
-            shown = (u64::MAX, u64::MAX, u64::MAX);
+            shown = (u64::MAX, u64::MAX, u64::MAX, u64::MAX);
+            // New surface: re-upload the whole layer texture.
+            raster = LayerRaster::new();
+            if let Some(g) = gles.as_mut() {
+                g.ltex_size = (0, 0);
+            }
             requested_hz = None;
             if let Some(w) = &window {
                 if gles.is_none() && !gl_failed {
@@ -448,8 +518,9 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
         let disp_seq = shared.display_seq.load(Ordering::Acquire);
         {
             let status_seq = shared.status.lock().unwrap().seq;
+            let layer_seq = shared.layer.seq();
             let g = shared.frame.lock().unwrap();
-            if g.seq == shown.0 && status_seq == shown.1 && disp_seq == shown.2 {
+            if g.seq == shown.0 && status_seq == shown.1 && disp_seq == shown.2 && layer_seq == shown.3 {
                 let _ = shared.frame_cv.wait_timeout(g, Duration::from_millis(250)).unwrap();
                 // Keep the display rate current while nothing new arrives (paused game, menus).
                 let el = fps_t0.elapsed();
@@ -468,19 +539,35 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
             requested_hz = Some(want_hz);
         }
         let mut frame_seq = 0;
+        let scene = shared.layer.latest();
         let (game_frame, status_seq) = pick_image(&shared, &mut local, &mut status_cache, &mut frame_seq);
         let fb = local.as_ref().unwrap();
-        shown = (frame_seq, status_seq, disp_seq);
+        shown = (frame_seq, status_seq, disp_seq, scene.seq);
+        let panel = if game_frame && scene.frame == (fb.width, fb.height) { scene.panel } else { None };
+        // Window layer for this window size (a scene made for another size waits for the next one).
+        let layer_on = game_frame && !scene.list.is_empty();
 
         if let Some(g) = gles.as_mut() {
             // GPU path.
             let sz = unsafe { g.size() };
             win_size = sz;
             let mode = if game_frame { display.mode } else { DisplayMode::Fit };
-            let vp = Viewport::for_frame(mode, &fb.pixels, fb.width, fb.height, sz.0, sz.1);
+            let vp = Viewport::for_frame_split(mode, &fb.pixels, fb.width, fb.height, sz.0, sz.1, panel);
+            let layer_fits = layer_on && (scene.list.width, scene.list.height) == sz;
+            if layer_fits {
+                if let Some(d) = raster.update(&scene.list) {
+                    layer_dirty = Some(layer_dirty.map_or(d, |o| (o.0.min(d.0), o.1.min(d.1), o.2.max(d.2), o.3.max(d.3))));
+                }
+            }
             unsafe {
                 g.upload(fb);
                 g.draw(&vp, if game_frame { display.filter } else { ScaleFilter::Linear });
+                if layer_fits {
+                    g.upload_layer(&raster, layer_dirty.take());
+                    if !raster.is_empty() {
+                        g.draw_layer(sz.0, sz.1);
+                    }
+                }
             }
             shared.set_viewport(if game_frame { Some(vp) } else { None });
             *shared.letterbox.lock().unwrap() = None;
@@ -507,6 +594,11 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
                     l.off_y = (bh as u32).saturating_sub(lb.game_h) / 2;
                     let dst = unsafe { std::slice::from_raw_parts_mut(guard.bits() as *mut u16, stride * bh) };
                     blit_letterboxed(&l, &fb.pixels, dst, stride, bh);
+                    // Window layer, sampled down to the buffer the compositor scales to the window.
+                    if layer_on && (scene.list.width, scene.list.height) == win_size {
+                        raster.update(&scene.list);
+                        raster.blend_onto_rgb565_scaled(dst, stride, bw as u32, bh as u32);
+                    }
                 }
                 Err(e) => log::error!("ANativeWindow_lock: {e}"),
             }

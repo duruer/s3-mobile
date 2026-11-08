@@ -29,6 +29,7 @@ pub mod fast_sprite;
 pub mod fast_tile;
 pub mod gesture;
 pub mod hooks;
+pub mod layer; // window-resolution overlay layer (docs/porting/mods.md "Window layer")
 pub mod overlay;
 pub mod patchset;
 pub mod res; // custom resolutions (docs/porting/resolution-zoom.md)
@@ -57,10 +58,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 pub use s3_mem;
+use std::sync::Arc;
+
 use s3_runtime::{FrameBuffer, HostEvent, LogLevel, Machine, PointerPhase};
 
 pub use gesture::{GestureConfig, GestureRecognizer, Phase, TouchEvent};
 pub use hooks::{add_hook, HookCtx, PostCtx};
+pub use layer::{ImageRef, Layer, LayerRaster, Scene, SceneSlot};
 pub use overlay::{Canvas, Image, Rgba, Weight};
 pub use s3_runtime::HookFlow;
 pub use settings::{Settings, UiMode};
@@ -84,11 +88,19 @@ pub trait Mod: Send {
     fn on_touch(&mut self, _m: &mut Machine, _ev: &TouchEvent) -> ModEvent {
         ModEvent::Pass
     }
-    /// Does this mod draw anything now? (Checked per presented frame; keep it cheap.)
+    /// Does this mod draw into the window layer now? (Checked per presented frame; keep it cheap.)
     fn wants_draw(&self) -> bool {
         false
     }
-    /// Draw on the presented frame (only called when `wants_draw`).
+    /// Draw into the window-resolution layer (window pixels; only called when `wants_draw`). `frame` is the raw
+    /// guest frame (read-only, e.g. to sample panel icons); map game pixels to the window with
+    /// [`draw_viewport`].
+    fn draw_window(&mut self, _m: &mut Machine, _l: &mut Layer, _frame: &FrameBuffer) {}
+    /// Does this mod draw into the game frame itself now (game pixels, costs a frame copy)?
+    fn wants_draw_frame(&self) -> bool {
+        false
+    }
+    /// Draw on a copy of the presented frame (only called when `wants_draw_frame`).
     fn draw(&mut self, _m: &mut Machine, _c: &mut Canvas) {}
     /// Should the last frame be re-presented with a new overlay (the game is not presenting)?
     fn needs_redraw(&self) -> bool {
@@ -135,6 +147,14 @@ pub struct ModsState {
     pub frame_size: (u32, u32),
     last_refresh_ms: u64,
     warned_no_safe_point: bool,
+    /// Window layer: the frontend's mailbox, the last published list (+ panel split, frame size) and the
+    /// viewport used while the mods draw.
+    layer_sink: Option<Arc<SceneSlot>>,
+    layer_last: Option<(Arc<layer::DrawList>, Option<display::PanelSplit>, (u32, u32))>,
+    draw_vp: Option<display::Viewport>,
+    /// Window positions of the fingers down (from `HostEvent::Pointer::wx/wy`) and of the last pointer event.
+    win_ptrs: HashMap<u32, (f32, f32)>,
+    win_cur: (f32, f32),
 }
 
 /// What [`install`] did.
@@ -177,6 +197,7 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     m.ext.event_filter = Some(event_filter);
     m.ext.overlay_wanted = Some(overlay_wanted);
     m.ext.overlay_compose = Some(overlay_compose);
+    m.ext.window_overlay = Some(window_compose);
     m.add_service("s3mods", service);
     add_mod(m, Box::new(debug_overlay::DebugTouch::default()));
 
@@ -287,6 +308,44 @@ pub fn take_keyboard_request(m: &mut Machine) -> bool {
     std::mem::take(&mut m.state::<ModsState>().borrow_mut().fallback.keyboard_request)
 }
 
+/// Frontend: register the mailbox the window layer ([`Scene`]s) is published to.
+pub fn set_layer_sink(m: &mut Machine, sink: Arc<SceneSlot>) {
+    let st = m.state::<ModsState>();
+    let mut s = st.borrow_mut();
+    s.layer_sink = Some(sink);
+    s.layer_last = None;
+}
+
+/// Viewport of the frame the mods are drawing for (inside [`Mod::draw_window`]; else the current
+/// [`display::frame_viewport`]). Window pixels = `vp.game_to_window(game x, y)`.
+pub fn draw_viewport(m: &mut Machine) -> display::Viewport {
+    let vp = m.state::<ModsState>().borrow_mut().draw_vp;
+    vp.unwrap_or_else(|| display::frame_viewport(m))
+}
+
+/// Window position of a touch event (the finger(s) that produced it), for hit tests of window-layer UI. Raw
+/// events use their pointer; taps / long presses the last pointer event; two-finger gestures the centroid.
+pub fn touch_window_pos(m: &mut Machine, ev: &TouchEvent) -> (f32, f32) {
+    let st = m.state::<ModsState>();
+    let s = st.borrow_mut();
+    let centroid = || {
+        let n = s.win_ptrs.len();
+        if n == 0 {
+            return s.win_cur;
+        }
+        let (sx, sy) = s.win_ptrs.values().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+        (sx / n as f32, sy / n as f32)
+    };
+    match *ev {
+        TouchEvent::Down { id, .. } | TouchEvent::Move { id, .. } | TouchEvent::Up { id, .. } | TouchEvent::Cancel { id } => {
+            s.win_ptrs.get(&id).copied().unwrap_or(s.win_cur)
+        }
+        TouchEvent::TwoFingerTap { .. } | TouchEvent::ThreeFingerTap { .. } | TouchEvent::Pinch { .. } => centroid(),
+        TouchEvent::Pan { fingers, .. } if fingers > 1 => centroid(),
+        _ => s.win_cur,
+    }
+}
+
 /// Is the framework installed in this machine?
 pub fn is_installed(m: &mut Machine) -> bool {
     m.state::<ModsState>().borrow_mut().installed
@@ -342,7 +401,26 @@ fn dispatch_touch(m: &mut Machine, events: Vec<TouchEvent>, now: u64) {
     }
 }
 
-fn handle_pointer(m: &mut Machine, id: u32, phase: PointerPhase, x: i32, y: i32) {
+fn handle_pointer(m: &mut Machine, id: u32, phase: PointerPhase, x: i32, y: i32, wx: i32, wy: i32) {
+    // Window position (frontends deliver it; else map the game position through the shown viewport).
+    let wp = if wx >= 0 && wy >= 0 {
+        (wx as f32 + 0.5, wy as f32 + 0.5)
+    } else {
+        display::frame_viewport(m).game_to_window(x as f32 + 0.5, y as f32 + 0.5)
+    };
+    {
+        let st = m.state::<ModsState>();
+        let mut s = st.borrow_mut();
+        s.win_cur = wp;
+        s.win_ptrs.insert(id, wp);
+    }
+    handle_pointer_game(m, id, phase, x, y);
+    if matches!(phase, PointerPhase::Up | PointerPhase::Cancel) {
+        m.state::<ModsState>().borrow_mut().win_ptrs.remove(&id);
+    }
+}
+
+fn handle_pointer_game(m: &mut Machine, id: u32, phase: PointerPhase, x: i32, y: i32) {
     let now = m.now_ms();
     let st = m.state::<ModsState>();
     let (fx, fy) = (x as f32, y as f32);
@@ -381,8 +459,8 @@ fn handle_pointer(m: &mut Machine, id: u32, phase: PointerPhase, x: i32, y: i32)
 /// `MachineExt::event_filter`: raw pointers go through gestures/mods/fallback; everything else passes.
 fn event_filter(m: &mut Machine, e: HostEvent, out: &mut Vec<HostEvent>) {
     match e {
-        HostEvent::Pointer { id, phase, x, y } => {
-            handle_pointer(m, id, phase, x, y);
+        HostEvent::Pointer { id, phase, x, y, wx, wy } => {
+            handle_pointer(m, id, phase, x, y, wx, wy);
             let now = m.now_ms();
             out.extend(m.state::<ModsState>().borrow_mut().fallback.drain_due(now));
         }
@@ -460,7 +538,51 @@ fn overlay_wanted(m: &mut Machine) -> bool {
     let st = m.state::<ModsState>();
     let mut s = st.borrow_mut();
     s.frame_size = size;
-    s.mods.iter().any(|md| md.as_ref().is_some_and(|md| md.wants_draw()))
+    s.mods.iter().any(|md| md.as_ref().is_some_and(|md| md.wants_draw_frame()))
+}
+
+/// `MachineExt::window_overlay`: record the window layer of every drawing mod and publish it when it changed.
+fn window_compose(m: &mut Machine, frame: &FrameBuffer) {
+    let t0 = m.stats.host_prof_start();
+    let size = (frame.width, frame.height);
+    m.state::<ModsState>().borrow_mut().frame_size = size;
+    let vp = display::frame_viewport(m);
+    m.state::<ModsState>().borrow_mut().draw_vp = Some(vp);
+    let mut l = Layer::new(vp.win_w, vp.win_h);
+    let n = mod_count(m);
+    let mut drew = false;
+    for i in 0..n {
+        let wants = m.state::<ModsState>().borrow_mut().mods.get(i).and_then(|o| o.as_ref()).is_some_and(|md| md.wants_draw());
+        if wants {
+            drew = true;
+            with_mod(m, i, |md, m| md.draw_window(m, &mut l, frame));
+        }
+    }
+    let list = l.finish();
+    let now = m.now_ms();
+    let st = m.state::<ModsState>();
+    let mut s = st.borrow_mut();
+    s.draw_vp = None;
+    if drew {
+        s.last_refresh_ms = now;
+    }
+    let same = s.layer_last.as_ref().is_some_and(|(l0, p0, f0)| {
+        l0.hash == list.hash && l0.items.len() == list.items.len() && *p0 == vp.panel && *f0 == size
+    });
+    if !same {
+        let list = Arc::new(list);
+        s.layer_last = Some((list.clone(), vp.panel, size));
+        if let Some(sink) = s.layer_sink.clone() {
+            drop(s);
+            sink.publish(list, vp.panel, size);
+        }
+    }
+    m.stats.host_prof_section("present: window layer record", t0);
+}
+
+/// The last published window layer (draw list, panel split, frame size), e.g. for screenshots.
+pub fn last_layer(m: &mut Machine) -> Option<(Arc<layer::DrawList>, Option<display::PanelSplit>, (u32, u32))> {
+    m.state::<ModsState>().borrow_mut().layer_last.clone()
 }
 
 fn overlay_compose(m: &mut Machine, fb: &mut FrameBuffer) -> bool {
@@ -468,7 +590,7 @@ fn overlay_compose(m: &mut Machine, fb: &mut FrameBuffer) -> bool {
     let mut drew = false;
     for i in 0..n {
         let st = m.state::<ModsState>();
-        let wants = st.borrow_mut().mods.get(i).and_then(|o| o.as_ref()).is_some_and(|md| md.wants_draw());
+        let wants = st.borrow_mut().mods.get(i).and_then(|o| o.as_ref()).is_some_and(|md| md.wants_draw_frame());
         if !wants {
             continue;
         }

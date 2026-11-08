@@ -1,10 +1,11 @@
 //! Built-in debug overlay (settings `debug_overlay` or `S3_MODS_DEBUG=1`): fingers as circles, the last
-//! recognized gesture as a label. Never consumes events.
+//! recognized gesture as a label (window layer, window pixels). Never consumes events.
 
-use s3_runtime::Machine;
+use s3_runtime::{FrameBuffer, Machine};
 
 use crate::gesture::TouchEvent;
-use crate::overlay::{Canvas, Rgba, Weight};
+use crate::layer::Layer;
+use crate::overlay::{Rgba, Weight};
 use crate::{Mod, ModsState};
 
 #[derive(Default)]
@@ -34,6 +35,22 @@ impl Mod for DebugTouch {
         }
         self.last_event_ms = m.now_ms();
         self.dirty = true;
+        // Window position of the event (the layer draws in window pixels).
+        let (x, y) = crate::touch_window_pos(m, ev);
+        let ev = &match *ev {
+            TouchEvent::Down { id, .. } => TouchEvent::Down { id, x, y },
+            TouchEvent::Move { id, .. } => TouchEvent::Move { id, x, y },
+            TouchEvent::Tap { .. } => TouchEvent::Tap { x, y },
+            TouchEvent::DoubleTap { .. } => TouchEvent::DoubleTap { x, y },
+            TouchEvent::LongPress { .. } => TouchEvent::LongPress { x, y },
+            TouchEvent::TwoFingerTap { .. } => TouchEvent::TwoFingerTap { x, y },
+            TouchEvent::ThreeFingerTap { .. } => TouchEvent::ThreeFingerTap { x, y },
+            TouchEvent::Pan { phase, fingers, dx, dy, start_x, start_y, after_long_press, .. } => {
+                TouchEvent::Pan { phase, fingers, x, y, dx, dy, start_x, start_y, after_long_press }
+            }
+            TouchEvent::Pinch { phase, scale, .. } => TouchEvent::Pinch { phase, cx: x, cy: y, scale },
+            e => e,
+        };
         match *ev {
             TouchEvent::Down { id, x, y } | TouchEvent::Move { id, x, y } => {
                 match self.fingers.iter_mut().find(|f| f.0 == id) {
@@ -70,20 +87,23 @@ impl Mod for DebugTouch {
         self.enabled = Some(m.state::<ModsState>().borrow_mut().settings.debug_overlay);
     }
 
-    fn draw(&mut self, _m: &mut Machine, c: &mut Canvas) {
+    fn draw_window(&mut self, _m: &mut Machine, c: &mut Layer, _frame: &FrameBuffer) {
         self.dirty = false;
+        let u = c.ui();
         for &(_, x, y) in &self.fingers {
-            c.fill_circle(x, y, 14.0, Rgba::rgba(255, 220, 0, 110));
-            c.fill_circle(x, y, 3.0, Rgba::rgba(255, 60, 0, 230));
+            c.fill_circle(x, y, 14.0 * u, Rgba::rgba(255, 220, 0, 110));
+            c.fill_circle(x, y, 3.0 * u, Rgba::rgba(255, 60, 0, 230));
         }
         if !self.label.is_empty() {
             let k = 1.0 - (self.now.saturating_sub(self.last_event_ms) as f32 / SHOW_MS as f32).clamp(0.0, 1.0);
             let k = if self.fingers.is_empty() { k } else { 1.0 };
-            let (tw, th) = crate::overlay::measure_text(14.0, Weight::Bold, &self.label);
-            let x = (self.label_at.0 as i32 + 16).min(c.width() as i32 - tw - 12).max(0);
-            let y = (self.label_at.1 as i32 - th - 16).max(0);
-            c.fill_rounded_rect(x, y, tw + 12, th + 8, 6.0, Rgba::rgba(0, 0, 0, 170).fade(k));
-            c.text(x + 6, y + 4, 14.0, Weight::Bold, Rgba::WHITE.fade(k), &self.label);
+            let px = 14.0 * u;
+            let (tw, th) = crate::overlay::measure_text(px, Weight::Bold, &self.label);
+            let p = |v: f32| (v * u).round() as i32;
+            let x = (self.label_at.0 as i32 + p(16.0)).min(c.width() as i32 - tw - p(12.0)).max(0);
+            let y = (self.label_at.1 as i32 - th - p(16.0)).max(0);
+            c.fill_rounded_rect(x, y, tw + p(12.0), th + p(8.0), 6.0 * u, Rgba::rgba(0, 0, 0, 170).fade(k));
+            c.text(x + p(6.0), y + p(4.0), px, Weight::Bold, Rgba::WHITE.fade(k), &self.label);
         }
     }
 }

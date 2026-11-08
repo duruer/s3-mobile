@@ -58,9 +58,11 @@ pub enum HostEvent {
     Quit,
     Pause,
     Resume,
-    /// Raw touch pointer (finger `id`) in game-screen pixels. Consumed by the mod layer (`s3-mods` gesture
-    /// recognizer) when installed; the game itself ignores it.
-    Pointer { id: u32, phase: PointerPhase, x: i32, y: i32 },
+    /// Raw touch pointer (finger `id`) in game-screen pixels (`x`, `y`) and window pixels (`wx`, `wy`; negative =
+    /// unknown, the mods then map the game position through the viewport). Consumed by the mod layer (`s3-mods`
+    /// gesture recognizer; window-layer UI hit-tests with the window position) when installed; the game itself
+    /// ignores it.
+    Pointer { id: u32, phase: PointerPhase, x: i32, y: i32, wx: i32, wy: i32 },
 }
 
 /// Phase of a [`HostEvent::Pointer`].

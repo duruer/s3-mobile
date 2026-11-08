@@ -80,6 +80,7 @@ pub const GL_LINK_STATUS: GLenum = 0x8B82;
 pub const GL_BLEND: GLenum = 0x0BE2;
 pub const GL_SRC_ALPHA: GLenum = 0x0302;
 pub const GL_ONE_MINUS_SRC_ALPHA: GLenum = 0x0303;
+pub const GL_ONE: GLenum = 0x0001;
 pub const GL_SCISSOR_TEST: GLenum = 0x0C11;
 pub const GL_DITHER: GLenum = 0x0BD0;
 

@@ -144,6 +144,17 @@ impl Default for DisplaySettings {
     }
 }
 
+/// UI mode A in `NativeWide` with the custom resolution (docs/porting/display.md "Classic panel"): the original
+/// panel (frame `x < w`, `y < h` = the panel art of the current layout variant) is shown at a constant scale
+/// (`window height / h`, the art fills the screen height at every zoom level) on the left; the map part of the frame
+/// (`x >= w`) fills the rest of the window. The zoom picks render widths that keep the map's aspect
+/// (`crate::zoom::classic_width`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanelSplit {
+    pub w: u32,
+    pub h: u32,
+}
+
 /// Placement of a `game_w` x `game_h` frame in a `win_w` x `win_h` window (physical pixels). The destination
 /// rectangle may extend past the window (`Fill`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,6 +173,8 @@ pub struct Viewport {
     /// `dst_*` describe the canvas placement (origin, frame size times the canvas scale) and the window is fully
     /// covered (no bars).
     pub layout: Option<&'static MenuLayout>,
+    /// Classic panel shown at its own scale ([`PanelSplit`]); then `dst_*` = the whole window.
+    pub panel: Option<PanelSplit>,
 }
 
 impl Viewport {
@@ -185,18 +198,67 @@ impl Viewport {
         };
         let dx = ((ww as f64 - dw) / 2.0).round();
         let dy = ((wh as f64 - dh) / 2.0).round();
-        Viewport { mode, game_w: gw, game_h: gh, win_w: ww, win_h: wh, dst_x: dx as f32, dst_y: dy as f32, dst_w: dw as f32, dst_h: dh as f32, layout: None }
+        Viewport { mode, game_w: gw, game_h: gh, win_w: ww, win_h: wh, dst_x: dx as f32, dst_y: dy as f32, dst_w: dw as f32, dst_h: dh as f32, layout: None, panel: None }
     }
 
     /// Viewport for this frame: a full-screen menu layout when the frame is a known menu screen and the mode
     /// fills the screen (`NativeWide`, `Fill`), else [`Viewport::new`].
     pub fn for_frame(mode: DisplayMode, pixels: &[u16], game_w: u32, game_h: u32, win_w: u32, win_h: u32) -> Viewport {
+        Viewport::for_frame_split(mode, pixels, game_w, game_h, win_w, win_h, None)
+    }
+
+    /// [`Viewport::for_frame`] with the Classic panel split the mods published for this frame
+    /// ([`crate::layer::Scene::panel`]); a menu layout wins over it.
+    pub fn for_frame_split(mode: DisplayMode, pixels: &[u16], game_w: u32, game_h: u32, win_w: u32, win_h: u32, panel: Option<PanelSplit>) -> Viewport {
         if matches!(mode, DisplayMode::NativeWide | DisplayMode::Fill) {
             if let Some(l) = menu_layout::detect(pixels, game_w, game_h) {
                 return Viewport::with_layout(mode, l, win_w, win_h);
             }
         }
-        Viewport::new(mode, game_w, game_h, win_w, win_h)
+        Viewport::new_split(mode, game_w, game_h, win_w, win_h, panel)
+    }
+
+    /// [`Viewport::new`], with the Classic panel at its own scale when `panel` is given, the mode is `NativeWide`
+    /// and the split fits (panel narrower than the frame and the window, art not taller than the frame).
+    pub fn new_split(mode: DisplayMode, game_w: u32, game_h: u32, win_w: u32, win_h: u32, panel: Option<PanelSplit>) -> Viewport {
+        let mut v = Viewport::new(mode, game_w, game_h, win_w, win_h);
+        if let Some(p) = panel {
+            let ok = mode == DisplayMode::NativeWide && p.w > 0 && p.h > 0 && p.w < v.game_w && p.h <= v.game_h;
+            let pw_win = (p.w as f64 * v.win_h as f64 / p.h.max(1) as f64).round();
+            if ok && pw_win + 16.0 < v.win_w as f64 {
+                v.panel = Some(p);
+                v.dst_x = 0.0;
+                v.dst_y = 0.0;
+                v.dst_w = v.win_w as f32;
+                v.dst_h = v.win_h as f32;
+            }
+        }
+        v
+    }
+
+    /// With a panel split: (panel width in window px, window px per game px of the panel).
+    fn split(&self) -> Option<(PanelSplit, f32, f32)> {
+        let p = self.panel?;
+        let ps = self.win_h as f32 / p.h.max(1) as f32;
+        Some((p, (p.w as f32 * ps).round(), ps))
+    }
+
+    /// Source rectangles (game px: x, y, w, h) and where they are drawn (window px: x, y, w, h) for a frame without
+    /// a menu layout: the whole frame, or the panel and the map part with a [`PanelSplit`].
+    pub fn quads(&self) -> Vec<([f32; 4], [f32; 4])> {
+        let (gw, gh) = (self.game_w as f32, self.game_h as f32);
+        match self.split() {
+            Some((p, pww, ps)) => vec![
+                ([0.0, 0.0, p.w as f32, p.h as f32], [0.0, 0.0, pww, p.h as f32 * ps]),
+                ([p.w as f32, 0.0, gw - p.w as f32, gh], [pww, 0.0, self.win_w as f32 - pww, self.win_h as f32]),
+            ],
+            None => vec![([0.0, 0.0, gw, gh], [self.dst_x, self.dst_y, self.dst_w, self.dst_h])],
+        }
+    }
+
+    /// Window px per game px of the panel part (`None` without a split).
+    pub fn panel_scale(&self) -> Option<f32> {
+        self.split().map(|s| s.2)
     }
 
     /// Viewport showing the frame through a menu layout.
@@ -204,7 +266,7 @@ impl Viewport {
         let (ww, wh) = (win_w.max(1), win_h.max(1));
         let (ox, oy, sc) = menu_layout::canvas_placement(l, ww, wh);
         let (gw, gh) = (l.frame[0] as u32, l.frame[1] as u32);
-        Viewport { mode, game_w: gw, game_h: gh, win_w: ww, win_h: wh, dst_x: ox, dst_y: oy, dst_w: gw as f32 * sc, dst_h: gh as f32 * sc, layout: Some(l) }
+        Viewport { mode, game_w: gw, game_h: gh, win_w: ww, win_h: wh, dst_x: ox, dst_y: oy, dst_w: gw as f32 * sc, dst_h: gh as f32 * sc, layout: Some(l), panel: None }
     }
 
     /// Window pixel -> game pixel, clamped to the frame.
@@ -218,6 +280,13 @@ impl Viewport {
 
     /// Window pixel -> game coordinates (unclamped, fractional).
     pub fn window_to_game_f(&self, x: f32, y: f32) -> (f32, f32) {
+        if let Some((p, pww, ps)) = self.split() {
+            if x < pww {
+                return (x / ps, y / ps);
+            }
+            let mw = (self.win_w as f32 - pww).max(1.0);
+            return (p.w as f32 + (x - pww) * (self.game_w - p.w) as f32 / mw, y * self.game_h as f32 / self.win_h as f32);
+        }
         if let Some(l) = self.layout {
             let (sx, sy) = self.scale();
             return l.canvas_to_game((x - self.dst_x) / sx, (y - self.dst_y) / sy);
@@ -230,6 +299,13 @@ impl Viewport {
 
     /// Game pixel -> window pixel (top-left corner of that game pixel).
     pub fn game_to_window(&self, gx: f32, gy: f32) -> (f32, f32) {
+        if let Some((p, pww, ps)) = self.split() {
+            if gx < p.w as f32 {
+                return (gx * ps, gy * ps);
+            }
+            let mw = self.win_w as f32 - pww;
+            return (pww + (gx - p.w as f32) * mw / (self.game_w - p.w).max(1) as f32, gy * self.win_h as f32 / self.game_h as f32);
+        }
         if let Some(l) = self.layout {
             // Game pixels not shown by any piece go far off screen.
             let (u, v) = l.game_to_canvas(gx, gy).unwrap_or((-1.0e6, -1.0e6));
@@ -239,14 +315,17 @@ impl Viewport {
         (self.dst_x + gx * self.dst_w / self.game_w as f32, self.dst_y + gy * self.dst_h / self.game_h as f32)
     }
 
-    /// Window pixels per game pixel (x, y).
+    /// Window pixels per game pixel (x, y); with a panel split: of the map part.
     pub fn scale(&self) -> (f32, f32) {
+        if let Some((p, pww, _)) = self.split() {
+            return ((self.win_w as f32 - pww) / (self.game_w - p.w).max(1) as f32, self.win_h as f32 / self.game_h as f32);
+        }
         (self.dst_w / self.game_w as f32, self.dst_h / self.game_h as f32)
     }
 
     /// Part of the game frame that is on screen, in game pixels (x, y, w, h). The whole frame except in `Fill`.
     pub fn visible_game_rect(&self) -> (i32, i32, i32, i32) {
-        if self.layout.is_some() {
+        if self.layout.is_some() || self.panel.is_some() {
             return (0, 0, self.game_w as i32, self.game_h as i32);
         }
         let (x0, y0) = self.window_to_game_f(0.0, 0.0);
@@ -260,7 +339,7 @@ impl Viewport {
 
     /// Destination rectangle clipped to the window: (x, y, w, h) in whole window pixels.
     pub fn dst_rect_clipped(&self) -> (i32, i32, i32, i32) {
-        if self.layout.is_some() {
+        if self.layout.is_some() || self.panel.is_some() {
             return (0, 0, self.win_w as i32, self.win_h as i32);
         }
         let x0 = self.dst_x.max(0.0).round() as i32;
@@ -351,17 +430,31 @@ pub fn scale_to_xrgb(vp: &Viewport, filter: ScaleFilter, src: &[u16], dst: &mut 
         menu_layout::render_xrgb(l, src, gw, gh, dst, ww, wh);
         return;
     }
-    let (rx, ry, rw, rh) = vp.dst_rect_clipped();
     dst[..ww * wh].fill(0);
-    if rw == 0 || rh == 0 {
+    for (s, d) in vp.quads() {
+        scale_region(filter, src, gw, s, d, ww, wh, dst);
+    }
+}
+
+/// Scale the source rectangle `s` (game px x, y, w, h) of an RGB565 frame (`gw` wide) to the window rectangle `d`
+/// (clipped to the `ww` x `wh` window buffer).
+fn scale_region(filter: ScaleFilter, src: &[u16], gw: usize, s: [f32; 4], d: [f32; 4], ww: usize, wh: usize, dst: &mut [u32]) {
+    let (sx, sy, sw, sh) = (s[0] as usize, s[1] as usize, s[2] as u32, s[3] as u32);
+    let rx = d[0].max(0.0).round() as i32;
+    let ry = d[1].max(0.0).round() as i32;
+    let rw = ((d[0] + d[2]).min(ww as f32).round() as i32 - rx).max(0);
+    let rh = ((d[1] + d[3]).min(wh as f32).round() as i32 - ry).max(0);
+    if rw == 0 || rh == 0 || sw == 0 || sh == 0 {
         return;
     }
-    let tx = axis_taps(filter, vp.game_w, rx, rw as u32, vp.dst_x, vp.dst_w);
-    let ty = axis_taps(filter, vp.game_h, ry, rh as u32, vp.dst_y, vp.dst_h);
+    let tx = axis_taps(filter, sw, rx, rw as u32, d[0], d[2]);
+    let ty = axis_taps(filter, sh, ry, rh as u32, d[1], d[3]);
     let plain = filter == ScaleFilter::Nearest;
     for (yi, y) in (ry as usize..ry as usize + rh as usize).enumerate() {
-        let row0 = &src[ty.i0[yi] as usize * gw..ty.i0[yi] as usize * gw + gw];
-        let row1 = &src[ty.i1[yi] as usize * gw..ty.i1[yi] as usize * gw + gw];
+        let r0 = (sy + ty.i0[yi] as usize) * gw + sx;
+        let r1 = (sy + ty.i1[yi] as usize) * gw + sx;
+        let row0 = &src[r0..r0 + sw as usize];
+        let row1 = &src[r1..r1 + sw as usize];
         let wy = ty.w1[yi] as u32;
         let out = &mut dst[y * ww + rx as usize..y * ww + rx as usize + rw as usize];
         if plain || (wy == 0 && tx.w1.iter().all(|&w| w == 0)) {
@@ -428,6 +521,43 @@ pub fn visible_game_rect(m: &mut Machine) -> (i32, i32, i32, i32) {
         Some(v) if (v.game_w, v.game_h) == size || size == (0, 0) => v.visible_game_rect(),
         Some(v) => Viewport::new(v.mode, size.0, size.1, v.win_w, v.win_h).visible_game_rect(),
         None => (0, 0, size.0 as i32, size.1 as i32),
+    }
+}
+
+/// Classic panel split for the last frame (see [`PanelSplit`]): UI mode A, display mode `NativeWide`, custom
+/// resolution on, in game and the layout globals match the frame. `S3_PANEL_SPLIT=0` turns it off.
+pub fn panel_split(m: &mut Machine) -> Option<PanelSplit> {
+    let (fw, fh) = m.last_frame_size();
+    let (mode, ui) = {
+        let st = m.state::<crate::ModsState>();
+        let s = st.borrow_mut();
+        (s.settings.display.mode, s.settings.ui_mode)
+    };
+    if mode != DisplayMode::NativeWide || ui != crate::settings::UiMode::ClassicTouch || std::env::var("S3_PANEL_SPLIT").is_ok_and(|v| v == "0") {
+        return None;
+    }
+    if !crate::zoom::enabled(m) || !crate::res::in_game(m) {
+        return None;
+    }
+    if (m.mem.read_u32(crate::res::L_SCREEN_W), m.mem.read_u32(crate::res::L_SCREEN_H)) != (fw, fh) {
+        return None;
+    }
+    let pw = m.mem.read_u32(crate::res::L_PANEL_W);
+    let v = crate::res::variant(m.mem.read_u32(crate::res::L_RES))?;
+    (pw > 0 && pw == v.panel_w && pw < fw && v.h <= fh).then_some(PanelSplit { w: pw, h: v.h })
+}
+
+/// Viewport of the last game frame as the frontend will show it: published window size, display mode, the panel
+/// split of this frame (the published menu layout when it is for a frame of this size). Headless without a window
+/// size: the frame itself (1:1).
+pub fn frame_viewport(m: &mut Machine) -> Viewport {
+    let (fw, fh) = m.last_frame_size();
+    let (fw, fh) = (fw.max(1), fh.max(1));
+    let panel = panel_split(m);
+    match viewport(m) {
+        Some(v) if v.layout.is_some() && (v.game_w, v.game_h) == (fw, fh) => v,
+        Some(v) => Viewport::new_split(v.mode, fw, fh, v.win_w, v.win_h, panel),
+        None => Viewport::new(DisplayMode::Stretch, fw, fh, fw, fh),
     }
 }
 
@@ -582,6 +712,42 @@ mod tests {
         }
         // ~2.8x scale: at most about one blended pixel per source pixel.
         assert!(blended <= 800, "{blended}");
+    }
+
+    #[test]
+    fn panel_split_maps_both_parts() {
+        // Fold4 cover 2316x904, Classic at 600 high: 800x600 art (panel 176), frame 1480x600.
+        let p = PanelSplit { w: 176, h: 600 };
+        let v = Viewport::new_split(DisplayMode::NativeWide, 1480, 600, 2316, 904, Some(p));
+        assert_eq!(v.panel, Some(p));
+        assert_eq!(v.bars(), (0, 0, 0, 0));
+        let ps = v.panel_scale().unwrap();
+        assert!((ps - 904.0 / 600.0).abs() < 1e-4);
+        // Panel point.
+        let (wx, wy) = v.game_to_window(100.0, 300.0);
+        assert!((wx - 100.0 * ps).abs() < 0.01 && (wy - 452.0).abs() < 0.01);
+        assert_eq!(v.window_to_game(wx + 0.1, wy + 0.1), (100, 300));
+        // Map point round trip and the right edge.
+        let (wx, wy) = v.game_to_window(1000.0, 450.0);
+        assert_eq!(v.window_to_game(wx + 0.01, wy + 0.01), (1000, 450));
+        assert_eq!(v.window_to_game(2315.0, 903.0), (1479, 599));
+        // A taller frame (780 high, 1024x768 art): the panel keeps (almost) the same on-screen width.
+        let v2 = Viewport::new_split(DisplayMode::NativeWide, 1880, 780, 2316, 904, Some(PanelSplit { w: 216, h: 768 }));
+        let w1 = v.game_to_window(176.0, 0.0).0;
+        let w2 = v2.game_to_window(216.0, 0.0).0;
+        assert!((w1 - w2).abs() < 20.0, "{w1} {w2}");
+        // Two quads; the CPU scaler fills the whole window.
+        assert_eq!(v.quads().len(), 2);
+        let src: Vec<u16> = (0..1480 * 600).map(|i| if i % 1480 < 176 { 0xF800 } else { 0x001F }).collect();
+        let mut dst = vec![0u32; 2316 * 904];
+        scale_to_xrgb(&v, ScaleFilter::Nearest, &src, &mut dst);
+        assert_eq!(dst[0], 0xFF0000);
+        assert_eq!(dst[903 * 2316 + 260], 0xFF0000);
+        assert_eq!(dst[903 * 2316 + 2315], 0x0000FF);
+        assert!(dst.iter().all(|&p| p != 0));
+        // Not in Fit / without a panel.
+        assert_eq!(Viewport::new_split(DisplayMode::Fit, 1480, 600, 2316, 904, Some(p)).panel, None);
+        assert_eq!(Viewport::new_split(DisplayMode::NativeWide, 1480, 600, 2316, 904, None).panel, None);
     }
 
     #[test]
