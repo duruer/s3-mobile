@@ -291,7 +291,17 @@ cursor composer (see [user32-gdi32.md](../porting/user32-gdi32.md)); the game ca
   (carriers 32 at start = type 0 count, VERIFIED in part 1).
 - **Economy sectors** `gd+0xe145e8` (0x2e0 bytes, count `[gd+0xe115dc]`): distribution/priority settings, not stock
   counts (VERIFIED: no inventory numbers there).
-- Statistics pages (settlers tab 4 "Production statistics", end-of-game statistics): not analysed.
+- **End-of-game statistics** (STATIC + VERIFIED 2026-11-08 by `xpeek`): 20 records `0x7acfac + id*0x44` (id = player
+  id 0..19, the owner byte of settlers/buildings). `+0` rank (1 = best, set at game end), `+0x1c` score, then
+  cumulative counters `+0x20` settlers, `+0x24` buildings, `+0x28` food, `+0x2c` mines, `+0x30` gold, `+0x34` manna,
+  `+0x38` soldiers, `+0x3c` battles (incremented during the game, e.g. `0x4eca5f` buildings, `0x4eef16`
+  settlers). `+8..+0x18` other per-player values (not mapped). `0x53e720` (end of game): score = 2*settlers +
+  buildings + food + mines + gold + manna + 2*soldiers + 5*battles, then gold halved in place, then ranks by score
+  (existing players: `[[logic+0x3a0] + id*0x148 + 0x11943dc] != 0`; ties -> the higher id first). Seen: vs one
+  computer, 225 s game time: computer (id 1) buildings 22, score 22, rank 1; human id 0 rank 2. The screen is an
+  800x600 menu: one 20 px row per player by rank (y 102 + 20*i), each cell a bar (light blue = share of the
+  column's best). Any click leaves it. Used by `s3-mods/src/end_stats.rs`.
+- Settlers tab 4 "Production statistics": not analysed.
 
 ## 6. Text and tooltip rendering
 

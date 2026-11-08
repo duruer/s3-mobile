@@ -10,6 +10,16 @@ Newest first. One entry per session: what was done, what was learned, links to d
   Verified desktop: campaign mission, pinch in to 480 rows, quit, statistics, briefing, OK -> new mission at the
   start zoom (2424x1000 at 2316x904).
 
+## 2026-11-08 — End-of-game statistics: full-screen layout + statistics over time (scoreboard)
+
+- The Game Statistics screen (800x600 menu) had no layout -> small 4:3 box. New layouts `statistics` (10 rows,
+  2.8x on the cover) / `statistics-20` / `-full` -> [menu-layout](porting/menu-layout.md).
+- RE: per-player statistics records `0x7acfac + id*0x44`, score formula and ranking in `0x53e720` ->
+  [game-state-ui](reverse-engineering/game-state-ui.md) section 5.
+- Settlers United adds "View Extended Game Stats" (charts per category over game time) and saves statistics
+  images -> [settlers-united](settlers-united/README.md). Our own version: `end_stats.rs` samples the counters
+  every 10 s game time and draws a chart sheet on the statistics screen.
+
 ## 2026-11-08 — Generated stone background behind menu layouts
 
 - Stone screens' surroundings: `Background::Stone` (`stone.rs`, procedural, no asset) instead of flat grey (user

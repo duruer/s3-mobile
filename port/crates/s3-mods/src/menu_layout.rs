@@ -231,7 +231,11 @@ pub fn detect(px: &[u16], w: u32, h: u32) -> Option<&'static MenuLayout> {
             return Some(with_popup(base, pop));
         }
     }
-    LAYOUTS.iter().copied().find(|l| l.matches(px, w, h))
+    let l = LAYOUTS.iter().copied().find(|l| l.matches(px, w, h))?;
+    if std::ptr::eq(l, &STATISTICS) && statistics_has_row(px, 10) {
+        return Some(&STATISTICS_20);
+    }
+    Some(l)
 }
 
 /// Find a layout by name: a detected one, a whole-frame variant, or `"<screen>+<popup>"`.
@@ -241,7 +245,7 @@ pub fn by_name(name: &str) -> Option<&'static MenuLayout> {
         let pop = POPUPS.iter().copied().find(|q| q.name == p)?;
         return Some(with_popup(base, pop));
     }
-    LAYOUTS.iter().chain(FULL_LAYOUTS.iter()).copied().find(|l| l.name == name)
+    LAYOUTS.iter().chain(VARIANT_LAYOUTS.iter()).chain(FULL_LAYOUTS.iter()).copied().find(|l| l.name == name)
 }
 
 /// Prefer the whole original screen ([`full_variant`]) when it can be shown at least this big relative to the
@@ -318,6 +322,8 @@ full!(LAN_GAME_FULL, LAN_GAME, "lan-game-full");
 full!(LOAD_GAME_FULL, LOAD_GAME, "load-game-full");
 full!(BRIEFING_FULL, BRIEFING, "briefing-full");
 full!(CREDITS_FULL, CREDITS, "credits-full");
+full!(STATISTICS_FULL, STATISTICS, "statistics-full");
+full!(STATISTICS_20_FULL, STATISTICS_20, "statistics-20-full");
 
 /// Whole-frame variants (not detected themselves; see [`choose`]).
 pub static FULL_LAYOUTS: &[&MenuLayout] = &[
@@ -332,6 +338,8 @@ pub static FULL_LAYOUTS: &[&MenuLayout] = &[
     &LOAD_GAME_FULL,
     &BRIEFING_FULL,
     &CREDITS_FULL,
+    &STATISTICS_FULL,
+    &STATISTICS_20_FULL,
 ];
 
 /// Canvas placement in a window: (origin x, origin y, scale window px per canvas unit).
@@ -469,6 +477,7 @@ pub static LAYOUTS: &[&MenuLayout] = &[
     &LOAD_GAME,
     &BRIEFING,
     &CREDITS,
+    &STATISTICS,
     &LOADING,
 ];
 
@@ -741,9 +750,94 @@ pub static CREDITS: MenuLayout = MenuLayout {
     ],
 };
 
+/// Static spots of the end-of-game "Game Statistics" screen (stone, table header, the first row's blue cells).
+/// The table has one 20 px row per player (y 102 + 20 * i, up to 20 players); the rest of the frame is stone.
+const STATISTICS_PROBES: [Probe; 6] = [
+    pr(185, 540, 123, 128, 126),
+    pr(266, 540, 123, 130, 141),
+    pr(30, 84, 58, 73, 87),
+    pr(290, 40, 49, 64, 85),
+    pr(400, 540, 71, 104, 126),
+    pr(3, 300, 95, 143, 182),
+];
+
+/// Does the statistics table have a row `row` (0-based)? Its Score cell is a blue bar (dark blue background,
+/// light blue part = share of the best value), never stone.
+pub fn statistics_has_row(px: &[u16], row: u16) -> bool {
+    let y = 102 + 20 * row as usize + 8;
+    if px.len() < 800 * 600 || y + 4 > 600 {
+        return false;
+    }
+    let m = block_mean(px, 800, 255, y);
+    m[2] >= 180 && m[0] < 90
+}
+
+/// Pieces of the statistics screen with `rows` player rows: title + header + rows, then the table's bottom
+/// border (y 578..600) right below the last row, so the table looks closed.
+macro_rules! statistics_pieces {
+    ($rows:expr) => {
+        &[pc(0, 0, 800, 102 + 20 * $rows, 0, 0), pc(0, 578, 800, 22, 0, 102 + 20 * $rows)]
+    };
+}
+
+/// End-of-game "Game Statistics" (Score, Settlers, Buildings, Food, Mines, Gold, Manna, Soldiers, Battles per
+/// player; any click leaves it): title, header and the first 10 player rows, closed by the table's bottom border.
+/// 2.8x on the Fold4 cover (was a 1.5x 4:3 box with black bars). More players: [`STATISTICS_20`].
+pub static STATISTICS: MenuLayout = MenuLayout {
+    name: "statistics",
+    frame: [800, 600],
+    canvas: [800, 102 + 20 * 10 + 22],
+    background: STONE_BG,
+    pieces: statistics_pieces!(10),
+    neutral: [400, 540],
+    band_tiles: &[],
+    probes: &STATISTICS_PROBES,
+};
+
+/// The statistics screen with 11..20 players: not detected by probes; [`detect`] picks it for a `statistics` frame
+/// with an 11th row ([`statistics_has_row`]).
+pub static STATISTICS_20: MenuLayout = MenuLayout {
+    name: "statistics-20",
+    frame: [800, 600],
+    canvas: [800, 102 + 20 * 20 + 22],
+    background: STONE_BG,
+    pieces: statistics_pieces!(20),
+    neutral: [400, 540],
+    band_tiles: &[],
+    probes: &STATISTICS_PROBES,
+};
+
+/// Layouts picked by [`detect`] itself (not in [`LAYOUTS`]).
+pub static VARIANT_LAYOUTS: &[&MenuLayout] = &[&STATISTICS_20];
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn statistics_screen() {
+        let mut f = vec![0u16; 800 * 600];
+        paint(&mut f, &STATISTICS_PROBES);
+        let l = detect(&f, 800, 600).unwrap();
+        assert_eq!(l.name, "statistics");
+        // Fold4 cover: the band (title + 10 rows) at ~2.8x; inner screen: the whole frame.
+        assert_eq!(choose(l, 2316, 904).name, "statistics");
+        assert!(canvas_placement(l, 2316, 904).2 > 2.7);
+        assert_eq!(choose(l, 2176, 1812).name, "statistics-full");
+        // Row 10 maps 1:1, the bottom border sits right below it.
+        assert_eq!(l.canvas_to_game(400.0, 295.0), (400.0, 295.0));
+        assert_eq!(l.canvas_to_game(400.0, 305.0), (400.0, 581.0));
+        // 11 players: the 20-row variant (Score cell of row 11 is a blue bar).
+        let blue = ((41u16 >> 3) << 11) | ((40u16 >> 2) << 5) | (206u16 >> 3);
+        for y in 310..314 {
+            for x in 255..259 {
+                f[y * 800 + x] = blue;
+            }
+        }
+        assert_eq!(detect(&f, 800, 600).map(|l| l.name), Some("statistics-20"));
+        assert!(by_name("statistics-20").is_some());
+        assert_eq!(choose(&STATISTICS_20, 2176, 1812).name, "statistics-20-full");
+    }
 
     #[test]
     fn pieces_map_both_ways() {

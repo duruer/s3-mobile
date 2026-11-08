@@ -66,6 +66,7 @@ split screen and resizing at once.
 | `load-game` | Load Game | upper 330 rows of the list (~14 entries), buttons right |
 | `briefing` | campaign mission briefing | text panel left, map right, tip text + Cancel/OK below |
 | `credits` | Credits (text scrolls up over the helmet relief) | middle band y 144..456 of the frame (every line passes through it), 2.9x on the Fold4 cover |
+| `statistics` | end-of-game Game Statistics (user report 2026-11-08: was a small 4:3 box with black bars) | title, header and the first 10 player rows (y 0..302), closed by the table's bottom border (y 578..600); 2.8x on the Fold4 cover. Any tap leaves the screen (game behaviour). An 11th row (blue Score bar at `255,310`, `statistics_has_row`) -> `statistics-20` (all 20 rows, 1.7x). Tall windows: `statistics-full` / `statistics-20-full`. The cells are bars (light blue = share of the column's best value), so probes avoid them. Our "Statistics over time" charts are drawn on top: [Statistics over time](#statistics-over-time-end_statsrs) |
 | `loading` | 640x480 loading screen before a map (laurel + helmets) | kept whole, sides filled with its beige |
 
 Window bands above / below a canvas (tall windows, e.g. Fold4 inner 2176x1812 with `main-menu-full`) are filled
@@ -128,6 +129,25 @@ Add a screen: take a shot, measure rectangles (any image viewer), add a `MenuLay
 - 2026-11-07 desktop previews of all screens at 2316x904; all 32 shots detect the right layout, popup shots -> Fit.
 - 2026-11-07 phone (Fold4 cover, 2316x904): main menu full screen; tap on the moved "Load Game" (window 884,235 ->
   game 166,355) opened Load Game, shown with its layout. Tutorial loading screen (`loading`) full screen.
+
+## Statistics over time (`end_stats.rs`, 2026-11-08)
+
+User request: "make the scoreboard like Settlers United made it". SU adds a "View Extended Game Stats" button to
+the end-of-game statistics that opens charts per category against game time ([settlers-united](../settlers-united/README.md)).
+Our own version (no SU code or assets):
+
+- Mod `end_stats::EndStatsMod` samples the game's per-player statistics records (`0x7acfac + id*0x44`, see
+  [game-state-ui.md](../reverse-engineering/game-state-ui.md) section 5) every 10 s of game time (game clock
+  `0x7dfd48`), at most 720 samples (then every second one dropped, interval doubled). In-game score = the game's
+  formula, gold halved like the screen. When the statistics screen shows, it takes the final values (the game's
+  stored score + ranks). Read only; nothing is saved. A history starts with each game / loaded save in the session.
+- On the `statistics*` layouts: a gold button "Statistics over time" bottom right (+ hint "Tap anywhere else to
+  continue"). Tap -> full-window sheet: tabs Score / Settlers / Buildings / Food / Mines / Gold / Manna /
+  Soldiers / Battles, a line per player (colour by rank), axes Count / Game time, legend = the game's own player
+  rows (rank, team, name copied from the frame with `frame_inset`) + final value. Close button or Back closes it.
+  While it is open no touch reaches the game (its click would leave the screen). Desktop mouse clicks go to the
+  game directly (button is touch-only; `wtap` in headless runs).
+- Only with a layout display mode (Native wide / Fill: the screen must be detected).
 
 ## Stone background (2026-11-08)
 

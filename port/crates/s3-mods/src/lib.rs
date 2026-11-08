@@ -22,6 +22,7 @@ pub mod speed; // game speed 1x-4x (single player)
 pub mod display; // display modes + shared screen<->game transform (docs/porting/display.md)
 pub mod fps; // FPS counter overlay
 pub mod game_time; // game time h:mm:ss overlay
+pub mod end_stats; // statistics over game time on the end-of-game statistics screen (docs/porting/menu-layout.md)
 pub mod stone; // generated stone texture behind menu layouts
 pub mod fallback;
 pub mod fast; // native fast paths for hot guest loops (docs/porting/performance.md)
@@ -251,6 +252,7 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     unit_orders::install(m, applied == Some("gog-base"));
     ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
     ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
+    add_mod(m, Box::new(end_stats::EndStatsMod::default())); // charts on the end-of-game statistics screen
     add_mod(m, Box::new(game_time::GameTimeMod::default())); // game time, drawn on top of the UI modes
     add_mod(m, Box::new(fps::FpsMod::default())); // FPS counter, drawn on top of the UI modes
     speed::install(m); // back to 1x outside a single-player game

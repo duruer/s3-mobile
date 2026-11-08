@@ -21,6 +21,19 @@ In the game dir SU added: `s3_united.exe` ([exe-variants](../game-files/exe-vari
 `mfc140.dll`, `ucrtbase.dll`, `crashpad_handler.exe`, `.sentry-native/`, `imgui.ini`, `s3Scripts/`, `s3ce.exe` + `res/*.po`,
 and modified `GFX/Siedler3_25.f8007e01f.dat` (backup `.original`).
 
+## End-of-game statistics (checked 2026-11-08, read as data)
+
+- Game-dir `s3.dll` strings (`0x1121e0..0x112308`): "Points", "Settlers", "Buildings", "Mine", "Gold", "Mana",
+  "Soldiers", "Battles", ImGui ids `#gamestats-open` / `#gamestats-container`, "View Extended Game Stats", "Stats",
+  "Count", "Game Time"; `res/s3ce.*.po` also translates "food" and these keys. So SU adds a button on the
+  statistics screen that opens an ImGui window with per-category charts (count against game time); HYPOTHESIS:
+  sampled during the game from the game's statistics counters (we did not run SU).
+- Launcher (`app.asar`): game state `EndStatistic`; statistics images saved to `Pictures/Settlers United/Settlers 3
+  Statistics/` (timestamp `%Y-%m-%d_%H.%M.%S` in `s3.dll`) and listed in a launcher page ("There are no statistics
+  available yet. Play a game.").
+- Our own equivalent: [menu-layout.md "Statistics over time"](../porting/menu-layout.md). Not done: saving the
+  statistics as images.
+
 ## Relevance to the port
 
 - SU proves the original exe can be wrapped: rendering moved to D3D9 by hooking DirectDraw. We do the same idea at the API layer (HLE).
