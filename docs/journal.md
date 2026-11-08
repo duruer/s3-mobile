@@ -2,6 +2,15 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Classic panel flicker while zooming
+
+- Phone report: in UI mode A the original panel jumped to a smaller size for a moment on every zoom step.
+- Cause: the presenter used the panel split only when the latest window-layer scene was made for the same frame
+  size; the frame of a new size often arrives first, so that frame was shown without the split (whole frame
+  scaled). The mods side also dropped the split when the layout globals were already switched.
+- Fix: `display::panel_for_frame` derives the split from the frame height (layout variant) while the scene says
+  Classic is on; `panel_split` does the same on a globals mismatch. Android + desktop presenters use it.
+
 ## 2026-11-08 — re-messages: in-game message lines
 
 RE of the bottom-left message lines for a constant-size overlay ([game-state-ui.md](reverse-engineering/game-state-ui.md)

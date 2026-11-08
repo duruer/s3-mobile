@@ -539,12 +539,32 @@ pub fn panel_split(m: &mut Machine) -> Option<PanelSplit> {
     if !crate::zoom::enabled(m) || !crate::res::in_game(m) {
         return None;
     }
-    if (m.mem.read_u32(crate::res::L_SCREEN_W), m.mem.read_u32(crate::res::L_SCREEN_H)) != (fw, fh) {
-        return None;
-    }
     let pw = m.mem.read_u32(crate::res::L_PANEL_W);
+    if (m.mem.read_u32(crate::res::L_SCREEN_W), m.mem.read_u32(crate::res::L_SCREEN_H)) != (fw, fh) {
+        // Globals already switched to the next size while this frame has the old one (zoom in progress): the
+        // split follows from the frame height (see `panel_for_frame`).
+        if pw == 0 {
+            return None;
+        }
+        let v = crate::res::variant_for(fh);
+        return (v.panel_w < fw && v.h <= fh).then_some(PanelSplit { w: v.panel_w, h: v.h });
+    }
     let v = crate::res::variant(m.mem.read_u32(crate::res::L_RES))?;
     (pw > 0 && pw == v.panel_w && pw < fw && v.h <= fh).then_some(PanelSplit { w: pw, h: v.h })
+}
+
+/// Frontends: the panel split for a frame of size `frame`, given the latest published scene (its split and the
+/// frame size it was made for). During a zoom the frame of a new size can reach the presenter before the scene
+/// made for it; showing it without the split made the Classic panel jump to the frame's scale for one frame
+/// (flicker, 2026-11-08). The split only depends on the frame height (layout variant), so it is derived for the
+/// new size while the scene says Classic is on.
+pub fn panel_for_frame(scene_panel: Option<PanelSplit>, scene_frame: (u32, u32), frame: (u32, u32)) -> Option<PanelSplit> {
+    let p = scene_panel?;
+    if scene_frame == frame {
+        return Some(p);
+    }
+    let v = crate::res::variant_for(frame.1);
+    (v.panel_w < frame.0 && v.h <= frame.1).then_some(PanelSplit { w: v.panel_w, h: v.h })
 }
 
 /// Viewport of the last game frame as the frontend will show it: published window size, display mode, the panel

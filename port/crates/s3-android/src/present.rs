@@ -543,7 +543,7 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
         let (game_frame, status_seq) = pick_image(&shared, &mut local, &mut status_cache, &mut frame_seq);
         let fb = local.as_ref().unwrap();
         shown = (frame_seq, status_seq, disp_seq, scene.seq);
-        let panel = if game_frame && scene.frame == (fb.width, fb.height) { scene.panel } else { None };
+        let panel = if game_frame { s3_mods::display::panel_for_frame(scene.panel, scene.frame, (fb.width, fb.height)) } else { None };
         // Window layer for this window size (a scene made for another size waits for the next one).
         let layer_on = game_frame && !scene.list.is_empty();
 

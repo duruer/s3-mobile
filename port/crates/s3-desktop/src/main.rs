@@ -357,7 +357,7 @@ fn write_png_rgb(path: &Path, w: u32, h: u32, rgb: &[u8]) -> Result<(), String> 
 /// split of the scene) and the mods' window layer on top.
 fn compose_window(fb: &FrameBuffer, scene: &s3_mods::Scene, raster: &mut s3_mods::LayerRaster, d: s3_mods::display::DisplaySettings, ww: u32, wh: u32) -> (Vec<u32>, s3_mods::display::Viewport) {
     use s3_mods::display::Viewport;
-    let panel = if scene.frame == (fb.width, fb.height) { scene.panel } else { None };
+    let panel = s3_mods::display::panel_for_frame(scene.panel, scene.frame, (fb.width, fb.height));
     let vp = Viewport::for_frame_split(d.mode, &fb.pixels, fb.width, fb.height, ww, wh, panel);
     let mut buf = vec![0u32; (ww * wh) as usize];
     s3_mods::display::scale_to_xrgb(&vp, d.filter, &fb.pixels, &mut buf);
@@ -484,7 +484,7 @@ mod window {
             self.size = (ww, wh);
             let scene = self.layer.as_ref().map(|l| l.latest()).unwrap_or_default();
             self.layer_seq = scene.seq;
-            let panel = if scene.frame == (fb.width, fb.height) { scene.panel } else { None };
+            let panel = s3_mods::display::panel_for_frame(scene.panel, scene.frame, (fb.width, fb.height));
             let vp = Viewport::for_frame_split(self.display.mode, &fb.pixels, fb.width, fb.height, ww as u32, wh as u32, panel);
             self.buf.resize(ww * wh, 0);
             s3_mods::display::scale_to_xrgb(&vp, self.display.filter, &fb.pixels, &mut self.buf);
@@ -693,7 +693,7 @@ fn main() {
             if fw > 0 {
                 let mode = s3_mods::display::display_settings(&mut engine.machine).mode;
                 let scene = layer.latest();
-                let panel = if scene.frame == (fw, fh) { scene.panel } else { None };
+                let panel = s3_mods::display::panel_for_frame(scene.panel, scene.frame, (fw, fh));
                 let vp = Some(s3_mods::display::Viewport::new_split(mode, fw, fh, ww, wh, panel));
                 if vp != published_vp {
                     published_vp = vp;
