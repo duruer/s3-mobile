@@ -97,6 +97,9 @@ pub struct View {
     pub vis: Option<((i32, i32, i32, i32), i32)>,
     /// The ✕ button as drawn (window layer, mapped back to game pixels); overrides the `vis` placement.
     pub cancel: Option<(i32, i32, i32, i32)>,
+    /// The ✕ is also shown while units or a building are selected (UI mode A: "Deselect"; the original panel
+    /// had no other way than a right click, user report 2026-11-08).
+    pub deselect_button: bool,
 }
 
 /// What a touch does in game.
@@ -160,6 +163,13 @@ pub fn decide_tap(v: &View, x: i32, y: i32) -> TapAction {
     let (Some(l), Some(mode)) = (v.layout, v.mode) else { return TapAction::Click { x, y } };
     if mode == Mode::BuildPlacement && inside(v.cancel.unwrap_or_else(|| cancel_button_in(&l, v.vis)), x, y) {
         return TapAction::CancelBuild;
+    }
+    if v.deselect_button
+        && matches!(mode, Mode::UnitsSelected | Mode::BuildingSelected)
+        && inside(v.cancel.unwrap_or_else(|| cancel_button_in(&l, v.vis)), x, y)
+    {
+        // Same as a two-finger tap there (deselect units / right click deselects the building).
+        return decide_two_finger_tap(v, x, y);
     }
     if l.region(x, y) != Region::Map {
         // Panel buttons / minimap: the game handles them (choosing another slot or tab also ends placement).
@@ -377,7 +387,7 @@ mod tests {
     use super::*;
 
     fn view(mode: Mode, hits: Vec<Hit>) -> View {
-        View { layout: Some(Layout::GOG_640), mode: Some(mode), hits, selected: vec![], vis: None, cancel: None }
+        View { layout: Some(Layout::GOG_640), mode: Some(mode), hits, selected: vec![], vis: None, cancel: None, deselect_button: false }
     }
     const OWN_SOLDIER: Hit = Hit { kind: 1, x: 300, y: 300, id: 41, own: true };
     const ENEMY: Hit = Hit { kind: 2, x: 500, y: 200, id: 90, own: false };
@@ -456,6 +466,14 @@ mod tests {
         // The ✕ only exists in placement mode.
         let n = view(Mode::Normal, vec![]);
         assert_eq!(decide_tap(&n, bx + 5, by + 5), TapAction::Click { x: bx + 5, y: by + 5 });
+        // UI mode A also shows it as "Deselect" with a selection.
+        let mut u = view(Mode::UnitsSelected, vec![]);
+        assert_ne!(decide_tap(&u, bx + 5, by + 5), TapAction::Deselect);
+        u.deselect_button = true;
+        assert_eq!(decide_tap(&u, bx + 5, by + 5), TapAction::Deselect);
+        let mut b = view(Mode::BuildingSelected, vec![]);
+        b.deselect_button = true;
+        assert_eq!(decide_tap(&b, bx + 5, by + 5), TapAction::RightClick { x: bx + 5, y: by + 5 });
     }
 
     #[test]

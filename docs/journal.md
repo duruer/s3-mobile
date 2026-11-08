@@ -2,6 +2,15 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Classic: minimap edge at panel scale, Deselect button
+
+- The minimap frame's diagonal edge (and some leaves) of the 640x480 panel reach past the panel width into the
+  map part and still scaled with the zoom. Fix: `PanelSplit::overhang` bands drawn at the panel scale
+  ([display.md](porting/display.md)). Verified on desktop at the widest zoom (edge continuous with the panel).
+- UI mode A had no visible way to drop a unit selection (only a two-finger tap or tapping a building). The ✕ now
+  also shows as "Deselect" with units or a building selected ([touch.md](porting/touch.md)). Verified on desktop:
+  box select 14 -> tap Deselect -> selection and unit panel gone.
+
 ## 2026-11-08 — Classic panel flicker while zooming
 
 - Phone report: in UI mode A the original panel jumped to a smaller size for a moment on every zoom step.

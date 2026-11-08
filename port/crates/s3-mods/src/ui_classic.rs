@@ -529,7 +529,10 @@ impl ClassicTouch {
             let px = 15.0 * u;
             let (tw, th) = measure_text(px, Weight::Bold, &chip);
             let vp = crate::draw_viewport(m);
-            let x = vp.game_to_window(l.panel_w as f32, 0.0).0.round() as i32 + q(8.0);
+            // Right of the panel art incl. the minimap frame's diagonal edge at the top (`PanelSplit::overhang`).
+            let right = vp.panel.map_or(l.panel_w as f32, |p| p.art_right(0.0).max(l.panel_w as f32));
+            // (`right - 1` is the last art pixel, mapped at the panel's scale; `right` itself is map.)
+            let x = vp.game_to_window(right - 1.0, 0.0).0.round() as i32 + q(10.0);
             let top = self.vis.map(|v| v.1).unwrap_or(0) + q(8.0);
             let w = tw + q(20.0);
             if x + w < c.width() as i32 - q(60.0) {

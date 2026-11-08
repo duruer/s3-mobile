@@ -105,7 +105,7 @@ pub fn selection_box(c: &mut Layer, a: (f32, f32), b: (f32, f32), u: f32) {
 }
 
 /// Build placement cancel button (✕) at window rect `r`.
-pub fn cancel_button(c: &mut Layer, r: (i32, i32, i32, i32), u: f32) {
+pub fn cancel_button(c: &mut Layer, r: (i32, i32, i32, i32), u: f32, label: &str) {
     let (x, y, w, h) = r;
     c.fill_rounded_rect(x, y, w, h, 10.0 * u, Rgba::rgba(30, 20, 10, 190));
     c.stroke_rounded_rect(x, y, w, h, 10.0 * u, 2.0 * u, CANCEL);
@@ -117,7 +117,6 @@ pub fn cancel_button(c: &mut Layer, r: (i32, i32, i32, i32), u: f32) {
         c.fill_circle(cx + k * s, cy + k * s, 2.2 * u, Rgba::WHITE);
         c.fill_circle(cx + k * s, cy - k * s, 2.2 * u, Rgba::WHITE);
     }
-    let label = "Cancel";
     let px = 11.0 * u;
     let (tw, th) = crate::overlay::measure_text(px, Weight::Bold, label);
     let q = |v: f32| (v * u).round() as i32;

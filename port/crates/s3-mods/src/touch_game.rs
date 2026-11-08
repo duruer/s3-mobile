@@ -165,6 +165,7 @@ pub fn view(m: &Machine, frame: (u32, u32), with_hits: bool) -> View {
         selected: selection(m),
         vis: None,
         cancel: None,
+        deselect_button: false,
     }
 }
 

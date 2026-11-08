@@ -155,6 +155,40 @@ pub struct PanelSplit {
     pub h: u32,
 }
 
+/// Parts of the 640x480 panel art (`res::CLASSIC_VARIANT`) that reach past the panel width into the map view:
+/// the minimap frame's diagonal edge and leaves (`y0, y1, x_end` in game px; 4-row bands, `x_end` = the
+/// rightmost art pixel + 1 in the band, measured from a game frame with a black map behind, 2026-11-08). With a
+/// [`PanelSplit`] they are drawn at the panel's scale on top of the map part, else they scaled with the zoom
+/// like the map (user report: "the diagonal edge still moves"). Numbers only, no game art.
+const OVERHANG_136X480: [(u16, u16, u16); 53] = [
+    (0, 8, 207), (8, 12, 205), (12, 16, 203), (16, 20, 200), (20, 24, 198), (24, 28, 197), (28, 32, 195),
+    (32, 36, 192), (36, 40, 191), (40, 44, 189), (44, 48, 186), (48, 52, 185), (52, 56, 183), (56, 60, 180),
+    (60, 64, 179), (64, 68, 177), (68, 72, 174), (72, 76, 173), (76, 84, 171), (84, 96, 175), (96, 100, 161),
+    (100, 104, 158), (104, 108, 157), (108, 116, 160), (116, 120, 158), (120, 124, 155), (124, 128, 153),
+    (128, 132, 150), (132, 136, 147), (136, 140, 144), (140, 144, 142), (144, 148, 141), (148, 152, 139),
+    (152, 156, 137), (196, 200, 137), (200, 204, 140), (204, 208, 139), (208, 212, 138), (212, 216, 140),
+    (216, 220, 142), (220, 224, 143), (224, 228, 142), (304, 308, 143), (308, 312, 140), (324, 328, 141),
+    (328, 332, 140), (380, 384, 138), (384, 388, 141), (388, 392, 140), (392, 396, 138), (460, 464, 141),
+    (464, 476, 144), (476, 480, 142),
+];
+
+impl PanelSplit {
+    /// Bands of the panel art past `w` (see `OVERHANG_136X480`; none for the other variants).
+    pub fn overhang(&self) -> &'static [(u16, u16, u16)] {
+        if (self.w, self.h) == (136, 480) {
+            &OVERHANG_136X480
+        } else {
+            &[]
+        }
+    }
+
+    /// Right edge (game x) of the panel art in row `y`: `w`, or further in an overhang band.
+    pub fn art_right(&self, y: f32) -> f32 {
+        let yi = y.max(0.0) as u16;
+        self.overhang().iter().find(|b| yi >= b.0 && yi < b.1).map_or(self.w as f32, |b| b.2 as f32)
+    }
+}
+
 /// Placement of a `game_w` x `game_h` frame in a `win_w` x `win_h` window (physical pixels). The destination
 /// rectangle may extend past the window (`Fill`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -248,10 +282,20 @@ impl Viewport {
     pub fn quads(&self) -> Vec<([f32; 4], [f32; 4])> {
         let (gw, gh) = (self.game_w as f32, self.game_h as f32);
         match self.split() {
-            Some((p, pww, ps)) => vec![
-                ([0.0, 0.0, p.w as f32, p.h as f32], [0.0, 0.0, pww, p.h as f32 * ps]),
-                ([p.w as f32, 0.0, gw - p.w as f32, gh], [pww, 0.0, self.win_w as f32 - pww, self.win_h as f32]),
-            ],
+            Some((p, pww, ps)) => {
+                let mut q = vec![
+                    ([0.0, 0.0, p.w as f32, p.h as f32], [0.0, 0.0, pww, p.h as f32 * ps]),
+                    ([p.w as f32, 0.0, gw - p.w as f32, gh], [pww, 0.0, self.win_w as f32 - pww, self.win_h as f32]),
+                ];
+                // Panel art past the panel width, at the panel's scale on top of the map part.
+                for &(y0, y1, xe) in p.overhang() {
+                    let (y0, y1, xe) = (y0 as f32, y1 as f32, (xe as f32).min(gw));
+                    if xe > p.w as f32 && y1 <= gh {
+                        q.push(([p.w as f32, y0, xe - p.w as f32, y1 - y0], [pww, y0 * ps, (xe - p.w as f32) * ps, (y1 - y0) * ps]));
+                    }
+                }
+                q
+            }
             None => vec![([0.0, 0.0, gw, gh], [self.dst_x, self.dst_y, self.dst_w, self.dst_h])],
         }
     }
@@ -281,7 +325,7 @@ impl Viewport {
     /// Window pixel -> game coordinates (unclamped, fractional).
     pub fn window_to_game_f(&self, x: f32, y: f32) -> (f32, f32) {
         if let Some((p, pww, ps)) = self.split() {
-            if x < pww {
+            if x < pww || (y < p.h as f32 * ps && x < p.art_right(y / ps) * ps) {
                 return (x / ps, y / ps);
             }
             let mw = (self.win_w as f32 - pww).max(1.0);
@@ -300,7 +344,7 @@ impl Viewport {
     /// Game pixel -> window pixel (top-left corner of that game pixel).
     pub fn game_to_window(&self, gx: f32, gy: f32) -> (f32, f32) {
         if let Some((p, pww, ps)) = self.split() {
-            if gx < p.w as f32 {
+            if gx < p.art_right(gy) {
                 return (gx * ps, gy * ps);
             }
             let mw = self.win_w as f32 - pww;
@@ -764,8 +808,18 @@ mod tests {
         let w1 = v.game_to_window(176.0, 0.0).0;
         let w2 = v2.game_to_window(216.0, 0.0).0;
         assert!((w1 - w2).abs() < 20.0, "{w1} {w2}");
-        // Two quads; the CPU scaler fills the whole window.
+        // Two quads (no overhang table for this variant); the CPU scaler fills the whole window.
         assert_eq!(v.quads().len(), 2);
+        // The 640x480 panel: the minimap frame's diagonal edge stays at the panel scale.
+        let v3 = Viewport::new_split(DisplayMode::NativeWide, 1600, 640, 2316, 904, Some(PanelSplit { w: 136, h: 480 }));
+        assert_eq!(v3.quads().len(), 2 + 53);
+        let ps3 = 904.0 / 480.0;
+        let (wx, wy) = v3.game_to_window(200.0, 2.0);
+        assert!((wx - 200.0 * ps3).abs() < 0.01 && (wy - 2.0 * ps3).abs() < 0.01);
+        assert_eq!(v3.window_to_game(200.0 * ps3 + 0.5, 2.0 * ps3 + 0.5), (200, 2));
+        // Below the overhang: map scale.
+        let (wx, _) = v3.game_to_window(200.0, 300.0);
+        assert!((wx - 200.0 * ps3).abs() > 1.0);
         let src: Vec<u16> = (0..1480 * 600).map(|i| if i % 1480 < 176 { 0xF800 } else { 0x001F }).collect();
         let mut dst = vec![0u32; 2316 * 904];
         scale_to_xrgb(&v, ScaleFilter::Nearest, &src, &mut dst);

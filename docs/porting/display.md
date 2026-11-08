@@ -64,6 +64,14 @@ both fixed and verified on the phone (screen recording of injected pinches, 1045
    landscape redraw) can exceed: now `res::in_game_frame` (up to 10 s while the shown frame has a custom size).
    `S3_PANEL_TRACE=1` prints why `panel_split` returned none.
 
+**Panel art past the panel width (2026-11-08).** The 640x480 panel's minimap frame has a diagonal right edge (up
+to x 207 at the top) and leaves that reach a few px past `w = 136`; they lie in the map part and scaled with the
+zoom ("the diagonal edge still moves"). `PanelSplit::overhang` lists them as 4-row bands (`y0, y1, x_end`, measured
+from a frame with a black map behind; numbers only); `quads()` adds one panel-scale quad per band on top of the
+map part, and `window_to_game` / `game_to_window` use the panel scale there (`PanelSplit::art_right`). Classic
+never goes below the art's height (480), so the map part is never larger than the panel scale and no copy of the
+edge shows next to it. The Classic context chip starts right of the overhang.
+
 `window_to_game` / `game_to_window` / `scale()` (= map part) / `quads()` (source -> destination rectangles: one, or
 panel + map) handle it, so touch mapping, the GPU presenter (one quad per part, sharp-bilinear scale per part), the
 CPU scaler (`scale_to_xrgb`) and the mods agree. Fit, Fill, Stretch and menus (layouts) are unchanged.

@@ -486,7 +486,9 @@ impl Mod for ContextTouch {
         // Mode B (Mobile HUD) shows its own placement banner with Cancel; our ✕ would sit on its resource strip.
         let hud = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode == crate::settings::UiMode::MobileHud;
         if v.mode == Some(Mode::BuildPlacement) && !hud {
-            fx::cancel_button(c, cancel_window_rect(m), u);
+            fx::cancel_button(c, cancel_window_rect(m), u, "Cancel");
+        } else if matches!(v.mode, Some(Mode::UnitsSelected | Mode::BuildingSelected)) && !hud {
+            fx::cancel_button(c, cancel_window_rect(m), u, "Deselect");
         }
     }
 }
@@ -512,5 +514,6 @@ fn with_vis(m: &mut Machine, mut v: View) -> View {
     let (gx0, gy0) = vp.window_to_game_f(x as f32, y as f32);
     let (gx1, gy1) = vp.window_to_game_f((x + w) as f32, (y + h) as f32);
     v.cancel = Some((gx0.floor() as i32, gy0.floor() as i32, (gx1 - gx0).ceil() as i32, (gy1 - gy0).ceil() as i32));
+    v.deselect_button = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode == crate::settings::UiMode::ClassicTouch;
     v
 }

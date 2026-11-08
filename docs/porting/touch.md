@@ -33,6 +33,7 @@ layer at a constant on-screen size; selection rings follow the map scale. Raw po
 | Tap ground, nothing selected | left click (the game's default: deselect / nothing) | – |
 | Tap in build placement | left click = place the site (the game checks the spot) | – |
 | Tap ✕ (top right of the map, placement only) / two-finger tap | cancel placement (`[gd+0x2d28c] = 0`, panel dirty) | – |
+| Tap ✕ "Deselect" (UI mode A, units or a building selected; 2026-11-08) | same as a two-finger tap: clear the unit selection / right click deselects the building (`View::deselect_button`) | – |
 | Tap panel / minimap | left click (panel buttons, minimap jump; choosing another building or tab also ends placement) | left click |
 | Double tap own soldier | Ctrl + left click = select the same type nearby (game rule, `0x533f21`) HYPOTHESIS: Ctrl reaches the game through our WM_KEYDOWN; not verified at runtime | – |
 | Two-finger tap | placement: cancel; building selected: quick right click (deselect); units selected: clear the selection; else nothing | right click (fallback) |
