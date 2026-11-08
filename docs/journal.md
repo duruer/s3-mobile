@@ -2,6 +2,15 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — xBR filter, FPS center, messages under HUD sheets
+
+- New display filter "xBR (HD edges)": GPU xBR-lv2 shader (`gl::FS_XBR`) for smooth pixel-art edges at high zoom.
+  Phone: compiles, 120 fps like sharp bilinear. HD sprite pack plan recorded in [display.md](porting/display.md).
+- FPS counter "center" positions are centered on the whole window (were centered right of the Classic panel);
+  labels use "center"; `Layer::text_centered` shrinks labels that do not fit their box (down to 60 %).
+- Game message lines are drawn below the UI modes (HUD sheets / dialogs cover them; HUD gets taps first); the
+  tutorial Next still works (desktop: step 1 -> 2 after closing the settings).
+
 ## 2026-11-08 — FPS limit and FPS counter position settings
 
 - Both UI modes: "FPS limit" cycles 30 / 60 / 120 / 144 (+ display refresh rate when higher), applied to the

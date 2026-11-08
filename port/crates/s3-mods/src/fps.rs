@@ -164,7 +164,8 @@ impl Mod for FpsMod {
         let pos = if pos == P::Auto { if hud { P::TopCenter } else { P::TopRight } } else { pos };
         let x = match pos {
             P::TopLeft | P::BottomLeft => left,
-            P::TopCenter | P::BottomCenter => left + (vx + vw - left - w) / 2,
+            // Centered on the whole window (not on the part right of the Classic panel).
+            P::TopCenter | P::BottomCenter => vx + (vw - w) / 2,
             _ => (vx + vw - w - m2).max(left),
         };
         let y = match pos {

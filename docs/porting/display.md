@@ -91,6 +91,22 @@ from the window's by up to ~0.5 % and `Viewport::new` left 1-4 px bars whose wid
 everything anchored to the shown frame (Mobile HUD bars, ✕, FPS counter) shifted by a few px per step ("the HUD
 jitters"). Within 2 % `NativeWide` now stretches the frame to the whole window.
 
+**xBR upscaling filter (2026-11-08).** Zoom shows fewer game pixels scaled up (4.5x at 200 px height), so the
+1998 pixel art looks blocky. `ScaleFilter::Xbr` ("xBR (HD edges)") is a GPU pixel-art upscaler in the Android
+presenter: `gl::FS_XBR`, our GLSL ES 1.00 version of Hyllian's xBR level 2 (single pass at any scale, 21 nearest
+taps, luma-weighted edge detection, 30/45/60 degree edge blends with a one-output-pixel smoothstep; bvec logic as
+0/1 floats). Falls back to sharp bilinear when the shader does not compile (logged) and on the desktop CPU scaler.
+Fold4 cover at 240 px height: compiles on Adreno, 120 fps with xBR and with sharp (no visible cost); edges of
+units, buildings and rocks become smooth, ground texture looks "painted". Cycle it with "Filter" in the HUD
+settings / Classic (CLI `--filter xbr`).
+
+**Plan, not started: HD sprites (option 2).** If shader upscaling is not enough: upscale the game's sprites and
+landscape textures 2-4x with an AI model (Real-ESRGAN class) **generated locally from the user's own files** (never
+distributed: derived game assets), and render the game at 2x internally. Needs a native draw path for sprites,
+landscape, shadows, selection marks in a 2x frame (our fast paths `fast_tile`, `fast_land_rows`, sprite rows are the
+starting points), hit testing / mouse at 2x, and per-animation consistency (AI upscaling flickers between frames,
+palette). Generation is slow on a phone (desktop tool + copy is more realistic). Biggest work item of the port so far.
+
 **FPS limit and FPS counter position (2026-11-08).** `DisplaySettings::fps_limit` (30 / 60 / 120 / 144, plus the
 display's refresh rate when it is above 144, `display::fps_limit_options`; default 60) is applied to the
 DirectDraw frame limiter (`s3_dx::ddraw::set_fps_cap`) at install and on change (`display::apply_fps_limit`); a

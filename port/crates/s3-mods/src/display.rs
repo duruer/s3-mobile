@@ -67,15 +67,19 @@ pub enum ScaleFilter {
     /// Sharp bilinear: nearest inside each source pixel, linear only across the edge band (crisp and even).
     #[default]
     SharpBilinear,
+    /// Pixel-art edge upscaler (xBR level 2, Hyllian's algorithm; GPU shader in the Android presenter): smooth
+    /// diagonal and curved edges at any zoom. The desktop CPU scaler uses sharp bilinear for it.
+    Xbr,
 }
 
 impl ScaleFilter {
-    pub const ALL: [ScaleFilter; 3] = [ScaleFilter::Nearest, ScaleFilter::Linear, ScaleFilter::SharpBilinear];
+    pub const ALL: [ScaleFilter; 4] = [ScaleFilter::Nearest, ScaleFilter::Linear, ScaleFilter::SharpBilinear, ScaleFilter::Xbr];
     pub fn label(self) -> &'static str {
         match self {
             ScaleFilter::Nearest => "Pixel",
             ScaleFilter::Linear => "Smooth",
             ScaleFilter::SharpBilinear => "Sharp",
+            ScaleFilter::Xbr => "xBR (HD edges)",
         }
     }
     pub fn next(self) -> ScaleFilter {
@@ -87,6 +91,7 @@ impl ScaleFilter {
             "nearest" | "pixel" => Some(ScaleFilter::Nearest),
             "linear" | "bilinear" | "smooth" => Some(ScaleFilter::Linear),
             "sharp" | "sharp-bilinear" => Some(ScaleFilter::SharpBilinear),
+            "xbr" | "hd" => Some(ScaleFilter::Xbr),
             _ => None,
         }
     }
@@ -95,7 +100,7 @@ impl ScaleFilter {
 /// Where the FPS counter sits (cycled from the menus).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FpsPos {
-    /// Top right in UI mode A, top centre in the Mobile HUD.
+    /// Top right in UI mode A, top center in the Mobile HUD.
     #[default]
     Auto,
     TopLeft,
@@ -113,10 +118,10 @@ impl FpsPos {
         match self {
             FpsPos::Auto => "auto",
             FpsPos::TopLeft => "top left",
-            FpsPos::TopCenter => "top centre",
+            FpsPos::TopCenter => "top center",
             FpsPos::TopRight => "top right",
             FpsPos::BottomRight => "bottom right",
-            FpsPos::BottomCenter => "bottom centre",
+            FpsPos::BottomCenter => "bottom center",
             FpsPos::BottomLeft => "bottom left",
         }
     }
@@ -547,7 +552,7 @@ pub fn axis_taps(filter: ScaleFilter, src_n: u32, dst_from: i32, dst_n: u32, dst
                 let f = c.floor();
                 (f.max(0.0) as u32, ((f + 1.0).max(0.0) as u32), c - f)
             }
-            ScaleFilter::SharpBilinear => {
+            ScaleFilter::SharpBilinear | ScaleFilter::Xbr => {
                 // Same as the GLES shader: linear only across a 1-window-pixel band around texel edges.
                 let fl = s.floor();
                 let fr = s - fl - 0.5;

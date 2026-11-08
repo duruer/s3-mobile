@@ -235,12 +235,14 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
             m.log(LogLevel::Warn, &format!("mods: {e}; context-aware touch disabled"));
         }
     }
-    ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
-    ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
-    // Game message lines at a constant size in the window layer (above the UI modes for the tutorial Next tap).
+    // Game message lines at a constant size in the window layer. Below the UI modes: their sheets and dialogs cover
+    // the lines (user report 2026-11-08) and get taps first; the tutorial Next tap still reaches the lines before
+    // the touch mod.
     if applied == Some("gog-base") {
         messages::install(m);
     }
+    ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
+    ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
     add_mod(m, Box::new(fps::FpsMod::default())); // FPS counter, drawn on top of the UI modes
     cursor_layer::install(m); // the game's mouse cursor at a constant size, on top of everything
     hooks::commit(m);

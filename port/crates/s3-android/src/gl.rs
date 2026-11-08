@@ -158,6 +158,77 @@ void main() {\n\
   gl_FragColor = texture2D(u_tex, (fl + f) / u_size);\n\
 }\n";
 
+/// xBR level 2 pixel-art upscaler (texture uses GL_NEAREST), single pass at any scale: our GLSL ES 1.00 version of
+/// Hyllian's xBR-lv2 algorithm (21 taps; luma-weighted edge detection, 30/45/60 degree edge blending with a one
+/// output pixel wide smoothstep). Boolean vector logic as 0/1 floats (GLES2 has no `&&` on bvec).
+/// `u_size` = texture size in texels, `u_scale` = screen pixels per texel (>= 1).
+pub const FS_XBR: &str = "precision highp float;\n\
+varying vec2 v_uv;\n\
+uniform sampler2D u_tex;\n\
+uniform vec2 u_size;\n\
+uniform vec2 u_scale;\n\
+const vec3 Y = vec3(0.2126, 0.7152, 0.0722) * 48.0;\n\
+vec4 df(vec4 a, vec4 b) { return abs(a - b); }\n\
+float cdf(vec3 a, vec3 b) { vec3 d = abs(a - b); return d.r + d.g + d.b; }\n\
+vec4 eq(vec4 a, vec4 b) { return vec4(lessThan(df(a, b), vec4(15.0))); }\n\
+vec4 ne(vec4 a, vec4 b) { return vec4(notEqual(a, b)); }\n\
+vec4 or2(vec4 a, vec4 b) { return clamp(a + b, 0.0, 1.0); }\n\
+vec4 wd(vec4 a, vec4 b, vec4 c, vec4 d, vec4 e, vec4 f, vec4 g, vec4 h) {\n\
+  return df(a, b) + df(a, c) + df(d, e) + df(d, f) + 4.0 * df(g, h);\n\
+}\n\
+vec3 T(vec2 c, float x, float y) { return texture2D(u_tex, c + vec2(x, y) / u_size).rgb; }\n\
+float L(vec3 c) { return dot(c, Y); }\n\
+void main() {\n\
+  vec2 texel = v_uv * u_size;\n\
+  vec2 fp = fract(texel);\n\
+  vec2 tc = (floor(texel) + 0.5) / u_size;\n\
+  vec3 A1 = T(tc, -1.0, -2.0); vec3 B1 = T(tc, 0.0, -2.0); vec3 C1 = T(tc, 1.0, -2.0);\n\
+  vec3 A0 = T(tc, -2.0, -1.0); vec3 A = T(tc, -1.0, -1.0); vec3 B = T(tc, 0.0, -1.0); vec3 C = T(tc, 1.0, -1.0); vec3 C4 = T(tc, 2.0, -1.0);\n\
+  vec3 D0 = T(tc, -2.0, 0.0); vec3 D = T(tc, -1.0, 0.0); vec3 E = T(tc, 0.0, 0.0); vec3 F = T(tc, 1.0, 0.0); vec3 F4 = T(tc, 2.0, 0.0);\n\
+  vec3 G0 = T(tc, -2.0, 1.0); vec3 G = T(tc, -1.0, 1.0); vec3 H = T(tc, 0.0, 1.0); vec3 I = T(tc, 1.0, 1.0); vec3 I4 = T(tc, 2.0, 1.0);\n\
+  vec3 G5 = T(tc, -1.0, 2.0); vec3 H5 = T(tc, 0.0, 2.0); vec3 I5 = T(tc, 1.0, 2.0);\n\
+  vec4 b = vec4(L(B), L(D), L(H), L(F));\n\
+  vec4 c = vec4(L(C), L(A), L(G), L(I));\n\
+  vec4 e = vec4(L(E));\n\
+  vec4 d = b.yzwx; vec4 f = b.wxyz; vec4 g = c.zwxy; vec4 h = b.zwxy; vec4 i = c.wxyz;\n\
+  vec4 i4 = vec4(L(I4), L(C1), L(A0), L(G5));\n\
+  vec4 i5 = vec4(L(I5), L(C4), L(A1), L(G0));\n\
+  vec4 h5 = vec4(L(H5), L(F4), L(B1), L(D0));\n\
+  vec4 f4 = h5.yzwx;\n\
+  vec4 Ao = vec4(1.0, -1.0, -1.0, 1.0); vec4 Bo = vec4(1.0, 1.0, -1.0, -1.0); vec4 Co = vec4(1.5, 0.5, -0.5, 0.5);\n\
+  vec4 Bx = vec4(0.5, 2.0, -0.5, -2.0); vec4 Cx = vec4(1.0, 1.0, -0.5, 0.0);\n\
+  vec4 By = vec4(2.0, 0.5, -2.0, -0.5); vec4 Cy = vec4(2.0, 0.0, -1.0, 0.5);\n\
+  vec4 fx = Ao * fp.y + Bo * fp.x;\n\
+  vec4 fx_l = Ao * fp.y + Bx * fp.x;\n\
+  vec4 fx_u = Ao * fp.y + By * fp.x;\n\
+  float s = max(min(u_scale.x, u_scale.y), 1.0);\n\
+  vec4 delta = vec4(1.0 / s);\n\
+  vec4 delta_l = vec4(0.5, 1.0, 0.5, 1.0) / s;\n\
+  vec4 delta_u = delta_l.yxwz;\n\
+  vec4 lv0 = ne(e, f) * ne(e, h);\n\
+  vec4 lv1 = lv0 * or2(or2(or2((1.0 - eq(f, b)) * (1.0 - eq(f, c)), (1.0 - eq(h, d)) * (1.0 - eq(h, g))),\n\
+      eq(e, i) * or2((1.0 - eq(f, f4)) * (1.0 - eq(f, i4)), (1.0 - eq(h, h5)) * (1.0 - eq(h, i5)))), or2(eq(e, g), eq(e, c)));\n\
+  vec4 lv2_l = ne(e, g) * ne(d, g);\n\
+  vec4 lv2_u = ne(e, c) * ne(b, c);\n\
+  vec4 fx45 = smoothstep(Co - delta, Co + delta, fx);\n\
+  vec4 fx30 = smoothstep(Cx - delta_l, Cx + delta_l, fx_l);\n\
+  vec4 fx60 = smoothstep(Cy - delta_u, Cy + delta_u, fx_u);\n\
+  vec4 edr = vec4(lessThan(wd(e, c, g, i, h5, f4, h, f), wd(h, d, i5, f, i4, b, e, i))) * lv1;\n\
+  vec4 edr_l = vec4(lessThanEqual(2.0 * df(f, g), df(h, c))) * lv2_l;\n\
+  vec4 edr_u = vec4(greaterThanEqual(df(f, g), 2.0 * df(h, c))) * lv2_u;\n\
+  fx45 = edr * fx45;\n\
+  fx30 = edr * edr_l * fx30;\n\
+  fx60 = edr * edr_u * fx60;\n\
+  vec4 px = vec4(lessThanEqual(df(e, f), df(e, h)));\n\
+  vec4 mx = max(max(fx30, fx60), fx45);\n\
+  vec3 r1 = mix(E, mix(H, F, px.x), mx.x);\n\
+  r1 = mix(r1, mix(B, D, px.z), mx.z);\n\
+  vec3 r2 = mix(E, mix(F, B, px.y), mx.y);\n\
+  r2 = mix(r2, mix(D, H, px.w), mx.w);\n\
+  vec3 res = mix(r1, r2, step(cdf(E, r1), cdf(E, r2)));\n\
+  gl_FragColor = vec4(res, 1.0);\n\
+}\n";
+
 unsafe fn compile(ty: GLenum, src: &str) -> Result<GLuint, String> {
     let s = glCreateShader(ty);
     let c = std::ffi::CString::new(src).unwrap();

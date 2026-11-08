@@ -307,8 +307,15 @@ impl Layer {
     }
 
     /// Text centred in a rectangle.
+    /// Text centered in a box; a label wider than the box (minus a small margin) is drawn smaller to fit (down to
+    /// 60 % of `px`), e.g. long setting labels on buttons.
     pub fn text_centered(&mut self, x: i32, y: i32, w: i32, h: i32, px: f32, weight: Weight, c: Rgba, text: &str) {
-        let (tw, th) = overlay::measure_text(px, weight, text);
+        let (mut px, (mut tw, mut th)) = (px, overlay::measure_text(px, weight, text));
+        let room = (w as f32 - 0.6 * px).max(1.0);
+        if tw as f32 > room {
+            px = (px * room / tw as f32).max(px * 0.6);
+            (tw, th) = overlay::measure_text(px, weight, text);
+        }
         self.text(x + (w - tw) / 2, y + (h - th) / 2, px, weight, c, text);
     }
 

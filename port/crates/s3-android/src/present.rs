@@ -141,6 +141,8 @@ struct Gles {
     surface: EGLSurface,
     plain: Program,
     sharp: Program,
+    /// xBR-lv2 upscaler (`gl::FS_XBR`); id 0 if it failed to compile (then sharp bilinear is used).
+    xbr: Program,
     tex: GLuint,
     tex_size: (u32, u32),
     tex_filter: GLint,
@@ -191,6 +193,7 @@ impl Gles {
             surface: EGL_NO_SURFACE,
             plain: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
             sharp: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
+            xbr: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
             tex: 0,
             tex_size: (0, 0),
             tex_filter: -1,
@@ -219,6 +222,10 @@ impl Gles {
         if self.plain.id == 0 {
             self.plain = program(FS_PLAIN)?;
             self.sharp = program(FS_SHARP)?;
+            match program(FS_XBR) {
+                Ok(p) => self.xbr = p,
+                Err(e) => log::warn!("xBR shader unavailable: {e}"),
+            }
             let mut t = 0;
             glGenTextures(1, &mut t);
             self.tex = t;
@@ -322,6 +329,9 @@ impl Gles {
             ScaleFilter::Linear => (&self.plain, GL_LINEAR),
             ScaleFilter::SharpBilinear if integer || sx < 1.0 || sy < 1.0 => (&self.plain, if sx < 1.0 || sy < 1.0 { GL_LINEAR } else { GL_NEAREST }),
             ScaleFilter::SharpBilinear => (&self.sharp, GL_LINEAR),
+            ScaleFilter::Xbr if sx < 1.0 || sy < 1.0 => (&self.plain, GL_LINEAR),
+            ScaleFilter::Xbr if self.xbr.id != 0 => (&self.xbr, GL_NEAREST),
+            ScaleFilter::Xbr => (&self.sharp, GL_LINEAR),
         };
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, self.tex);
