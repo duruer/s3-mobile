@@ -417,7 +417,7 @@ impl Gles {
         p
     }
 
-    unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter) {
+    unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter, insets: &[([f32; 4], [f32; 4])]) {
         let ai = self.ai_frame(vp, filter);
         let (ww, wh) = (vp.win_w as f32, vp.win_h as f32);
         glViewport(0, 0, vp.win_w as i32, vp.win_h as i32);
@@ -448,6 +448,15 @@ impl Gles {
                 if prog.u_size >= 0 {
                     glUniform2f(prog.u_scale, qx.max(1.0), qy.max(1.0));
                 }
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            }
+            // The layer's frame insets (Classic magnifier), same texture and filter choice, below the layer.
+            for &(s, d) in insets {
+                let (qx, qy) = (d[2] / s[2].max(1.0), d[3] / s[3].max(1.0));
+                let prog = self.use_filter(filter, qx, qy, ai.is_some(), vp);
+                let r = clip_rect(d[0], d[1], d[2], d[3], ww, wh);
+                glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
+                glUniform4f(prog.u_uv, s[0] / gw, s[1] / gh, (s[0] + s[2]) / gw, (s[1] + s[3]) / gh);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             }
             return;
@@ -664,7 +673,8 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
             }
             unsafe {
                 g.upload(fb);
-                g.draw(&vp, if game_frame { display.filter } else { ScaleFilter::Linear });
+                let insets = if layer_fits { scene.list.insets() } else { Vec::new() };
+                g.draw(&vp, if game_frame { display.filter } else { ScaleFilter::Linear }, &insets);
                 if layer_fits {
                     g.upload_layer(&raster, layer_dirty.take());
                     if !raster.is_empty() {

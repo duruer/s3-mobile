@@ -28,7 +28,7 @@ use s3_runtime::{FrameBuffer, HostEvent, LogLevel, Machine, MouseButton};
 
 use crate::gesture::TouchEvent;
 use crate::layer::Layer;
-use crate::overlay::{measure_text, Image, Rgba, Weight};
+use crate::overlay::{measure_text, Rgba, Weight};
 use crate::{settings::UiMode, Mod, ModEvent, ModsState};
 use panel::{Button, Label, Layout, PanelState};
 
@@ -445,15 +445,7 @@ impl ClassicTouch {
         let k = 3.0 * ps;
         let sx = (cx - sw / 2).clamp(0, l.panel_w - sw).max(0);
         let sy = (cy - sh / 2).clamp(0, l.screen_h - sh).max(0);
-        let mut img = Image::new(sw as u32, sh as u32);
-        for yy in 0..sh {
-            for xx in 0..sw {
-                let p = frame.pixels.get(((sy + yy) as u32 * frame.width + (sx + xx) as u32) as usize).copied().unwrap_or(0);
-                let (r, g, b) = s3_runtime::host::rgb565_to_rgb888(p);
-                let i = ((yy * sw + xx) * 4) as usize;
-                img.rgba[i..i + 4].copy_from_slice(&[r, g, b, 255]);
-            }
-        }
+        let _ = frame;
         let label = match t.target {
             Some(i) => self.label(m, t.buttons[i].label),
             None => match self.view.tooltip {
@@ -489,7 +481,8 @@ impl ClassicTouch {
         }
         let ix = bx + (bw - mw) / 2;
         let iy = by + q(6.0);
-        c.blit_image(img, ix, iy, mw, mh, 1.0);
+        // The frontend draws the frame region there with the display filter (xBR / AI like the panel itself).
+        c.frame_inset([sx as f32, sy as f32, sw as f32, sh as f32], ix, iy, mw, mh);
         // Outline of the chosen button inside the magnified view.
         if let Some(i) = t.target {
             let (rx, ry, rw, rh) = l.rect(&t.buttons[i]);

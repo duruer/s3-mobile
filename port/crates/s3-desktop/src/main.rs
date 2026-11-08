@@ -362,6 +362,8 @@ fn compose_window(fb: &FrameBuffer, scene: &s3_mods::Scene, raster: &mut s3_mods
     let mut buf = vec![0u32; (ww * wh) as usize];
     s3_mods::display::scale_to_xrgb(&vp, d.filter, &fb.pixels, &mut buf);
     if scene.list.width == ww && scene.list.height == wh {
+        let ins = scene.list.insets();
+        s3_mods::display::draw_insets_xrgb(&ins, d.filter, &fb.pixels, fb.width as usize, fb.height as usize, &mut buf, ww as usize, wh as usize);
         raster.update(&scene.list);
         raster.blend_onto_xrgb(&mut buf, ww as usize);
     }
@@ -490,6 +492,8 @@ mod window {
             s3_mods::display::scale_to_xrgb(&vp, self.display.filter, &fb.pixels, &mut self.buf);
             // Window layer on top (only a layer made for this window size).
             if scene.list.width as usize == ww && scene.list.height as usize == wh {
+                let ins = scene.list.insets();
+                s3_mods::display::draw_insets_xrgb(&ins, self.display.filter, &fb.pixels, fb.width as usize, fb.height as usize, &mut self.buf, ww, wh);
                 self.raster.update(&scene.list);
                 self.raster.blend_onto_xrgb(&mut self.buf, ww);
             }

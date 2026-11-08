@@ -117,6 +117,14 @@ Filters are chosen per drawn part (`present.rs` `Gles::use_filter`, 2026-11-08):
 panel quad (2-4x) and the map quad (any zoom) each get the program for their own scale, so xBR / AI also apply to
 the original panel; the AI network runs when any part or a menu layout is enlarged >= 1.2x.
 
+**Frame insets (2026-11-08).** The Classic magnifier used to copy 64x40 frame pixels into a layer image (CPU,
+nearest), so the display filter never applied to it. Now it records `Layer::frame_inset(src, x, y, w, h)`
+(`Cmd::FrameInset`): a transparent hole in the layer plus the source rectangle (in the item hash, so moving the
+finger republishes). Frontends draw `DrawList::insets()` after the frame and before the layer: Android with the
+same texture (AI output or frame) and `use_filter` for the inset's scale, desktop with
+`display::draw_insets_xrgb`. Phone (AI, inner screen): the magnified building is smooth; outline and name stay on
+top (later layer commands).
+
 **Plan, not started: HD sprites (option 2).** If shader upscaling is not enough: upscale the game's sprites and
 landscape textures 2-4x with an AI model (Real-ESRGAN class) **generated locally from the user's own files** (never
 distributed: derived game assets), and render the game at 2x internally. Needs a native draw path for sprites,

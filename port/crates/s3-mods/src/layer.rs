@@ -51,6 +51,10 @@ pub enum Cmd {
     /// Thick line from small squares (`t` px).
     Line { x0: f32, y0: f32, x1: f32, y1: f32, t: f32, c: Rgba },
     Text { x: i32, y: i32, px: f32, weight: Weight, c: Rgba, text: Box<str> },
+    /// A transparent hole in the layer that the frontend fills with the game frame's rectangle `src` (game px:
+    /// x, y, w, h) scaled to `x, y, w, h` (window px) with the display filter (xBR / AI on the GPU): the Classic
+    /// magnifier. Drawn after the frame, below the layer (later commands draw over it).
+    FrameInset { x: i32, y: i32, w: i32, h: i32, src: [f32; 4] },
 }
 
 /// A recorded command with its clip, clipped bounds and hash.
@@ -75,6 +79,16 @@ pub struct DrawList {
 impl DrawList {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+    /// Frame insets to draw below the layer: (source game rect, destination window rect), in order.
+    pub fn insets(&self) -> Vec<([f32; 4], [f32; 4])> {
+        self.items
+            .iter()
+            .filter_map(|it| match it.cmd {
+                Cmd::FrameInset { x, y, w, h, src } => Some((src, [x as f32, y as f32, w as f32, h as f32])),
+                _ => None,
+            })
+            .collect()
     }
     /// Union of all item bounds (`None` = empty).
     pub fn bounds(&self) -> Option<Bounds> {
@@ -131,6 +145,7 @@ fn cmd_hash(cmd: &Cmd, clip: Bounds) -> u64 {
         Cmd::Map { key, x, y, s, .. } => h.u(6).u(*key).f(*x).f(*y).f(*s),
         Cmd::Line { x0, y0, x1, y1, t, c } => h.u(7).f(*x0).f(*y0).f(*x1).f(*y1).f(*t).c(*c),
         Cmd::Text { x, y, px, weight, c, text } => h.u(8).i(*x).i(*y).f(*px).u(*weight as u64).c(*c).bytes(text.as_bytes()),
+        Cmd::FrameInset { x, y, w, h: hh, src } => h.u(9).i(*x).i(*y).i(*w).i(*hh).f(src[0]).f(src[1]).f(src[2]).f(src[3]),
     };
     h.0
 }
@@ -284,6 +299,15 @@ impl Layer {
         self.push(Cmd::Map { img: img.clone(), key, x, y, s }, b);
     }
 
+    /// Show the game frame's rectangle `src` (game px) at window rect `x, y, w, h`, filtered like the frame by the
+    /// frontend (see [`Cmd::FrameInset`]).
+    pub fn frame_inset(&mut self, src: [f32; 4], x: i32, y: i32, w: i32, h: i32) {
+        if w <= 0 || h <= 0 || src[2] <= 0.0 || src[3] <= 0.0 {
+            return;
+        }
+        self.push(Cmd::FrameInset { x, y, w, h, src }, (x, y, x + w, y + h));
+    }
+
     /// Thick line (squares of `t` px along the line).
     pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, t: f32, c: Rgba) {
         if c.a == 0 {
@@ -350,6 +374,8 @@ pub(crate) trait Surf {
     fn blend_px(&mut self, x: i32, y: i32, c: Rgba, cov: u32);
     /// Blend `c` at full coverage over `x0..x1` of row `y` (already clipped).
     fn blend_row(&mut self, y: i32, x0: i32, x1: i32, c: Rgba);
+    /// Make `x0..x1` of row `y` transparent (layer holes, [`Cmd::FrameInset`]); no-op on opaque surfaces.
+    fn clear_row(&mut self, _y: i32, _x0: i32, _x1: i32) {}
 
     #[inline]
     fn blend_clipped(&mut self, x: i32, y: i32, c: Rgba, cov: u32) {
@@ -577,6 +603,15 @@ pub(crate) fn r_cmd<S: Surf + ?Sized>(s: &mut S, cmd: &Cmd) {
         Cmd::Text { x, y, px, weight, c, text } => {
             r_text(s, *x, *y, *px, *weight, *c, text);
         }
+        Cmd::FrameInset { x, y, w, h, .. } => {
+            let (cx0, cy0, cx1, cy1) = s.clip();
+            let (x0, y0, x1, y1) = ((*x).max(cx0), (*y).max(cy0), (x + w).min(cx1), (y + h).min(cy1));
+            for yy in y0..y1.max(y0) {
+                if x0 < x1 {
+                    s.clear_row(yy, x0, x1);
+                }
+            }
+        }
     }
 }
 
@@ -592,6 +627,9 @@ struct RgbaSurf<'a> {
 impl Surf for RgbaSurf<'_> {
     fn clip(&self) -> Bounds {
         self.clip
+    }
+    fn clear_row(&mut self, y: i32, x0: i32, x1: i32) {
+        self.px[((y * self.w + x0) * 4) as usize..((y * self.w + x1) * 4) as usize].fill(0);
     }
     #[inline]
     fn blend_px(&mut self, x: i32, y: i32, c: Rgba, cov: u32) {

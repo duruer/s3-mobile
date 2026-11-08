@@ -2,6 +2,11 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Classic magnifier uses the display filter
+
+- The magnifier bubble is now a frame inset (`Cmd::FrameInset`, layer hole + source rect) drawn by the frontends
+  with the display filter (xBR / AI), not a nearest CPU copy. Verified desktop and phone (AI). [display.md](porting/display.md)
+
 ## 2026-11-08 — Panel fonts, panel pages in the HUD, Classic menu buttons, message size, filters per part
 
 - HUD "Save game" etc. showed the original panel page with "Save Game" huge and cut: (1) the page was shown in a

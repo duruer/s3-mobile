@@ -600,6 +600,15 @@ pub fn scale_to_xrgb(vp: &Viewport, filter: ScaleFilter, src: &[u16], dst: &mut 
     }
 }
 
+/// Draw the layer's frame insets ([`crate::layer::Cmd::FrameInset`]) into an XRGB window buffer (CPU frontends).
+pub fn draw_insets_xrgb(insets: &[([f32; 4], [f32; 4])], filter: ScaleFilter, src: &[u16], gw: usize, gh: usize, dst: &mut [u32], ww: usize, wh: usize) {
+    for &(s, d) in insets {
+        if s[0] >= 0.0 && s[1] >= 0.0 && (s[0] + s[2]) as usize <= gw && (s[1] + s[3]) as usize <= gh {
+            scale_region(filter, src, gw, s, d, ww, wh, dst);
+        }
+    }
+}
+
 /// Scale the source rectangle `s` (game px x, y, w, h) of an RGB565 frame (`gw` wide) to the window rectangle `d`
 /// (clipped to the `ww` x `wh` window buffer).
 fn scale_region(filter: ScaleFilter, src: &[u16], gw: usize, s: [f32; 4], d: [f32; 4], ww: usize, wh: usize, dst: &mut [u32]) {
