@@ -27,13 +27,40 @@ pixel, a one-screen-pixel linear band at the pixel edges → crisp but evenly si
 ### The shared transform
 
 `s3_mods::display::Viewport` is the **only** screen↔game transform. Frontends build it per shown frame
-(`Viewport::new(mode, game_w, game_h, win_w, win_h)`), map touches/mouse with `window_to_game`, and publish it to the
-mods with `display::set_viewport(m, Some(vp))`. Mods read:
+(`Viewport::for_frame_split(mode, pixels, game_w, game_h, win_w, win_h, scene.panel)`), map touches/mouse with
+`window_to_game`, and publish it to the mods with `display::set_viewport(m, Some(vp))`. Mods read:
 
 - `display::viewport(m)` / `display::window_size(m)` (None headless without `--window`),
 - `display::visible_game_rect(m)`: part of the frame that is on screen (game px; the whole frame except in Fill),
 - `display::display_settings(m)`; menus change settings with `set_display` / `cycle_mode` / `cycle_filter` /
   `cycle_fps` (persisted in `mods-settings.json`); `override_display` changes them for one run only (CLI).
+- `display::frame_viewport(m)` / `s3_mods::draw_viewport(m)`: the viewport of the frame being drawn (published window
+  size + mode + this frame's panel split), for the window layer.
+
+### Classic panel at a constant size (`PanelSplit`, 2026-11-08 overlay-window)
+
+UI mode A shows the original left panel. With zoom it used to scale with the render size (big when zoomed in, tiny
+zoomed out). Now, in `NativeWide` with the custom resolution on, in game (`display::panel_split`), the scene
+published with each frame carries `PanelSplit { w: [0x730f24], h: art height of the layout variant (480 / 600 / 768) }`
+and `Viewport::new_split` draws:
+
+- the panel part (frame `x < w`, `y < h`) at `win_h / h`: the art always fills the screen height (Fold4 cover:
+  136 px art at 480 -> 256 px, 176 at 600 -> 265 px, 216 at 768 -> 254 px wide on screen); the black strip the game
+  leaves below the art at heights between the variants is not shown any more;
+- the map part (`x >= w`) in the rest of the window. The zoom picks render widths so this part keeps the map's
+  aspect (`zoom::classic_width`: `w + (win_w - w*win_h/h) * H / win_h`, multiple of 8; < 1.2 % off), and pinch / menu
+  zoom anchor in map-view fractions (`zoom::anchor_camera_map`, `ResState::anchor_map`).
+
+`window_to_game` / `game_to_window` / `scale()` (= map part) / `quads()` (source -> destination rectangles: one, or
+panel + map) handle it, so touch mapping, the GPU presenter (one quad per part, sharp-bilinear scale per part), the
+CPU scaler (`scale_to_xrgb`) and the mods agree. Fit, Fill, Stretch and menus (layouts) are unchanged.
+`S3_PANEL_SPLIT=0` turns it off.
+
+### Window overlay layer
+
+Mods draw their UI at window resolution ([mods.md](mods.md) "Window layer"); the presenter blends the layer over the
+game quad (Android: 2nd RGBA texture, only changed rows uploaded; s3run: CPU blend). The game frame contains only
+game pixels (and the game's mouse cursor).
 
 Gestures stay in game pixels (as before); thresholds (`touch.tap_slop` ...) are therefore in game pixels in every mode.
 
@@ -110,7 +137,9 @@ Window is resizable; the frame is scaled on the CPU into a window-size buffer wi
 ```
 
 Headless with `--window WxH`: a simulated viewport for that screen size is published to the mods (so Native wide
-and Fill can be tested headless; screenshots stay at game resolution).
+and Fill can be tested headless). `shot f.png` writes the game frame at game resolution; `wshot f.png` writes the
+window as the player sees it (frame scaled with the display mode / panel split + the mods' window layer) at the
+`--window` size. Touch injects with a `w` prefix (`wtap`, `wpinch`, ...) take window pixels.
 
 Example: `s3run --game-dir game-files/gog-s3-ultimate --data-dir scratch/d --window 2229x904 --display fill --fps full`.
 

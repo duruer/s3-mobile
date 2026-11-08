@@ -222,7 +222,7 @@ fn guest_calls_from_hook_and_deferred_safe_point() {
 fn pointer(m: &mut Machine, id: u32, phase: PointerPhase, x: i32, y: i32) -> Vec<HostEvent> {
     let f = m.ext.event_filter.unwrap();
     let mut out = Vec::new();
-    f(m, HostEvent::Pointer { id, phase, x, y }, &mut out);
+    f(m, HostEvent::Pointer { id, phase, x, y, wx: -1, wy: -1 }, &mut out);
     out
 }
 
@@ -247,7 +247,7 @@ impl Mod for Button {
             _ => ModEvent::Pass,
         }
     }
-    fn wants_draw(&self) -> bool {
+    fn wants_draw_frame(&self) -> bool {
         true
     }
     fn draw(&mut self, _m: &mut Machine, c: &mut Canvas) {

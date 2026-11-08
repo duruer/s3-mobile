@@ -15,7 +15,8 @@
 
 use s3_runtime::Machine;
 
-use crate::overlay::{Canvas, Rgba};
+use crate::layer::{ImageRef, Layer};
+use crate::overlay::{Image, Rgba};
 use crate::ui_hud_game::{self as game, readable};
 
 /// Minimap data read from the game (host copy).
@@ -134,38 +135,23 @@ pub fn image_to_tile(c: f32, r: f32, n: u32, world: u32) -> (u32, u32) {
     (((c * k) as u32).min(w1), ((r * k) as u32).min(w1))
 }
 
-/// Draw the image (nearest sampling) and the camera rectangle.
-pub fn draw(c: &mut Canvas, d: &MiniData, g: &MapGeom, cam_color: Rgba) {
-    let (bw, bh) = g.box_size();
-    let (fw, fh) = (c.fb.width as i32, c.fb.height as i32);
-    let x0 = (g.x.floor() as i32).max(0);
-    let y0 = (g.y.floor() as i32).max(0);
-    let x1 = ((g.x + bw).ceil() as i32).min(fw);
-    let y1 = ((g.y + bh).ceil() as i32).min(fh);
-    let n = d.n as i32;
-    if d.pixels.len() < (n * n) as usize {
+/// The minimap pixels as an opaque RGBA image (for the window layer).
+pub fn to_image(d: &MiniData) -> Image {
+    let n = d.n;
+    let mut img = Image::new(n, n);
+    for (i, &p) in d.pixels.iter().take((n * n) as usize).enumerate() {
+        let (r, g, b) = s3_runtime::host::rgb565_to_rgb888(p);
+        img.rgba[i * 4..i * 4 + 4].copy_from_slice(&[r, g, b, 255]);
+    }
+    img
+}
+
+/// Draw the image (`img` = [`to_image`] of `d`, nearest sampling, the game's sheared shape) and the camera rectangle.
+pub fn draw(c: &mut Layer, img: &ImageRef, d: &MiniData, g: &MapGeom, cam_color: Rgba) {
+    if img.width != d.n {
         return;
     }
-    for py in y0..y1 {
-        let r = ((py as f32 + 0.5 - g.y) / g.s) as i32;
-        if r < 0 || r >= n {
-            continue;
-        }
-        let shift = (n - r) as f32 / 2.0;
-        let row = &d.pixels[(r * n) as usize..((r + 1) * n) as usize];
-        let line = (py * fw) as usize;
-        for px in x0..x1 {
-            let cf = (px as f32 + 0.5 - g.x) / g.s - shift;
-            if cf < 0.0 {
-                continue;
-            }
-            let col = cf as i32;
-            if col >= n {
-                break;
-            }
-            c.fb.pixels[line + px as usize] = row[col as usize];
-        }
-    }
+    c.blit_map(img, g.x, g.y, g.s);
     // Camera rectangle (a parallelogram on screen, like the game's white frame).
     let (cx, cy, cw, ch) = d.cam;
     if cw > 0 && ch > 0 {
@@ -184,7 +170,7 @@ pub fn draw(c: &mut Canvas, d: &MiniData, g: &MapGeom, cam_color: Rgba) {
 }
 
 /// Outline of the parallelogram (frame around the map).
-pub fn draw_outline(c: &mut Canvas, g: &MapGeom, col: Rgba) {
+pub fn draw_outline(c: &mut Layer, g: &MapGeom, col: Rgba) {
     let n = g.n as f32;
     let pts = [g.to_screen(0.0, 0.0), g.to_screen(n, 0.0), g.to_screen(n, n), g.to_screen(0.0, n)];
     for i in 0..4 {
@@ -193,14 +179,8 @@ pub fn draw_outline(c: &mut Canvas, g: &MapGeom, col: Rgba) {
     }
 }
 
-fn thick_line(c: &mut Canvas, x0: f32, y0: f32, x1: f32, y1: f32, t: f32, col: Rgba) {
-    let n = ((x1 - x0).abs().max((y1 - y0).abs()) as i32).max(1);
-    let ti = t.round().max(1.0) as i32;
-    for i in 0..=n {
-        let k = i as f32 / n as f32;
-        let (x, y) = (x0 + (x1 - x0) * k, y0 + (y1 - y0) * k);
-        c.fill_rect(x as i32 - ti / 2, y as i32 - ti / 2, ti, ti, col);
-    }
+fn thick_line(c: &mut Layer, x0: f32, y0: f32, x1: f32, y1: f32, t: f32, col: Rgba) {
+    c.line(x0, y0, x1, y1, t, col);
 }
 
 #[cfg(test)]

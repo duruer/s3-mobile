@@ -24,10 +24,13 @@ pub enum Action {
     Cancel,
 }
 
-/// Raw pointer events for one MotionEvent. `acting` = (pointer id, game position) of the pointer the action is
-/// about (`pointer_index()`); `all` = every pointer of the event. Positions are game pixels.
-pub fn pointer_events(action: Action, acting: (i32, (i32, i32)), all: &[(i32, (i32, i32))]) -> Vec<HostEvent> {
-    let ev = |id: i32, phase, p: (i32, i32)| HostEvent::Pointer { id: id as u32, phase, x: p.0, y: p.1 };
+/// Position of a pointer: game pixels (x, y) and window pixels (wx, wy).
+pub type Pos = (i32, i32, i32, i32);
+
+/// Raw pointer events for one MotionEvent. `acting` = (pointer id, position) of the pointer the action is
+/// about (`pointer_index()`); `all` = every pointer of the event.
+pub fn pointer_events(action: Action, acting: (i32, Pos), all: &[(i32, Pos)]) -> Vec<HostEvent> {
+    let ev = |id: i32, phase, p: Pos| HostEvent::Pointer { id: id as u32, phase, x: p.0, y: p.1, wx: p.2, wy: p.3 };
     match action {
         Action::Down | Action::PointerDown => vec![ev(acting.0, PointerPhase::Down, acting.1)],
         Action::PointerUp | Action::Up => vec![ev(acting.0, PointerPhase::Up, acting.1)],
@@ -36,7 +39,7 @@ pub fn pointer_events(action: Action, acting: (i32, (i32, i32)), all: &[(i32, (i
     }
 }
 
-/// Drops Move events that do not change a finger's position (MotionEvents batch all pointers).
+/// Drops Move events that do not change a finger's (window) position (MotionEvents batch all pointers).
 #[derive(Default)]
 pub struct PointerFilter {
     last: Vec<(u32, i32, i32)>,
@@ -44,7 +47,7 @@ pub struct PointerFilter {
 
 impl PointerFilter {
     pub fn keep(&mut self, e: &HostEvent) -> bool {
-        let HostEvent::Pointer { id, phase, x, y } = *e else { return true };
+        let HostEvent::Pointer { id, phase, wx: x, wy: y, .. } = *e else { return true };
         let i = self.last.iter().position(|l| l.0 == id);
         match phase {
             PointerPhase::Move => {
@@ -79,18 +82,22 @@ mod tests {
     use PointerPhase::*;
 
     fn p(id: u32, phase: PointerPhase, x: i32, y: i32) -> HostEvent {
-        HostEvent::Pointer { id, phase, x, y }
+        HostEvent::Pointer { id, phase, x, y, wx: x * 2, wy: y * 2 }
+    }
+
+    fn q(x: i32, y: i32) -> Pos {
+        (x, y, x * 2, y * 2)
     }
 
     #[test]
     fn motion_actions_map_to_pointer_phases() {
-        assert_eq!(pointer_events(Action::Down, (0, (10, 20)), &[(0, (10, 20))]), vec![p(0, Down, 10, 20)]);
-        let all = [(0, (10, 20)), (1, (50, 60))];
-        assert_eq!(pointer_events(Action::PointerDown, (1, (50, 60)), &all), vec![p(1, Down, 50, 60)]);
-        assert_eq!(pointer_events(Action::Move, (0, (10, 20)), &all), vec![p(0, Move, 10, 20), p(1, Move, 50, 60)]);
-        assert_eq!(pointer_events(Action::PointerUp, (0, (11, 21)), &all), vec![p(0, Up, 11, 21)]);
-        assert_eq!(pointer_events(Action::Up, (1, (50, 61)), &[(1, (50, 61))]), vec![p(1, Up, 50, 61)]);
-        assert_eq!(pointer_events(Action::Cancel, (0, (0, 0)), &all), vec![p(0, Cancel, 10, 20), p(1, Cancel, 50, 60)]);
+        assert_eq!(pointer_events(Action::Down, (0, q(10, 20)), &[(0, q(10, 20))]), vec![p(0, Down, 10, 20)]);
+        let all = [(0, q(10, 20)), (1, q(50, 60))];
+        assert_eq!(pointer_events(Action::PointerDown, (1, q(50, 60)), &all), vec![p(1, Down, 50, 60)]);
+        assert_eq!(pointer_events(Action::Move, (0, q(10, 20)), &all), vec![p(0, Move, 10, 20), p(1, Move, 50, 60)]);
+        assert_eq!(pointer_events(Action::PointerUp, (0, q(11, 21)), &all), vec![p(0, Up, 11, 21)]);
+        assert_eq!(pointer_events(Action::Up, (1, q(50, 61)), &[(1, q(50, 61))]), vec![p(1, Up, 50, 61)]);
+        assert_eq!(pointer_events(Action::Cancel, (0, q(0, 0)), &all), vec![p(0, Cancel, 10, 20), p(1, Cancel, 50, 60)]);
     }
 
     #[test]

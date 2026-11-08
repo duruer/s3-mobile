@@ -18,6 +18,7 @@ use s3_runtime::SliceResult;
 use s3_runtime::{FrameBuffer, Host, HostEvent, LogLevel, Vfs};
 
 use s3_mods::display::{DisplaySettings, Viewport};
+use s3_mods::SceneSlot;
 
 use crate::audio::{AudioRing, Resampler, OUT_RATE};
 
@@ -80,11 +81,26 @@ pub struct Shared {
     /// Presenter -> engine: display presents per second and the panel refresh rate (f32 bits; 0 = unknown).
     pub host_fps: AtomicU32,
     pub refresh_hz: AtomicU32,
+    /// Engine (mods) -> presenter: the window-resolution overlay layer (`s3_mods::layer`); publishing wakes the
+    /// render thread.
+    pub layer: Arc<SceneSlot>,
 }
 
 impl Shared {
     pub fn new(wake: Box<dyn Fn() + Send + Sync>) -> Arc<Shared> {
-        Arc::new(Shared {
+        Arc::new_cyclic(|weak: &std::sync::Weak<Shared>| {
+            let w = weak.clone();
+            let layer = SceneSlot::new(Some(Box::new(move || {
+                if let Some(s) = w.upgrade() {
+                    s.notify_render();
+                }
+            })));
+            Shared::with_layer(wake, layer)
+        })
+    }
+
+    fn with_layer(wake: Box<dyn Fn() + Send + Sync>, layer: Arc<SceneSlot>) -> Shared {
+        Shared {
             frame: Mutex::new(FrameSlot::default()),
             events: Mutex::new(Vec::new()),
             status: Mutex::new(Status { phase: Phase::Starting, title: "Starting".into(), body: String::new(), seq: 1 }),
@@ -107,7 +123,8 @@ impl Shared {
             letterbox: Mutex::new(None),
             host_fps: AtomicU32::new(0),
             refresh_hz: AtomicU32::new(0),
-        })
+            layer,
+        }
     }
 
     /// Wake the render thread (new frame, status, display settings or button state).
@@ -439,6 +456,8 @@ fn drive(shared: Arc<Shared>, _host: AndroidHost) -> Result<String, String> {
 #[cfg(feature = "engine")]
 fn drive(shared: Arc<Shared>, host: AndroidHost) -> Result<String, String> {
     let mut engine = Engine::new(Box::new(host), None)?;
+    // Mods draw their UI into the window layer; the presenter composites it (docs/porting/display.md).
+    s3_mods::set_layer_sink(&mut engine.machine, shared.layer.clone());
     shared.set_status(Phase::Running, "Running", "S3.EXE loaded; waiting for the first frame.");
     let mut last_report = Instant::now();
     let mut seen_viewport = u64::MAX;

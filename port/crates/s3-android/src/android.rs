@@ -196,6 +196,11 @@ fn android_main(app: AndroidApp) {
                         let p = me.pointer_at_index(idx);
                         let win = (p.x(), p.y());
                         let game = to_game(win.0, win.1);
+                        // Game + window position (window-layer UI hit-tests in window pixels).
+                        let pos = |x: f32, y: f32| {
+                            let g = to_game(x, y);
+                            (g.0, g.1, x.max(0.0) as i32, y.max(0.0) as i32)
+                        };
                         if p.tool_type() == ToolType::Mouse {
                             // Real mouse (ChromeOS, DeX, emulator with a mouse device): map directly.
                             shared.push_event(HostEvent::MouseMove { x: game.0, y: game.1 });
@@ -228,9 +233,9 @@ fn android_main(app: AndroidApp) {
                             touches_logged += 1;
                             log::info!("touch down at window ({:.0},{:.0}) -> game {:?}", win.0, win.1, game);
                         }
-                        let all: Vec<(i32, (i32, i32))> =
-                            me.pointers().map(|q| (q.pointer_id(), to_game(q.x(), q.y()))).collect();
-                        for ev in pointer_events(action, (p.pointer_id(), game), &all) {
+                        let all: Vec<(i32, crate::touch::Pos)> =
+                            me.pointers().map(|q| (q.pointer_id(), pos(q.x(), q.y()))).collect();
+                        for ev in pointer_events(action, (p.pointer_id(), pos(win.0, win.1)), &all) {
                             if pointers.keep(&ev) {
                                 shared.push_event(ev);
                             }

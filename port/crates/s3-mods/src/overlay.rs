@@ -1,13 +1,16 @@
 //! Overlay drawing on the presented RGB565 frame: rectangles, rounded rectangles (anti-aliased), circles,
 //! RGBA image blits and text (fontdue + bundled Liberation Sans, SIL OFL 1.1, same files as s3-win32).
 //!
-//! The canvas draws into the frame that `Machine::present` hands to the host (after the guest frame, before
-//! the mouse cursor). Coordinates are game-screen pixels.
+//! [`Canvas`] draws into an RGB565 frame (game pixels). Mods draw their UI into the window-resolution layer
+//! ([`crate::layer::Layer`], same drawing functions, rasterized by the frontend); the frame canvas remains for
+//! frame-space drawing (`Mod::draw`, tests).
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use s3_runtime::FrameBuffer;
+
+use crate::layer::{self, Surf};
 
 static REGULAR_TTF: &[u8] = include_bytes!("../../s3-win32/assets/fonts/LiberationSans-Regular.ttf");
 static BOLD_TTF: &[u8] = include_bytes!("../../s3-win32/assets/fonts/LiberationSans-Bold.ttf");
@@ -97,11 +100,30 @@ fn blend_span(row: &mut [u16], c: Rgba) {
     }
 }
 
-/// Drawing surface over a frame.
+/// Drawing surface over a (RGB565) frame, in game pixels. Mods draw their UI into the window layer
+/// ([`crate::layer::Layer`]) instead; this stays for frame-space effects and tests.
 pub struct Canvas<'a> {
     pub fb: &'a mut FrameBuffer,
     /// Optional clip rectangle (x0, y0, x1, y1), exclusive end.
     clip: (i32, i32, i32, i32),
+}
+
+impl Surf for Canvas<'_> {
+    fn clip(&self) -> (i32, i32, i32, i32) {
+        self.clip
+    }
+    #[inline]
+    fn blend_px(&mut self, x: i32, y: i32, c: Rgba, cov: u32) {
+        let i = (y as u32 * self.fb.width + x as u32) as usize;
+        if let Some(p) = self.fb.pixels.get_mut(i) {
+            *p = blend(*p, c, cov);
+        }
+    }
+    fn blend_row(&mut self, y: i32, x0: i32, x1: i32, c: Rgba) {
+        let fw = self.fb.width as usize;
+        let row = &mut self.fb.pixels[y as usize * fw..y as usize * fw + fw];
+        blend_span(&mut row[x0 as usize..x1 as usize], c);
+    }
 }
 
 impl<'a> Canvas<'a> {
@@ -128,43 +150,11 @@ impl<'a> Canvas<'a> {
     /// Blend one pixel with coverage `cov` (0..=255).
     #[inline]
     pub fn blend_pixel(&mut self, x: i32, y: i32, c: Rgba, cov: u32) {
-        let (x0, y0, x1, y1) = self.clip;
-        if x < x0 || y < y0 || x >= x1 || y >= y1 {
-            return;
-        }
-        let i = (y as u32 * self.fb.width + x as u32) as usize;
-        if let Some(p) = self.fb.pixels.get_mut(i) {
-            *p = blend(*p, c, cov);
-        }
+        self.blend_clipped(x, y, c, cov);
     }
 
     pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
-        let (cx0, cy0, cx1, cy1) = self.clip;
-        let (x0, y0, x1, y1) = (x.max(cx0), y.max(cy0), (x + w).min(cx1), (y + h).min(cy1));
-        if x0 >= x1 || y0 >= y1 || c.a == 0 {
-            return;
-        }
-        let fw = self.fb.width as usize;
-        for yy in y0..y1 {
-            let row = &mut self.fb.pixels[yy as usize * fw..yy as usize * fw + fw];
-            blend_span(&mut row[x0 as usize..x1 as usize], c);
-        }
-    }
-
-    /// Blend `c` (full coverage) over `x0..x1` of row `y`, clipped.
-    #[inline]
-    fn span(&mut self, y: i32, x0: i32, x1: i32, c: Rgba) {
-        let (cx0, cy0, cx1, cy1) = self.clip;
-        if y < cy0 || y >= cy1 {
-            return;
-        }
-        let (a, b) = (x0.max(cx0), x1.min(cx1));
-        if a >= b {
-            return;
-        }
-        let fw = self.fb.width as usize;
-        let row = &mut self.fb.pixels[y as usize * fw..y as usize * fw + fw];
-        blend_span(&mut row[a as usize..b as usize], c);
+        layer::r_fill_rect(self, x, y, w, h, c);
     }
 
     /// Outline of width `t` inside the rectangle.
@@ -175,87 +165,24 @@ impl<'a> Canvas<'a> {
         self.fill_rect(x + w - t, y + t, t, h - 2 * t, c);
     }
 
-    /// Signed distance from (`px`,`py`) to a rounded box centred at (`cx`,`cy`) with half size (`hw`,`hh`).
-    fn rbox_sd(px: f32, py: f32, cx: f32, cy: f32, hw: f32, hh: f32, r: f32) -> f32 {
-        let qx = (px - cx).abs() - (hw - r);
-        let qy = (py - cy).abs() - (hh - r);
-        let ox = qx.max(0.0);
-        let oy = qy.max(0.0);
-        (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - r
-    }
-
     /// Anti-aliased filled rounded rectangle.
     pub fn fill_rounded_rect(&mut self, x: i32, y: i32, w: i32, h: i32, radius: f32, c: Rgba) {
-        self.rounded(x, y, w, h, radius, None, c)
+        layer::r_rounded(self, x, y, w, h, radius, None, c)
     }
 
     /// Anti-aliased rounded rectangle outline of width `t`.
     pub fn stroke_rounded_rect(&mut self, x: i32, y: i32, w: i32, h: i32, radius: f32, t: f32, c: Rgba) {
-        self.rounded(x, y, w, h, radius, Some(t), c)
-    }
-
-    fn rounded(&mut self, x: i32, y: i32, w: i32, h: i32, radius: f32, stroke: Option<f32>, c: Rgba) {
-        if w <= 0 || h <= 0 {
-            return;
-        }
-        let r = radius.clamp(0.0, (w.min(h) as f32) / 2.0);
-        let (hw, hh) = (w as f32 / 2.0, h as f32 / 2.0);
-        let (cx, cy) = (x as f32 + hw, y as f32 + hh);
-        let ri = r.ceil() as i32 + 1;
-        let (_, cy0, _, cy1) = self.clip;
-        let cov_at = |xx: i32, yy: i32| -> u32 {
-            let d = Self::rbox_sd(xx as f32 + 0.5, yy as f32 + 0.5, cx, cy, hw, hh, r);
-            let outer = (0.5 - d).clamp(0.0, 1.0);
-            let k = match stroke {
-                Some(t) => outer * (0.5 + d + t).clamp(0.0, 1.0),
-                None => outer,
-            };
-            (k * 255.0) as u32
-        };
-        // Same coverage as evaluating the distance at every pixel (perf-r2: that was ~5 % of the engine thread on
-        // the phone): rows away from the corners are exact spans; the distance is only computed where it can be
-        // fractional (corner rows, the outer `edge` columns of the other rows).
-        let edge = match stroke {
-            // A stroke row is covered only within t + 1 px of the sides (coverage 0 further in).
-            Some(t) => (t.ceil() as i32 + 1).max(ri),
-            None => ri,
-        };
-        for yy in y.max(cy0)..(y + h).min(cy1) {
-            let near_y = yy < y + edge || yy >= y + h - edge;
-            if near_y || 2 * edge >= w {
-                for xx in x..x + w {
-                    let cov = cov_at(xx, yy);
-                    if cov > 0 {
-                        self.blend_pixel(xx, yy, c, cov);
-                    }
-                }
-                continue;
-            }
-            for xx in (x..x + edge).chain(x + w - edge..x + w) {
-                let cov = cov_at(xx, yy);
-                if cov > 0 {
-                    self.blend_pixel(xx, yy, c, cov);
-                }
-            }
-            if stroke.is_none() {
-                self.span(yy, x + edge, x + w - edge, c);
-            }
-        }
+        layer::r_rounded(self, x, y, w, h, radius, Some(t), c)
     }
 
     /// Anti-aliased filled circle.
     pub fn fill_circle(&mut self, cx: f32, cy: f32, r: f32, c: Rgba) {
-        let (x0, y0) = ((cx - r - 1.0).floor() as i32, (cy - r - 1.0).floor() as i32);
-        let (x1, y1) = ((cx + r + 1.0).ceil() as i32, (cy + r + 1.0).ceil() as i32);
-        for yy in y0..y1 {
-            for xx in x0..x1 {
-                let d = ((xx as f32 + 0.5 - cx).powi(2) + (yy as f32 + 0.5 - cy).powi(2)).sqrt() - r;
-                let cov = ((0.5 - d).clamp(0.0, 1.0) * 255.0) as u32;
-                if cov > 0 {
-                    self.blend_pixel(xx, yy, c, cov);
-                }
-            }
-        }
+        layer::r_circle(self, cx, cy, r, c)
+    }
+
+    /// Anti-aliased ellipse outline.
+    pub fn ellipse_ring(&mut self, cx: f32, cy: f32, rx: f32, ry: f32, t: f32, c: Rgba) {
+        layer::r_ring(self, cx, cy, rx, ry, t, c)
     }
 
     /// Blit an RGBA image with its top-left at (`x`,`y`), alpha `opacity` (0..=1).
@@ -265,44 +192,12 @@ impl<'a> Canvas<'a> {
 
     /// Blit an RGBA image scaled (nearest neighbour) into the `w` x `h` rectangle at (`x`,`y`).
     pub fn blit_scaled(&mut self, img: &Image, x: i32, y: i32, w: i32, h: i32, opacity: f32) {
-        if w <= 0 || h <= 0 || img.width == 0 || img.height == 0 {
-            return;
-        }
-        let op = (opacity.clamp(0.0, 1.0) * 255.0) as u32;
-        for dy in 0..h {
-            let sy = (dy as u64 * img.height as u64 / h as u64) as u32;
-            for dx in 0..w {
-                let sx = (dx as u64 * img.width as u64 / w as u64) as u32;
-                let i = ((sy * img.width + sx) * 4) as usize;
-                let px = &img.rgba[i..i + 4];
-                if px[3] == 0 {
-                    continue;
-                }
-                self.blend_pixel(x + dx, y + dy, Rgba::rgba(px[0], px[1], px[2], px[3]), op);
-            }
-        }
+        layer::r_blit_scaled(self, img, x, y, w, h, opacity)
     }
 
     /// Draw `text` with its top-left at (`x`,`y`), font size `px`. Returns the advance width.
     pub fn text(&mut self, x: i32, y: i32, px: f32, weight: Weight, c: Rgba, text: &str) -> i32 {
-        let mut fonts = fonts().lock().unwrap();
-        let ascent = fonts.ascent(weight, px);
-        let mut pen = x as f32;
-        for ch in text.chars() {
-            let g = fonts.glyph(weight, px, ch);
-            let gx = pen.round() as i32 + g.xmin;
-            let gy = y + ascent - g.height as i32 - g.ymin;
-            for row in 0..g.height {
-                for col in 0..g.width {
-                    let cov = g.bitmap[row * g.width + col] as u32;
-                    if cov > 0 {
-                        self.blend_pixel(gx + col as i32, gy + row as i32, c, cov);
-                    }
-                }
-            }
-            pen += g.advance;
-        }
-        (pen - x as f32).round() as i32
+        layer::r_text(self, x, y, px, weight, c, text)
     }
 
     /// Text centred in a rectangle.
@@ -319,16 +214,16 @@ pub fn measure_text(px: f32, weight: Weight, text: &str) -> (i32, i32) {
     (w.round() as i32, fonts.line_height(weight, px))
 }
 
-struct Glyph {
-    width: usize,
-    height: usize,
-    xmin: i32,
-    ymin: i32,
-    advance: f32,
-    bitmap: Vec<u8>,
+pub(crate) struct Glyph {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) xmin: i32,
+    pub(crate) ymin: i32,
+    pub(crate) advance: f32,
+    pub(crate) bitmap: Vec<u8>,
 }
 
-struct Fonts {
+pub(crate) struct Fonts {
     faces: [fontdue::Font; 2],
     cache: HashMap<(Weight, u32, char), Glyph>,
 }
@@ -337,13 +232,13 @@ impl Fonts {
     fn face(&self, w: Weight) -> &fontdue::Font {
         &self.faces[(w == Weight::Bold) as usize]
     }
-    fn ascent(&self, w: Weight, px: f32) -> i32 {
+    pub(crate) fn ascent(&self, w: Weight, px: f32) -> i32 {
         self.face(w).horizontal_line_metrics(px).map(|m| m.ascent.round() as i32).unwrap_or(px as i32)
     }
     fn line_height(&self, w: Weight, px: f32) -> i32 {
         self.face(w).horizontal_line_metrics(px).map(|m| (m.ascent - m.descent).round() as i32).unwrap_or(px as i32)
     }
-    fn glyph(&mut self, w: Weight, px: f32, ch: char) -> &Glyph {
+    pub(crate) fn glyph(&mut self, w: Weight, px: f32, ch: char) -> &Glyph {
         if self.cache.len() > 4096 {
             self.cache.clear();
         }
@@ -359,7 +254,7 @@ impl Fonts {
     }
 }
 
-fn fonts() -> &'static Mutex<Fonts> {
+pub(crate) fn fonts() -> &'static Mutex<Fonts> {
     static F: OnceLock<Mutex<Fonts>> = OnceLock::new();
     F.get_or_init(|| {
         let s = fontdue::FontSettings::default();
@@ -406,7 +301,7 @@ mod tests {
                     let cov = if stroke.is_none() && !near_x && !near_y {
                         255
                     } else {
-                        let d = Canvas::rbox_sd(xx as f32 + 0.5, yy as f32 + 0.5, cx, cy, hw, hh, r);
+                        let d = crate::layer::rbox_sd(xx as f32 + 0.5, yy as f32 + 0.5, cx, cy, hw, hh, r);
                         let outer = (0.5 - d).clamp(0.0, 1.0);
                         let k = match stroke {
                             Some(t) => outer * (0.5 + d + t).clamp(0.0, 1.0),

@@ -77,7 +77,11 @@ Classic widget) reads game state through `Machine` while drawing, so the overlay
 a display list under the machine" (cheap) and "rasterise the list" (the 0.48 ms) - `s3_mods::overlay::Canvas` has
 12 drawing calls plus 3 direct pixel accesses (`ui_classic.rs` magnifier read, `ui_hud.rs` icon sampling read,
 `ui_hud_minimap.rs` pixel writes). The host also needs a `Send` present sink (desktop: the `Shared` frame slot;
-Android: the GL presenter's slot). Medium-large effort in s3-mods (owned by the UI agents). Not done.
+Android: the GL presenter's slot). Medium-large effort in s3-mods (owned by the UI agents).
+**Done 2026-11-08 (overlay-window)** for the overlay part: mods record a display list in window pixels
+(`s3_mods::layer`), the frontend rasterizes only changed rectangles (Android: render thread, 2nd texture). The frame
+copy + compose left the engine thread (see [mods.md](mods.md) "Window layer", measurements in
+[performance.md](performance.md)); the cursor compose + `Host::present` copy are still on it.
 
 ### C. Others
 

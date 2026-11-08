@@ -166,11 +166,17 @@ pub enum LogicAction {
     CenterOn { tx: u32, ty: u32 },
 }
 
+/// Render height the HUD icon harvest needs (the 640x480 panel art must fit).
+pub const HARVEST_MIN_H: u32 = 480;
+
 /// State shared by the HUD hooks and the HUD mod (`m.state::<HudShared>()`).
 #[derive(Default)]
 pub struct HudShared {
     /// The hooks are installed (GOG exe and patches enabled).
     pub hooked: bool,
+    /// The HUD is reading building icons from the game's panel: the zoom keeps the render size at least
+    /// [`HARVEST_MIN_H`] high meanwhile (the panel art needs it; `crate::zoom::target_size`).
+    pub harvesting: bool,
     /// Wanted: full-screen map (panel hidden).
     pub fullscreen_map: bool,
     /// The full-screen layout is currently written to the layout globals (with this original panel width).

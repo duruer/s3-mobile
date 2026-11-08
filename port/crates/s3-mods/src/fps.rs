@@ -2,13 +2,17 @@
 //! `Off`, `Fps` (game frames per second) or `Detailed` (+ frame time avg / worst, guest MIPS, display rate).
 //!
 //! Counts real guest presents (`Machine::stats.presents`, overlay-only refreshes do not count) and guest
-//! instructions over a 500 ms window. Drawn small in the top-right corner (Mobile HUD: top centre) of the *visible* game area
-//! ([`crate::display::visible_game_rect`], so it stays on screen in `Fill` mode). Presentation only.
+//! instructions over a 500 ms window. Drawn small in the top-right corner (Mobile HUD: top centre) of the part of the
+//! window that shows the game, into the window layer ([`crate::layer`]): the same size on screen at every zoom
+//! level. Presentation only.
 
 use s3_runtime::Machine;
 
-use crate::display::{self, DisplayState, FpsCounter};
-use crate::overlay::{measure_text, Canvas, Rgba, Weight};
+use s3_runtime::FrameBuffer;
+
+use crate::display::{DisplayState, FpsCounter};
+use crate::layer::Layer;
+use crate::overlay::{measure_text, Rgba, Weight};
 use crate::{Mod, ModsState};
 
 /// Measurement window.
@@ -123,7 +127,7 @@ impl Mod for FpsMod {
         self.mode != FpsCounter::Off
     }
 
-    fn draw(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_window(&mut self, m: &mut Machine, c: &mut Layer, _frame: &FrameBuffer) {
         let now = m.now_ms();
         let p = m.stats.presents;
         if p != self.seen_presents {
@@ -136,11 +140,9 @@ impl Mod for FpsMod {
             (s.host_fps, s.refresh_hz)
         };
         let lines = self.stats.lines(self.mode, host_fps, refresh);
-        let (vx, vy, vw, _vh) = display::visible_game_rect(m);
-        // Same size on screen at every zoom level (the frame is scaled to the window): 11 px at a 600 px high frame,
-        // like the HUD, which scales with the frame height.
-        let fh = m.last_frame_size().1.max(1) as f32;
-        let sk = (fh / 600.0).clamp(0.3, 4.0);
+        let (vx, vy, vw, _vh) = crate::draw_viewport(m).dst_rect_clipped();
+        // Window pixels: 11 px at a 600 px high window (as it looked at a 600 px high frame shown full screen).
+        let sk = c.ui().clamp(0.3, 4.0);
         let px = 11.0 * sk;
         let pad = (4.0 * sk).round().max(1.0) as i32;
         let lh = measure_text(px, Weight::Bold, "0").1.max(1);

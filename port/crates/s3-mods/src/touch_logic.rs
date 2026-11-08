@@ -95,6 +95,8 @@ pub struct View {
     /// Visible part of the frame and extra top margin (FPS counter) for the ✕ button (docs/porting/display.md:
     /// Fill mode crops the frame). `None` = whole frame.
     pub vis: Option<((i32, i32, i32, i32), i32)>,
+    /// The ✕ button as drawn (window layer, mapped back to game pixels); overrides the `vis` placement.
+    pub cancel: Option<(i32, i32, i32, i32)>,
 }
 
 /// What a touch does in game.
@@ -156,7 +158,7 @@ fn inside(r: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
 /// One-finger tap.
 pub fn decide_tap(v: &View, x: i32, y: i32) -> TapAction {
     let (Some(l), Some(mode)) = (v.layout, v.mode) else { return TapAction::Click { x, y } };
-    if mode == Mode::BuildPlacement && inside(cancel_button_in(&l, v.vis), x, y) {
+    if mode == Mode::BuildPlacement && inside(v.cancel.unwrap_or_else(|| cancel_button_in(&l, v.vis)), x, y) {
         return TapAction::CancelBuild;
     }
     if l.region(x, y) != Region::Map {
@@ -375,7 +377,7 @@ mod tests {
     use super::*;
 
     fn view(mode: Mode, hits: Vec<Hit>) -> View {
-        View { layout: Some(Layout::GOG_640), mode: Some(mode), hits, selected: vec![], vis: None }
+        View { layout: Some(Layout::GOG_640), mode: Some(mode), hits, selected: vec![], vis: None, cancel: None }
     }
     const OWN_SOLDIER: Hit = Hit { kind: 1, x: 300, y: 300, id: 41, own: true };
     const ENEMY: Hit = Hit { kind: 2, x: 500, y: 200, id: 90, own: false };

@@ -44,7 +44,7 @@ pub const MAX_W: u32 = 3200;
 /// limit is the frame cost: 3200x1200 is 3.8 M pixels).
 pub const MAX_H: u32 = 1200;
 pub const MIN_W: u32 = 320;
-pub const MIN_H: u32 = 280;
+pub const MIN_H: u32 = 200;
 /// Columns of the enlarged snapshot grid (needs `cols + rows/2 + 3`; 3200x1200 needs 300).
 pub const SNAP_COLS: u32 = 320;
 /// Rows per grid column (row stride) after the patch; the game's is [`ORIG_ROWS`]. 258 because the index
@@ -463,6 +463,9 @@ pub struct ResState {
     pub settle_frames: u32,
     /// Keep this screen point (fractions of the frame) fixed over the next switch (pinch centre).
     pub anchor: Option<(f32, f32)>,
+    /// `anchor.0` is a fraction of the map view instead of the frame (UI mode A with the panel shown at its own
+    /// scale, `display::PanelSplit`: the panel keeps its screen width, the map part is scaled).
+    pub anchor_map: bool,
     /// Number of switches done (stats / tests).
     pub switches: u32,
     /// `now_ms` of the last switch.
@@ -654,12 +657,12 @@ fn switch_hook(c: &mut HookCtx) -> HookFlow {
     let now = c.m.now_ms();
     let gfx = c.reg(ECX);
     let snap = c.arg(0);
-    let (target, applied, anchor) = {
+    let (target, applied, anchor, anchor_map) = {
         let st = c.m.state::<ResState>();
         let mut s = st.borrow_mut();
         s.frames += 1;
         s.last_frame_ms = now;
-        (s.target, s.applied, s.anchor)
+        (s.target, s.applied, s.anchor, s.anchor_map)
     };
     if trace() {
         let last = c.m.state::<ResState>().borrow_mut().last_switch_ms;
@@ -743,7 +746,11 @@ fn switch_hook(c: &mut HookCtx) -> HookFlow {
         let old_pw = c.m.mem.read_u32(L_PANEL_W) as f32;
         let new_pw = if old_pw == 0.0 { 0.0 } else { variant_for(want.1).panel_w as f32 };
         let (cx, cy) = (c.m.mem.read_u32(g + GD_CAM_X) as i32, c.m.mem.read_u32(g + GD_CAM_Y) as i32);
-        let (nx, ny) = crate::zoom::anchor_camera((cx, cy), (fx, fy), cur, want, old_pw, new_pw);
+        let (nx, ny) = if anchor_map && anchor.is_some() {
+            crate::zoom::anchor_camera_map((cx, cy), (fx, fy), cur, want, old_pw, new_pw)
+        } else {
+            crate::zoom::anchor_camera((cx, cy), (fx, fy), cur, want, old_pw, new_pw)
+        };
         c.m.mem.write_u32(g + GD_CAM_X, nx.max(0) as u32);
         c.m.mem.write_u32(g + GD_CAM_Y, ny.max(0) as u32);
     }
@@ -810,6 +817,7 @@ fn switch_hook(c: &mut HookCtx) -> HookFlow {
         s.mode = Some(want_mode);
         s.applied = (!is_standard(want.0, want.1) || target.is_some()).then_some(want);
         s.anchor = None;
+        s.anchor_map = false;
         s.redraw_frames = redraw_frames_after(cur, want);
         s.settle_frames = if ack { 0 } else { 6 };
         s.switches += 1;

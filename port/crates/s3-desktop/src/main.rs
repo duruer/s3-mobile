@@ -8,9 +8,11 @@
 //! Inject commands (times in ms since start): `click x y`, `rclick x y`, `move x y`, `down x y`, `up x y`,
 //! `key VK` (press+release, VK decimal or 0x..), `text abc` (one key press per character, 120 ms apart; letters,
 //! digits, space, `-`, `_` as VK codes so the guest's TranslateMessage makes WM_CHAR), `shot file.png` (write the
-//! current frame), `quit`.
+//! current frame), `wshot file.png` (the window as the player sees it: frame scaled by the display mode + the mods'
+//! window layer; headless: at `--window` size), `quit`.
 //! Touch commands (raw pointer events in screen = game pixels, recognized by s3-mods like on Android):
-//! `tap`, `dtap`, `tap2`, `tap3`, `drag`, `drag2`, `fling`, `longpress`, `lpdrag`, `pinch`; see touch_inject.rs.
+//! `tap`, `dtap`, `tap2`, `tap3`, `drag`, `drag2`, `fling`, `longpress`, `lpdrag`, `pinch`; with a `w` prefix
+//! (`wtap`, `wpinch`, ...) in window pixels; see touch_inject.rs.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -38,8 +40,8 @@ struct Args {
     shots_dir: Option<PathBuf>,
     screenshot: Option<PathBuf>,
     inject: Vec<(u64, HostEvent)>,
-    /// `shot` inject commands: (time ms, png path).
-    inject_shots: Vec<(u64, PathBuf)>,
+    /// `shot` / `wshot` inject commands: (time ms, png path, window-composited).
+    inject_shots: Vec<(u64, PathBuf, bool)>,
     verbose: bool,
     audio_wav: Option<PathBuf>,
     audio_wav_seconds: f64,
@@ -93,8 +95,8 @@ fn text_vk(c: char) -> Option<u32> {
     }
 }
 
-/// Parse inject events plus `shot` commands.
-fn parse_inject_all(spec: &str) -> Result<(Vec<(u64, HostEvent)>, Vec<(u64, PathBuf)>), String> {
+/// Parse inject events plus `shot` / `wshot` commands.
+fn parse_inject_all(spec: &str) -> Result<(Vec<(u64, HostEvent)>, Vec<(u64, PathBuf, bool)>), String> {
     let mut out = Vec::new();
     let mut shots = Vec::new();
     for item in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
@@ -143,23 +145,23 @@ fn parse_inject_all(spec: &str) -> Result<(Vec<(u64, HostEvent)>, Vec<(u64, Path
                     }
                 }
             }
-            Some("shot") => {
+            Some(c @ ("shot" | "wshot")) => {
                 let f = w.get(1).ok_or(format!("missing file in '{item}'"))?;
-                shots.push((t, PathBuf::from(f)));
+                shots.push((t, PathBuf::from(f), c == "wshot"));
             }
             Some("quit") => out.push((t, HostEvent::Quit)),
-            Some(c) if touch_inject::COMMANDS.contains(&c) => {
+            Some(c) if touch_inject::split_window_prefix(c).is_some() => {
                 let num = |i: usize| -> Result<f64, String> {
                     w.get(i).and_then(|s| s.parse::<f64>().ok()).ok_or(format!("missing/bad argument {i} in '{item}'"))
                 };
                 let opt = |i: usize, d: f64| w.get(i).and_then(|s| s.parse::<f64>().ok()).unwrap_or(d);
-                touch_inject::touch_events(&mut out, t, c, &num, &opt)?;
+                touch_inject::touch_events_any(&mut out, t, c, &num, &opt)?;
             }
             _ => return Err(format!("unknown inject command '{cmd}'")),
         }
     }
     out.sort_by_key(|(t, _)| *t);
-    shots.sort_by_key(|(t, _)| *t);
+    shots.sort_by_key(|(t, _, _)| *t);
     Ok((out, shots))
 }
 
@@ -244,6 +246,8 @@ struct Shared {
     frame: Option<FrameBuffer>,
     frame_serial: u64,
     events: VecDeque<HostEvent>,
+    /// Viewport of the shown (or simulated headless) window, for `w`-prefixed touch injects.
+    viewport: Option<s3_mods::display::Viewport>,
 }
 
 struct DesktopHost {
@@ -256,6 +260,10 @@ struct DesktopHost {
     shots: u64,
     verbose: bool,
     audio: Option<audio::SharedSink>,
+    /// Viewport frozen while injected fingers are down (like s3-android's `pinch_vp`: a pinch switches the render
+    /// size, and mapping each move through the newest viewport would make the fingers jump in game pixels).
+    touch_vp: Option<s3_mods::display::Viewport>,
+    fingers: Vec<u32>,
 }
 
 impl Host for DesktopHost {
@@ -277,11 +285,27 @@ impl Host for DesktopHost {
     fn poll_events(&mut self) -> Vec<HostEvent> {
         let now = self.now_ms();
         let mut out: Vec<HostEvent> = Vec::new();
+        let vp = self.shared.lock().unwrap().viewport;
         while let Some((t, _)) = self.inject.front() {
             if *t > now {
                 break;
             }
-            out.push(self.inject.pop_front().unwrap().1);
+            let mut e = self.inject.pop_front().unwrap().1;
+            // Window-coordinate touch inject: the game position through the viewport of the gesture's start.
+            if let HostEvent::Pointer { id, phase, x, y, wx, wy } = &mut e {
+                if self.fingers.is_empty() {
+                    self.touch_vp = vp;
+                }
+                if *x < 0 && *wx >= 0 {
+                    (*x, *y) = self.touch_vp.map_or((*wx, *wy), |v| v.window_to_game(*wx as f32 + 0.5, *wy as f32 + 0.5));
+                }
+                match phase {
+                    s3_runtime::PointerPhase::Down => self.fingers.push(*id),
+                    s3_runtime::PointerPhase::Up | s3_runtime::PointerPhase::Cancel => self.fingers.retain(|f| f != id),
+                    _ => {}
+                }
+            }
+            out.push(e);
         }
         out.extend(self.shared.lock().unwrap().events.drain(..));
         out
@@ -317,12 +341,37 @@ impl Host for DesktopHost {
 }
 
 fn write_png(path: &Path, fb: &FrameBuffer) -> Result<(), String> {
+    write_png_rgb(path, fb.width, fb.height, &fb.to_rgb888())
+}
+
+fn write_png_rgb(path: &Path, w: u32, h: u32, rgb: &[u8]) -> Result<(), String> {
     let f = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), fb.width, fb.height);
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
     enc.set_color(png::ColorType::Rgb);
     enc.set_depth(png::BitDepth::Eight);
-    let mut w = enc.write_header().map_err(|e| e.to_string())?;
-    w.write_image_data(&fb.to_rgb888()).map_err(|e| e.to_string())
+    let mut wr = enc.write_header().map_err(|e| e.to_string())?;
+    wr.write_image_data(rgb).map_err(|e| e.to_string())
+}
+
+/// The window as the player sees it (XRGB8888): the frame scaled with the display settings (+ the Classic panel
+/// split of the scene) and the mods' window layer on top.
+fn compose_window(fb: &FrameBuffer, scene: &s3_mods::Scene, raster: &mut s3_mods::LayerRaster, d: s3_mods::display::DisplaySettings, ww: u32, wh: u32) -> (Vec<u32>, s3_mods::display::Viewport) {
+    use s3_mods::display::Viewport;
+    let panel = if scene.frame == (fb.width, fb.height) { scene.panel } else { None };
+    let vp = Viewport::for_frame_split(d.mode, &fb.pixels, fb.width, fb.height, ww, wh, panel);
+    let mut buf = vec![0u32; (ww * wh) as usize];
+    s3_mods::display::scale_to_xrgb(&vp, d.filter, &fb.pixels, &mut buf);
+    if scene.list.width == ww && scene.list.height == wh {
+        raster.update(&scene.list);
+        raster.blend_onto_xrgb(&mut buf, ww as usize);
+    }
+    (buf, vp)
+}
+
+/// `wshot`: write [`compose_window`] as a PNG.
+fn write_window_png(path: &Path, buf: &[u32], w: u32, h: u32) -> Result<(), String> {
+    let rgb: Vec<u8> = buf.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
+    write_png_rgb(path, w, h, &rgb)
 }
 
 mod layout_tool;
@@ -331,7 +380,9 @@ mod window {
     //! minifb window frontend (X11).
     use minifb::{Key, MouseButton as MfButton, MouseMode, ScaleMode, Window, WindowOptions};
     use s3_mods::display::{DisplaySettings, Viewport};
+    use s3_mods::{LayerRaster, SceneSlot};
     use s3_runtime::{FrameBuffer, HostEvent, MouseButton};
+    use std::sync::Arc;
 
     pub struct Win {
         win: Option<Window>,
@@ -346,6 +397,10 @@ mod window {
         last_mouse: (i32, i32),
         buttons: [bool; 3],
         keys_down: Vec<Key>,
+        /// The mods' window layer (s3_mods::layer): mailbox, raster, scene shown.
+        pub layer: Option<Arc<SceneSlot>>,
+        raster: LayerRaster,
+        layer_seq: u64,
     }
 
     fn vk(k: Key) -> Option<u32> {
@@ -381,6 +436,9 @@ mod window {
                 last_mouse: (-1, -1),
                 buttons: [false; 3],
                 keys_down: Vec::new(),
+                layer: None,
+                raster: LayerRaster::new(),
+                layer_seq: u64::MAX,
             }
         }
 
@@ -424,9 +482,17 @@ mod window {
             let (ww, wh) = w.get_size();
             let (ww, wh) = (ww.max(1), wh.max(1));
             self.size = (ww, wh);
-            let vp = Viewport::for_frame(self.display.mode, &fb.pixels, fb.width, fb.height, ww as u32, wh as u32);
+            let scene = self.layer.as_ref().map(|l| l.latest()).unwrap_or_default();
+            self.layer_seq = scene.seq;
+            let panel = if scene.frame == (fb.width, fb.height) { scene.panel } else { None };
+            let vp = Viewport::for_frame_split(self.display.mode, &fb.pixels, fb.width, fb.height, ww as u32, wh as u32, panel);
             self.buf.resize(ww * wh, 0);
             s3_mods::display::scale_to_xrgb(&vp, self.display.filter, &fb.pixels, &mut self.buf);
+            // Window layer on top (only a layer made for this window size).
+            if scene.list.width as usize == ww && scene.list.height as usize == wh {
+                self.raster.update(&scene.list);
+                self.raster.blend_onto_xrgb(&mut self.buf, ww);
+            }
             self.viewport = Some(vp);
             let _ = w.update_with_buffer(&self.buf, ww, wh);
         }
@@ -444,8 +510,9 @@ mod window {
             let mut out = Vec::new();
             let Some(w) = &mut self.win else { return out };
             let (cw, ch) = w.get_size();
-            if (cw, ch) != self.size && cw > 0 && ch > 0 {
-                self.redraw(); // window resized
+            let layer_new = self.layer.as_ref().is_some_and(|l| l.seq() != self.layer_seq);
+            if ((cw, ch) != self.size && cw > 0 && ch > 0) || layer_new {
+                self.redraw(); // window resized / new window layer
             }
             let Some(w) = &mut self.win else { return out };
             if self.buf.is_empty() {
@@ -534,6 +601,8 @@ fn main() {
         shots: 0,
         verbose: args.verbose,
         audio: audio_sink.clone(),
+        touch_vp: None,
+        fingers: Vec::new(),
     };
     let mut engine = match Engine::new(Box::new(host), args.exe.as_deref()) {
         Ok(e) => e,
@@ -557,6 +626,13 @@ fn main() {
     }
     let start = Instant::now();
     let mut win = if args.headless { None } else { Some(window::Win::with_size(args.window_size)) };
+    // The mods' window layer (docs/porting/mods.md "Window layer").
+    let layer = s3_mods::SceneSlot::new(None);
+    s3_mods::set_layer_sink(&mut engine.machine, layer.clone());
+    if let Some(w) = &mut win {
+        w.layer = Some(layer.clone());
+    }
+    let mut shot_raster = s3_mods::LayerRaster::new();
     // Display overrides from the command line (in memory only, not saved to mods-settings.json).
     {
         let mut d = s3_mods::display::display_settings(&mut engine.machine);
@@ -580,16 +656,25 @@ fn main() {
     let mut sample_cpu_ns = 0u64;
     // S3_PROFILE_FROM_MS: zero the profile counters at this time (profile only the in-game part).
     let mut profile_reset: Option<u64> = std::env::var("S3_PROFILE_FROM_MS").ok().and_then(|v| v.parse().ok());
-    let mut inject_shots: VecDeque<(u64, PathBuf)> = args.inject_shots.iter().cloned().collect();
+    let mut inject_shots: VecDeque<(u64, PathBuf, bool)> = args.inject_shots.iter().cloned().collect();
     let mut debug_cmds: VecDeque<(u64, debug::DebugCmd)> = args.debug_cmds.iter().cloned().collect();
     let mut units_cmds: VecDeque<(u64, debug_units::UnitsCmd)> = args.units_cmds.iter().cloned().collect();
     loop {
         debug::run_due(&mut engine, &mut debug_cmds, start.elapsed().as_millis() as u64);
         debug_units::run_due(&mut engine, &mut units_cmds, start.elapsed().as_millis() as u64);
-        while inject_shots.front().map(|(t, _)| *t <= start.elapsed().as_millis() as u64).unwrap_or(false) {
-            let (_, p) = inject_shots.pop_front().unwrap();
+        while inject_shots.front().map(|(t, _, _)| *t <= start.elapsed().as_millis() as u64).unwrap_or(false) {
+            let (_, p, windowed) = inject_shots.pop_front().unwrap();
             let f = shared.lock().unwrap().frame.clone();
-            match f.map(|f| write_png(&p, &f)) {
+            let d = s3_mods::display::display_settings(&mut engine.machine);
+            let r = f.map(|f| {
+                if !windowed {
+                    return write_png(&p, &f);
+                }
+                let (ww, wh) = args.window_size.or(s3_mods::display::window_size(&mut engine.machine)).unwrap_or((f.width, f.height));
+                let (buf, _) = compose_window(&f, &layer.latest(), &mut shot_raster, d, ww, wh);
+                write_window_png(&p, &buf, ww, wh)
+            });
+            match r {
                 Some(Ok(())) => eprintln!("s3run: shot {} at {} ms", p.display(), start.elapsed().as_millis()),
                 Some(Err(e)) => eprintln!("s3run: shot {} failed: {e}", p.display()),
                 None => eprintln!("s3run: shot {}: no frame yet", p.display()),
@@ -607,10 +692,13 @@ fn main() {
             let (fw, fh) = engine.machine.last_frame_size();
             if fw > 0 {
                 let mode = s3_mods::display::display_settings(&mut engine.machine).mode;
-                let vp = Some(s3_mods::display::Viewport::new(mode, fw, fh, ww, wh));
+                let scene = layer.latest();
+                let panel = if scene.frame == (fw, fh) { scene.panel } else { None };
+                let vp = Some(s3_mods::display::Viewport::new_split(mode, fw, fh, ww, wh, panel));
                 if vp != published_vp {
                     published_vp = vp;
                     s3_mods::display::set_viewport(&mut engine.machine, vp);
+                    shared.lock().unwrap().viewport = vp;
                 }
             }
         }
@@ -658,6 +746,7 @@ fn main() {
             if w.viewport != published_vp {
                 published_vp = w.viewport;
                 s3_mods::display::set_viewport(&mut engine.machine, published_vp);
+                shared.lock().unwrap().viewport = published_vp;
             }
             let evs = w.events();
             shared.lock().unwrap().events.extend(evs);
@@ -740,17 +829,21 @@ mod tests {
     #[test]
     fn inject_touch_parsing() {
         let v = parse_inject("100:tap 10 20; 200:drag 0 0 100 0 100; 1000:pinch 300 200 2; 2000:longpress 5 5 600").unwrap();
-        assert_eq!(v[0], (100, HostEvent::Pointer { id: 1, phase: PointerPhase::Down, x: 10, y: 20 }));
-        assert_eq!(v[1], (170, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 10, y: 20 }));
-        assert!(v.contains(&(301, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 100, y: 0 })));
-        assert!(v.contains(&(1302, HostEvent::Pointer { id: 2, phase: PointerPhase::Up, x: 380, y: 200 })));
-        assert_eq!(v.last().unwrap(), &(2600, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 5, y: 5 }));
+        let pt = |id, phase, x, y| HostEvent::Pointer { id, phase, x, y, wx: -1, wy: -1 };
+        assert_eq!(v[0], (100, pt(1, PointerPhase::Down, 10, 20)));
+        assert_eq!(v[1], (170, pt(1, PointerPhase::Up, 10, 20)));
+        assert!(v.contains(&(301, pt(1, PointerPhase::Up, 100, 0))));
+        assert!(v.contains(&(1302, pt(2, PointerPhase::Up, 380, 200))));
+        assert_eq!(v.last().unwrap(), &(2600, pt(1, PointerPhase::Up, 5, 5)));
         let v = parse_inject("0:lpdrag 10 10 110 60 700 160; 5000:drag2 300 200 400 200 160; 9000:tap3 50 50; 9500:dtap 5 5").unwrap();
-        assert_eq!(v[0], (0, HostEvent::Pointer { id: 1, phase: PointerPhase::Down, x: 10, y: 10 }));
+        assert_eq!(v[0], (0, pt(1, PointerPhase::Down, 10, 10)));
         assert_eq!(v[1].0, 716, "lpdrag moves start after the hold");
-        assert!(v.contains(&(861, HostEvent::Pointer { id: 1, phase: PointerPhase::Up, x: 110, y: 60 })));
-        assert!(v.contains(&(5005, HostEvent::Pointer { id: 2, phase: PointerPhase::Down, x: 330, y: 200 })));
-        assert!(v.contains(&(5172, HostEvent::Pointer { id: 2, phase: PointerPhase::Up, x: 430, y: 200 })));
+        assert!(v.contains(&(861, pt(1, PointerPhase::Up, 110, 60))));
+        assert!(v.contains(&(5005, pt(2, PointerPhase::Down, 330, 200))));
+        assert!(v.contains(&(5172, pt(2, PointerPhase::Up, 430, 200))));
+        // Window coordinates (`w` prefix): game position left to the host.
+        let wv = parse_inject("0:wtap 1000 400").unwrap();
+        assert_eq!(wv[0], (0, HostEvent::Pointer { id: 1, phase: PointerPhase::Down, x: -1, y: -1, wx: 1000, wy: 400 }));
         assert_eq!(v.iter().filter(|e| e.0 >= 9000 && e.0 < 9100 && matches!(e.1, HostEvent::Pointer { phase: PointerPhase::Down, .. })).count(), 3);
         assert_eq!(v.iter().filter(|e| e.0 >= 9500 && matches!(e.1, HostEvent::Pointer { phase: PointerPhase::Up, .. })).count(), 2);
     }
@@ -763,8 +856,8 @@ mod tests {
         assert!(v.contains(&(150, HostEvent::MouseButton { button: MouseButton::Left, down: false })));
         assert_eq!(v.last(), Some(&(300, HostEvent::Quit)));
         assert!(parse_inject("x:click").is_err());
-        let (v, shots) = parse_inject_all("1000:text Ab1;2000:shot /tmp/x.png").unwrap();
-        assert_eq!(shots, vec![(2000, PathBuf::from("/tmp/x.png"))]);
+        let (v, shots) = parse_inject_all("1000:text Ab1;2000:shot /tmp/x.png;3000:wshot /tmp/y.png").unwrap();
+        assert_eq!(shots, vec![(2000, PathBuf::from("/tmp/x.png"), false), (3000, PathBuf::from("/tmp/y.png"), true)]);
         assert!(v.contains(&(1010, HostEvent::Key { vk: 0x41, down: true })));
         assert!(v.contains(&(1130, HostEvent::Key { vk: 0x42, down: true })));
         assert!(v.contains(&(1250, HostEvent::Key { vk: 0x31, down: true })));

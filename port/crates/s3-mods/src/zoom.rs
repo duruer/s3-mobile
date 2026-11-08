@@ -14,15 +14,15 @@ use crate::gesture::Phase;
 use crate::res;
 use crate::settings::UiMode;
 
-/// Render heights of the zoom levels (index 0 = most zoomed in). Max = [`res::MAX_H`].
-/// 280 and 320 added 2026-11-08 (more zoom in; below ~280 the HUD drawn into the frame loses its icons); 840..1200
-/// added by res-tall (taller snapshot grid).
-pub const LEVEL_HEIGHTS: [u32; 20] =
-    [280, 320, 360, 400, 440, 480, 520, 560, 600, 640, 680, 720, 760, 780, 840, 900, 960, 1040, 1120, 1200];
+/// Render heights of the zoom levels (index 0 = most zoomed in). Max = [`res::MAX_H`], min = [`res::MIN_H`].
+/// 280 and 320 added 2026-11-08 (more zoom in); 200 and 240 by overlay-window (the HUD is drawn in the window layer
+/// now, so it no longer depends on the render size); 840..1200 added by res-tall (taller snapshot grid).
+pub const LEVEL_HEIGHTS: [u32; 22] =
+    [200, 240, 280, 320, 360, 400, 440, 480, 520, 560, 600, 640, 680, 720, 760, 780, 840, 900, 960, 1040, 1120, 1200];
 /// Default level: 600 px high (like the game's 800x600).
-pub const DEFAULT_LEVEL: u32 = 8;
-/// Lowest level in UI mode A (the original panel needs at least 480 px).
-pub const CLASSIC_MIN_LEVEL: u32 = 5;
+pub const DEFAULT_LEVEL: u32 = 10;
+/// Lowest level in UI mode A (the original panel art needs at least 480 px).
+pub const CLASSIC_MIN_LEVEL: u32 = 7;
 /// Pinch scale factor per level (fingers apart by this factor = one level zoomed in).
 pub const PINCH_STEP: f32 = 1.12;
 /// Minimum time between two switches during a pinch (ms). The next switch also waits until the game finished
@@ -57,6 +57,50 @@ pub fn pinch_level(start: u32, scale: f32, min_level: u32) -> u32 {
     let steps = -(scale.ln() / PINCH_STEP.ln());
     let steps = if steps.abs() < 0.6 { 0 } else { steps.round() as i32 };
     (start as i32 + steps).clamp(min_level as i32, max) as u32
+}
+
+/// Render width for height `h` in UI mode A with the panel shown at its own scale ([`crate::display::PanelSplit`],
+/// window `ww` x `wh`): panel width + the map part that fills the rest of the window at the map's scale
+/// (`wh / h`), a multiple of 8.
+pub fn classic_width(h: u32, ww: u32, wh: u32) -> u32 {
+    let v = res::variant_for(h);
+    let pw_win = (v.panel_w as f64 * wh as f64 / v.h as f64).round();
+    let map = (ww as f64 - pw_win).max(64.0) * h as f64 / wh.max(1) as f64;
+    let w = v.panel_w as f64 + map;
+    ((((w / 8.0).round() as u32) * 8).clamp(res::MIN_W, res::MAX_W)).max(v.panel_w + 64)
+}
+
+/// Window size when UI mode A will show the panel at its own scale (Classic, `NativeWide`, window known).
+fn classic_split_window(m: &mut Machine) -> Option<(u32, u32)> {
+    let (ui, mode) = {
+        let st = m.state::<crate::ModsState>();
+        let s = st.borrow_mut();
+        (s.settings.ui_mode, s.settings.display.mode)
+    };
+    if ui != UiMode::ClassicTouch || mode != DisplayMode::NativeWide || std::env::var("S3_PANEL_SPLIT").is_ok_and(|v| v == "0") {
+        return None;
+    }
+    if env_size("S3_RES_ASPECT").is_some() {
+        return None;
+    }
+    crate::display::window_size(m).filter(|&(w, h)| w > 0 && h > 0)
+}
+
+/// Size for height `h` with the current aspect (and the Classic panel split's width rule).
+fn size_now(m: &mut Machine, h: u32, a: f32) -> (u32, u32) {
+    let (w, h) = size_for_height(h, a);
+    match classic_split_window(m) {
+        Some((ww, wh)) => (classic_width(h, ww, wh).min(w.max(res::MIN_W)), h),
+        None => (w, h),
+    }
+}
+
+/// [`anchor_camera`] with `fx` a fraction of the map view (`size.0 - pw`) instead of the frame.
+pub fn anchor_camera_map(cam: (i32, i32), (fx, fy): (f32, f32), old: (u32, u32), new: (u32, u32), old_pw: f32, new_pw: f32) -> (i32, i32) {
+    let (fx, fy) = (fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0));
+    let (ox, oy) = (fx * (old.0 as f32 - old_pw), fy * old.1 as f32);
+    let (nx, ny) = (fx * (new.0 as f32 - new_pw), fy * new.1 as f32);
+    (cam.0 + (ox - nx).round() as i32, cam.1 + (oy - ny).round() as i32)
 }
 
 /// New camera so that the world point under screen fraction `(fx, fy)` stays there when the frame size changes
@@ -125,7 +169,13 @@ pub fn set_level_anchored(m: &mut Machine, l: u32, anchor: Option<(f32, f32)>, p
     } else {
         m.state::<crate::ModsState>().borrow_mut().settings = s;
     }
-    m.state::<res::ResState>().borrow_mut().anchor = Some(anchor.unwrap_or((0.5, 0.5)));
+    let split = crate::display::panel_split(m).is_some();
+    {
+        let st = m.state::<res::ResState>();
+        let mut r = st.borrow_mut();
+        r.anchor = Some(anchor.unwrap_or((0.5, 0.5)));
+        r.anchor_map = split && anchor.is_none();
+    }
     update_target(m);
 }
 
@@ -162,16 +212,22 @@ pub fn target_size(m: &mut Machine) -> Option<(u32, u32)> {
         return Some(res::clamp_size(w, h));
     }
     let a = aspect(m);
+    // The Mobile HUD reads its building icons from the game's panel once: that needs >= 480 px for a moment.
+    if m.state::<crate::ui_hud_game::HudShared>().borrow_mut().harvesting {
+        let h = m.state::<PinchState>().borrow_mut().height.unwrap_or(0).max(crate::ui_hud_game::HARVEST_MIN_H);
+        return Some(size_now(m, h, a));
+    }
     if let Some(h) = m.state::<PinchState>().borrow_mut().height {
-        return Some(size_for_height(h, a));
+        return Some(size_now(m, h, a));
     }
     let ml = min_level(m);
     let saved = m.state::<crate::ModsState>().borrow_mut().settings.res.zoom_height;
     if let Some(h) = saved {
         let (lo, hi) = (LEVEL_HEIGHTS[ml as usize], LEVEL_HEIGHTS[LEVEL_HEIGHTS.len() - 1]);
-        return Some(size_for_height(h.clamp(lo, hi), a));
+        return Some(size_now(m, h.clamp(lo, hi), a));
     }
-    Some(size_for(level(m), a, ml))
+    let (_, h) = size_for(level(m), a, ml);
+    Some(size_now(m, h, a))
 }
 
 /// Render height a pinch in progress asks for (overrides the level until the pinch ends).
@@ -224,6 +280,8 @@ pub struct Pinch {
     /// recognizer's scale must be corrected after each resolution switch (else zooming feeds back on itself).
     start_frame_w: u32,
     start_frame_h: u32,
+    /// Panel width of the start frame when UI mode A shows the panel at its own scale (anchor = map fraction).
+    start_split_pw: Option<u32>,
     last_switch_ms: u64,
     /// Direction of the last switch in this pinch (+1 bigger, -1 smaller, 0 none).
     dir: i8,
@@ -246,6 +304,7 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
         p.start_level = Some(level(m));
         p.start_frame_w = mapped_w;
         p.start_frame_h = mapped_h;
+        p.start_split_pw = crate::display::panel_split(m).map(|s| s.w);
         p.dir = 0;
     }
     // Pointer positions of one multi-finger gesture are all mapped through the viewport the gesture started on
@@ -259,7 +318,12 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     let want_h = (want_h.clamp(hmin, hmax) / PINCH_STEP_H) * PINCH_STEP_H;
     let end = phase == Phase::End;
     let (sw, sh) = (p.start_frame_w, p.start_frame_h);
-    let anchor = (sw > 0 && sh > 0).then(|| ((cx / sw as f32).clamp(0.0, 1.0), (cy / sh as f32).clamp(0.0, 1.0)));
+    let anchor = (sw > 0 && sh > 0).then(|| match p.start_split_pw.filter(|&pw| pw + 1 < sw) {
+        // Panel at its own scale: the map part is what zooms; anchor in its fractions.
+        Some(pw) => (((cx - pw as f32) / (sw - pw) as f32).clamp(0.0, 1.0), (cy / sh as f32).clamp(0.0, 1.0)),
+        None => ((cx / sw as f32).clamp(0.0, 1.0), (cy / sh as f32).clamp(0.0, 1.0)),
+    });
+    let anchor_map = p.start_split_pw.is_some();
     let busy = res::switch_pending(m) || now.saturating_sub(p.last_switch_ms) < PINCH_SWITCH_MS;
     if end {
         // Stay exactly where the fingers stopped (snapping to the nearest 40 px level made a last jump, sometimes
@@ -271,7 +335,10 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
         s.res.zoom_height = Some(end_h);
         let _ = crate::set_settings(m, s);
         if target_size(m) != Some((fw, fh)) {
-            m.state::<res::ResState>().borrow_mut().anchor = Some(anchor.unwrap_or((0.5, 0.5)));
+            let st = m.state::<res::ResState>();
+            let mut r = st.borrow_mut();
+            r.anchor = Some(anchor.unwrap_or((0.5, 0.5)));
+            r.anchor_map = anchor_map;
         }
         update_target(m);
         p.start_level = None;
@@ -280,7 +347,12 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
         // Reversing the direction needs a bigger change (no back-and-forth on finger jitter).
         p.dir = (want_h as i64 - fh as i64).signum() as i8;
         m.state::<PinchState>().borrow_mut().height = Some(want_h);
-        m.state::<res::ResState>().borrow_mut().anchor = Some(anchor.unwrap_or((0.5, 0.5)));
+        {
+            let st = m.state::<res::ResState>();
+            let mut r = st.borrow_mut();
+            r.anchor = Some(anchor.unwrap_or((0.5, 0.5)));
+            r.anchor_map = anchor_map;
+        }
         update_target(m);
         p.last_switch_ms = now;
     }
@@ -322,17 +394,30 @@ mod tests {
     #[test]
     fn sizes_for_levels() {
         // 4:3 reproduces the game's sizes at 480 / 600.
-        assert_eq!(size_for(5, 4.0 / 3.0, 0), (640, 480));
-        assert_eq!(size_for(8, 4.0 / 3.0, 0), (800, 600));
+        assert_eq!(size_for(7, 4.0 / 3.0, 0), (640, 480));
+        assert_eq!(size_for(DEFAULT_LEVEL, 4.0 / 3.0, 0), (800, 600));
         // Phone cover screen 2229x904 (aspect 2.466): 600 high -> 1480x600 (the user's example).
         let a = 2229.0 / 904.0;
-        assert_eq!(size_for(8, a, 0), (1480, 600));
-        assert_eq!(size_for(11, a, 0), (1776, 720));
-        let (w, h) = size_for(13, a, 0);
+        assert_eq!(size_for(10, a, 0), (1480, 600));
+        assert_eq!(size_for(13, a, 0), (1776, 720));
+        let (w, h) = size_for(15, a, 0);
         assert_eq!(h, 780);
         assert_eq!(w, 1920);
         // Classic mode never goes below 480.
         assert_eq!(size_for(0, 4.0 / 3.0, CLASSIC_MIN_LEVEL), (640, 480));
+        // The new bottom (HUD): 200 high, at least MIN_W wide.
+        assert_eq!(size_for(0, 2316.0 / 904.0, 0), (512, 200));
+        assert_eq!(size_for(0, 4.0 / 3.0, 0), (res::MIN_W, 200));
+        // Classic panel split widths: map part keeps the window aspect.
+        for h in [480u32, 520, 600, 700, 768, 900, 1200] {
+            let w = classic_width(h, 2316, 904);
+            let v = res::variant_for(h);
+            let pw_win = (v.panel_w as f32 * 904.0 / v.h as f32).round();
+            let map_scale_x = (2316.0 - pw_win) / (w - v.panel_w) as f32;
+            let map_scale_y = 904.0 / h as f32;
+            assert!((map_scale_x / map_scale_y - 1.0).abs() < 0.012, "{h}: {w} {map_scale_x} {map_scale_y}");
+            assert!(w <= size_for_height(h, 2316.0 / 904.0).0);
+        }
         // Very wide: width capped, height follows.
         let (w, h) = size_for(level_count() - 1, 4.0, 0);
         assert_eq!(w, res::MAX_W);

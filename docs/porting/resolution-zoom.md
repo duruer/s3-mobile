@@ -2,6 +2,9 @@
 
 Status: implemented 2026-11-05 (agent `res-zoom`), desktop-verified (`s3run`, screenshots read), MP two-peer hash
 IDENTICAL with different zoom levels per peer. Not yet tried on the phone (Verify phase).
+**overlay-window (2026-11-08)**: mod UI moved to a window-resolution layer (constant size at every zoom), so the
+minimum went down to **200** px high (levels 200 and 240 added; `res::MIN_H` 200); UI mode A shows its panel at a
+constant scale with a matching render width ([display.md](display.md) "Classic panel at a constant size").
 **res-tall (2026-11-08)**: maximum raised from 2560x780 to **3200x1200** (row stride of the snapshot grid patched, sprite
 lists enlarged), see "Taller views (res-tall)" below.
 
@@ -237,4 +240,13 @@ the desktop: JIT off 37-117 ms -> 17-42 ms, `S3_JIT=1` 14-44 ms -> 14-17 ms (hol
   below ~280 its icons vanish (top resource icons at 240, bottom bar icons at 200), so 280 is the limit until the
   HUD is drawn at window resolution (multicore.md option B). Zoom out above 780: see the res-tall work.
 - FPS counter: font and padding scale with the frame height (11 px at 600), so it keeps its on-screen size at
-  every zoom level, like the HUD.
+  every zoom level, like the HUD. (Superseded by overlay-window: drawn in the window layer.)
+
+## Zoom in to 200 (overlay-window, 2026-11-08)
+
+The mods' UI is now drawn at window resolution ([mods.md](mods.md) "Window layer"), so the HUD no longer limits
+the zoom: `res::MIN_H` 280 -> 200 (`MIN_W` stays 320), `LEVEL_HEIGHTS` gained 200 and 240 (22 levels; default index
+8 -> 10 = still 600; Classic minimum 5 -> 7 = still 480). NOTE: saved `res.zoom_level` indices of older settings files
+now mean a level 2 steps closer (the exact `zoom_height` of a pinch is unaffected). Verified headless 2316x904 with
+`zoom_level` 0: HUD at 512x200 full size and sharp, icons harvested (the harvest raises the render size to 480 for a
+moment), a building placed through the sheet (`scratch/overlay-window/vis/hudmin/`).

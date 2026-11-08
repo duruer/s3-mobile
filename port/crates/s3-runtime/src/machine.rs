@@ -384,7 +384,7 @@ impl Machine {
 
     /// The composing part of [`Machine::present_owned`] (overlay, cursor, `Host::present`).
     pub(crate) fn present_owned_now(&mut self, fb: crate::FrameBuffer) -> crate::FrameBuffer {
-        if self.ext.overlay_compose.is_none() {
+        if !self.has_overlay() {
             self.present_cursor(&fb);
             return fb;
         }
@@ -392,6 +392,8 @@ impl Machine {
         self.ext.last_guest_size = (fb.width, fb.height);
         let last = fb;
         let t0 = self.stats.host_prof_start();
+        self.run_window_overlay(&last);
+        self.ext.frame_overlay_shown = false;
         let composed = self.apply_overlay_to(&last);
         self.stats.host_prof_section("present: overlay copy + compose", t0);
         let t1 = self.stats.host_prof_start();
@@ -406,7 +408,8 @@ impl Machine {
 
     /// Overlay (mods) + cursor composition, then `Host::present`.
     pub(crate) fn present_inner(&mut self, fb: &crate::FrameBuffer) {
-        if self.ext.overlay_compose.is_some() {
+        if self.has_overlay() {
+            self.ext.frame_overlay_shown = false;
             if let Some(out) = self.apply_overlay(fb) {
                 self.present_cursor(&out);
                 self.recycle_overlay(out);

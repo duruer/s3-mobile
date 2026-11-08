@@ -49,6 +49,14 @@ a press that slides off a button does nothing.
 
 ## How it works
 
+**Window layer (2026-11-08 overlay-window)**: the HUD is drawn into the mods' window-resolution layer
+([mods.md](mods.md) "Window layer"), not into the game frame: sizes come from the window (factor = window height /
+480 x `hud_scale`, same look as a 600 px frame shown full screen before), so the bar, sheets, cards and text keep
+their size and stay sharp at every zoom level (now down to 200 px render height). Touches hit-test with their window
+position. Icons are still sampled from the game's frame; the icon harvest needs a frame >= 480 px high, so while it
+runs the zoom keeps the render size at least 480 (`HudShared::harvesting`, hidden behind the "Preparing touch HUD"
+screen). The minimap is a shared RGBA image drawn with the game's shear (`Layer::blit_map`).
+
 ### Hiding the panel: full-screen map (layout patch)
 
 Instead of covering the panel, the game is made to draw the map over the whole screen:

@@ -15,15 +15,20 @@
 //! Active when `settings.ui_mode == ClassicTouch` (override with `S3_UI_MODE=A|classic|B|hud|off`), in game,
 //! and only for the GOG exe (all addresses are for GOG S3.EXE `00a925cf…`). Map touches are not touched
 //! here: they go on to the context-aware input / fallback mapping.
+//!
+//! Everything is drawn into the window layer ([`crate::layer`], window pixels, sizes in units of a 600 px high
+//! window), so the floating buttons, chip and bubble keep their on-screen size at every zoom level; the panel
+//! itself is shown at a constant scale by the frontend ([`crate::display::PanelSplit`]).
 
 #[path = "ui_classic_panel.rs"]
 pub mod panel;
 
 use s3_cpu::ECX;
-use s3_runtime::{HostEvent, LogLevel, Machine, MouseButton};
+use s3_runtime::{FrameBuffer, HostEvent, LogLevel, Machine, MouseButton};
 
 use crate::gesture::TouchEvent;
-use crate::overlay::{measure_text, Canvas, Image, Rgba, Weight};
+use crate::layer::Layer;
+use crate::overlay::{measure_text, Image, Rgba, Weight};
 use crate::{settings::UiMode, Mod, ModEvent, ModsState};
 use panel::{Button, Label, Layout, PanelState};
 
@@ -203,9 +208,10 @@ pub struct ClassicTouch {
     texts: std::collections::HashMap<u32, Option<String>>,
     dirty: bool,
     logged_active: bool,
-    /// Visible part of the frame (`display::visible_game_rect`; cropped in Fill mode) and display settings, for the
-    /// floating buttons.
+    /// Window rectangle that shows the game (`Viewport::dst_rect_clipped`), the UI scale (window height / 600) and
+    /// the display settings, for the floating buttons (window layer).
     vis: Option<(i32, i32, i32, i32)>,
+    ui: f32,
     disp: crate::display::DisplaySettings,
 }
 
@@ -238,6 +244,7 @@ impl ClassicTouch {
             dirty: false,
             logged_active: false,
             vis: None,
+            ui: 1.0,
             disp: crate::display::DisplaySettings::default(),
         }
     }
@@ -249,7 +256,9 @@ impl ClassicTouch {
             (s.gd, s.logic, s.last_input_ms, s.hooked)
         };
         let frame = m.last_frame_size();
-        self.vis = Some(crate::display::visible_game_rect(m));
+        let vp = crate::draw_viewport(m);
+        self.vis = Some(vp.dst_rect_clipped());
+        self.ui = vp.win_h as f32 / 600.0;
         self.disp = crate::display::display_settings(m);
         let layout = Layout::read(&m.mem).filter(|l| (l.screen_w as u32, l.screen_h as u32) == frame);
         self.in_game = hooked
@@ -317,25 +326,32 @@ impl ClassicTouch {
         self.text(m, panel::building_text_id(t)).unwrap_or_else(|| format!("Building {t}"))
     }
 
-    /// Floating buttons: (kind, rect).
+    /// Window pixels for `v` units (1 unit = 1 px of a 600 px high window).
+    fn q(&self, v: f32) -> i32 {
+        (v * self.ui).round() as i32
+    }
+
+    /// Floating buttons: (kind, window rect).
     fn float_buttons(&self) -> Vec<(FloatBtn, (i32, i32, i32, i32))> {
-        let Some(l) = self.view.layout else { return Vec::new() };
+        if self.view.layout.is_none() {
+            return Vec::new();
+        }
         // Bottom right of the map: the top right corner holds touch.rs' build-placement ✕ button.
-        let (w, h) = (76, 38);
-        // Right / bottom edge of the visible area (Fill mode crops the frame).
-        let (vx, vy, vw, vh) = self.vis.filter(|r| r.2 > 0 && r.3 > 0).unwrap_or((0, 0, l.screen_w, l.screen_h));
-        let (right, bottom) = ((vx + vw).min(l.screen_w), (vy + vh).min(l.screen_h));
-        let menu = (right - w - 8, bottom - h - 14, w, h);
+        let (w, h) = (self.q(76.0), self.q(38.0));
+        // Right / bottom edge of the part of the window showing the game (Fill mode crops the frame).
+        let Some((vx, vy, vw, vh)) = self.vis.filter(|r| r.2 > 0 && r.3 > 0) else { return Vec::new() };
+        let (right, bottom) = (vx + vw, vy + vh);
+        let menu = (right - w - self.q(8.0), bottom - h - self.q(14.0), w, h);
         let mut v = vec![(FloatBtn::Menu, menu)];
         if self.view.panel.page == 7 {
-            let hw = 150;
+            let hw = self.q(150.0);
             let mut y = menu.1;
             for k in [FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut] {
-                y -= h + 12;
-                if y < vy + 4 {
+                y -= h + self.q(12.0);
+                if y < vy + self.q(4.0) {
                     break;
                 }
-                v.push((k, (right - hw - 8, y, hw, h)));
+                v.push((k, (right - hw - self.q(8.0), y, hw, h)));
             }
         }
         v
@@ -345,10 +361,12 @@ impl ClassicTouch {
         self.view.panel.page == 1 && self.view.slot != 0
     }
 
+    /// Floating button under a window point.
     fn float_at(&self, x: f32, y: f32) -> Option<FloatBtn> {
         // A few pixels of extra margin around each button.
+        let e = self.q(6.0);
         self.float_buttons().into_iter().find_map(|(k, (bx, by, bw, bh))| {
-            let inside = x >= (bx - 6) as f32 && x < (bx + bw + 6) as f32 && y >= (by - 6) as f32 && y < (by + bh + 6) as f32;
+            let inside = x >= (bx - e) as f32 && x < (bx + bw + e) as f32 && y >= (by - e) as f32 && y < (by + bh + e) as f32;
             inside.then_some(k)
         })
     }
@@ -392,17 +410,25 @@ impl ClassicTouch {
         None
     }
 
-    fn draw_panel_touch(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_panel_touch(&mut self, m: &mut Machine, c: &mut Layer, frame: &FrameBuffer) {
         let (Some(l), Some(t)) = (self.view.layout, self.touch.clone()) else { return };
+        let vp = crate::draw_viewport(m);
+        let ps = vp.panel_scale().unwrap_or(vp.scale().1);
+        let to_win = |x: i32, y: i32| {
+            let (wx, wy) = vp.game_to_window(x as f32, y as f32);
+            (wx.round() as i32, wy.round() as i32)
+        };
         // Magnified source region, centred on the chosen button (or the finger).
         let (cx, cy) = self.touch_point().unwrap_or((t.x as i32, t.y as i32));
-        let (sw, sh, k) = (64, 40, 3);
+        let (sw, sh) = (64, 40);
+        // 3x the panel's on-screen size.
+        let k = 3.0 * ps;
         let sx = (cx - sw / 2).clamp(0, l.panel_w - sw).max(0);
         let sy = (cy - sh / 2).clamp(0, l.screen_h - sh).max(0);
         let mut img = Image::new(sw as u32, sh as u32);
         for yy in 0..sh {
             for xx in 0..sw {
-                let p = c.fb.pixels.get(((sy + yy) as u32 * c.fb.width + (sx + xx) as u32) as usize).copied().unwrap_or(0);
+                let p = frame.pixels.get(((sy + yy) as u32 * frame.width + (sx + xx) as u32) as usize).copied().unwrap_or(0);
                 let (r, g, b) = s3_runtime::host::rgb565_to_rgb888(p);
                 let i = ((yy * sw + xx) * 4) as usize;
                 img.rgba[i..i + 4].copy_from_slice(&[r, g, b, 255]);
@@ -415,42 +441,53 @@ impl ClassicTouch {
                 None => String::new(),
             },
         };
+        let ui = self.ui;
+        let q = move |v: f32| (v * ui).round() as i32;
         // Outline the chosen button in place.
         if let Some(i) = t.target {
             let (bx, by, bw, bh) = l.rect(&t.buttons[i]);
-            c.stroke_rounded_rect(bx - 2, by - 2, bw + 4, bh + 4, 3.0, 2.0, GOLD);
+            let (x0, y0) = to_win(bx, by);
+            let (x1, y1) = to_win(bx + bw, by + bh);
+            c.stroke_rounded_rect(x0 - q(2.0), y0 - q(2.0), x1 - x0 + q(4.0), y1 - y0 + q(4.0), 3.0 * self.ui, 2.0 * self.ui, GOLD);
         }
         // Bubble right of the panel, vertically next to the finger (never under it).
-        let (mw, mh) = (sw * k, sh * k);
-        let px = 18.0;
+        let (mw, mh) = ((sw as f32 * k).round() as i32, (sh as f32 * k).round() as i32);
+        let px = 18.0 * self.ui;
         let (tw, th) = measure_text(px, Weight::Bold, &label);
-        let bw = mw.max(tw + 20) + 12;
-        let bh = mh + 12 + if label.is_empty() { 0 } else { th + 10 };
-        let bx = l.panel_w + 10;
-        let by = (cy - bh / 2 - 20).clamp(4, l.screen_h - bh - 4);
-        c.fill_rounded_rect(bx, by, bw, bh, 10.0, BG);
-        c.stroke_rounded_rect(bx, by, bw, bh, 10.0, 2.0, GOLD);
+        let bw = mw.max(tw + q(20.0)) + q(12.0);
+        let bh = mh + q(12.0) + if label.is_empty() { 0 } else { th + q(10.0) };
+        let (panel_right, fy) = to_win(l.panel_w, cy);
+        let bx = panel_right + q(10.0);
+        let (wtop, wbottom) = self.vis.map(|v| (v.1, v.1 + v.3)).unwrap_or((0, c.height() as i32));
+        let by = (fy - bh / 2 - q(20.0)).clamp(wtop + q(4.0), (wbottom - bh - q(4.0)).max(wtop + q(4.0)));
+        c.fill_rounded_rect(bx, by, bw, bh, 10.0 * self.ui, BG);
+        c.stroke_rounded_rect(bx, by, bw, bh, 10.0 * self.ui, 2.0 * self.ui, GOLD);
         // Pointer triangle towards the finger.
-        let ty = cy.clamp(by + 12, by + bh - 12);
-        for i in 0..10 {
-            c.fill_rect(bx - i, ty - (10 - i), 1, 2 * (10 - i), BG);
+        let ty = fy.clamp(by + q(12.0), by + bh - q(12.0));
+        for i in 0..q(10.0) {
+            c.fill_rect(bx - i, ty - (q(10.0) - i), 1, 2 * (q(10.0) - i), BG);
         }
         let ix = bx + (bw - mw) / 2;
-        c.blit_scaled(&img, ix, by + 6, mw, mh, 1.0);
+        let iy = by + q(6.0);
+        c.blit_image(img, ix, iy, mw, mh, 1.0);
         // Outline of the chosen button inside the magnified view.
         if let Some(i) = t.target {
             let (rx, ry, rw, rh) = l.rect(&t.buttons[i]);
-            c.set_clip(ix, by + 6, mw, mh);
-            c.stroke_rect(ix + (rx - sx) * k - 2, by + 6 + (ry - sy) * k - 2, rw * k + 4, rh * k + 4, 2, GOLD);
+            let kk = |v: i32| (v as f32 * k).round() as i32;
+            c.set_clip(ix, iy, mw, mh);
+            c.stroke_rect(ix + kk(rx - sx) - q(2.0), iy + kk(ry - sy) - q(2.0), kk(rw) + q(4.0), kk(rh) + q(4.0), q(2.0).max(1), GOLD);
             c.reset_clip();
         }
         if !label.is_empty() {
-            c.text(bx + (bw - tw) / 2, by + 6 + mh + 6, px, Weight::Bold, Rgba::WHITE, &label);
+            c.text(bx + (bw - tw) / 2, iy + mh + q(6.0), px, Weight::Bold, Rgba::WHITE, &label);
         }
     }
 
-    fn draw_float(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_float(&mut self, m: &mut Machine, c: &mut Layer) {
         let Some(l) = self.view.layout else { return };
+        let ui = self.ui;
+        let q = move |v: f32| (v * ui).round() as i32;
+        let u = self.ui;
         let menu_open = self.view.panel.page == 7;
         for (k, (x, y, w, h)) in self.float_buttons() {
             let pressed = self.pressed.is_some_and(|(_, pk, inside)| pk == k && inside);
@@ -483,19 +520,21 @@ impl ClassicTouch {
                 _ => text,
             };
             let bg = if pressed { GOLD.fade(0.85) } else { bg };
-            c.fill_rounded_rect(x, y, w, h, 9.0, bg);
-            c.stroke_rounded_rect(x, y, w, h, 9.0, 2.0, GOLD);
+            c.fill_rounded_rect(x, y, w, h, 9.0 * u, bg);
+            c.stroke_rounded_rect(x, y, w, h, 9.0 * u, 2.0 * u, GOLD);
             let fg = if pressed { Rgba::BLACK } else { Rgba::WHITE };
-            c.text_centered(x, y, w, h, 17.0, Weight::Bold, fg, text);
+            c.text_centered(x, y, w, h, 17.0 * u, Weight::Bold, fg, text);
         }
         if let Some(chip) = self.context_chip(m) {
-            let px = 15.0;
+            let px = 15.0 * u;
             let (tw, th) = measure_text(px, Weight::Bold, &chip);
-            let x = l.panel_w + 8;
-            let w = tw + 20;
-            if x + w < l.screen_w - 60 {
-                c.fill_rounded_rect(x, 8, w, th + 12, 8.0, BG);
-                c.text(x + 10, 14, px, Weight::Bold, GOLD, &chip);
+            let vp = crate::draw_viewport(m);
+            let x = vp.game_to_window(l.panel_w as f32, 0.0).0.round() as i32 + q(8.0);
+            let top = self.vis.map(|v| v.1).unwrap_or(0) + q(8.0);
+            let w = tw + q(20.0);
+            if x + w < c.width() as i32 - q(60.0) {
+                c.fill_rounded_rect(x, top, w, th + q(12.0), 8.0 * u, BG);
+                c.text(x + q(10.0), top + q(6.0), px, Weight::Bold, GOLD, &chip);
             }
         }
     }
@@ -522,7 +561,8 @@ impl Mod for ClassicTouch {
                 if !self.in_game {
                     return ModEvent::Pass;
                 }
-                if let Some(k) = self.float_at(x, y) {
+                let (wx, wy) = crate::touch_window_pos(m, ev);
+                if let Some(k) = self.float_at(wx, wy) {
                     self.pressed = Some((id, k, true));
                     self.dirty = true;
                     return ModEvent::Consumed;
@@ -541,7 +581,8 @@ impl Mod for ClassicTouch {
             TouchEvent::Move { id, x, y } => {
                 if let Some((pid, k, _)) = self.pressed {
                     if pid == id {
-                        let inside = self.float_at(x, y) == Some(k);
+                        let (wx, wy) = crate::touch_window_pos(m, ev);
+                        let inside = self.float_at(wx, wy) == Some(k);
                         self.pressed = Some((pid, k, inside));
                         self.dirty = true;
                         return ModEvent::Consumed;
@@ -564,7 +605,8 @@ impl Mod for ClassicTouch {
                     if pid == id {
                         self.pressed = None;
                         self.dirty = true;
-                        if self.float_at(x, y) == Some(k) {
+                        let (wx, wy) = crate::touch_window_pos(m, ev);
+                        if self.float_at(wx, wy) == Some(k) {
                             let action = match k {
                                 FloatBtn::Menu if self.view.panel.page == 7 => Action::CloseMenu,
                                 FloatBtn::Menu => Action::OpenMenu,
@@ -677,13 +719,16 @@ impl Mod for ClassicTouch {
         }
     }
 
-    fn draw(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_window(&mut self, m: &mut Machine, c: &mut Layer, frame: &FrameBuffer) {
         self.dirty = false;
         if !self.in_game {
             return;
         }
+        let vp = crate::draw_viewport(m);
+        self.vis = Some(vp.dst_rect_clipped());
+        self.ui = vp.win_h as f32 / 600.0;
         if self.touch.is_some() {
-            self.draw_panel_touch(m, c);
+            self.draw_panel_touch(m, c, frame);
         }
         self.draw_float(m, c);
     }

@@ -14,11 +14,18 @@
 //!   (save / quit through the original menu page, pause, settings incl. the UI mode switch).
 //!
 //! Active only while `settings.ui_mode == MobileHud`; switching modes at runtime restores the original layout.
+//!
+//! Drawn into the window layer ([`crate::layer`]) in window pixels, sized from the window height (not the game's
+//! render size), so the HUD keeps its size and sharpness at every zoom level; touches are hit-tested with their
+//! window position ([`crate::touch_window_pos`]).
 
-use s3_runtime::{HostEvent, Machine};
+use std::sync::Arc;
+
+use s3_runtime::{FrameBuffer, HostEvent, Machine};
 
 use crate::gesture::TouchEvent;
-use crate::overlay::{measure_text, Canvas, Image, Rgba, Weight};
+use crate::layer::{ImageRef, Layer};
+use crate::overlay::{measure_text, Image, Rgba, Weight};
 use crate::settings::UiMode;
 use crate::ui_hud_data::{build_type, building_text_id, good_name, inventory_icon_rect, CATEGORIES, GOODS};
 
@@ -41,7 +48,7 @@ const TEXT: Rgba = Rgba::rgb(240, 236, 226);
 const TEXT_DIM: Rgba = Rgba::rgb(168, 174, 188);
 const ACCENT: Rgba = Rgba::rgb(240, 190, 80);
 
-/// Height of the bottom bar in HUD units (1 unit = 1 px at 640x480, scaled with the frame and `hud_scale`).
+/// Height of the bottom bar in HUD units (1 unit = 1 px of a 480 px high window, times `hud_scale`).
 const BAR_H: f32 = 54.0;
 
 // ---------------------------------------------------------------- geometry
@@ -147,10 +154,10 @@ pub struct MobileHud {
     /// Pointer captured by a HUD element: (id, action at Down).
     pressed: Option<(u32, Action)>,
     /// Icons per (cat, slot) for the current race.
-    icons: Vec<((u32, u32), Image)>,
+    icons: Vec<((u32, u32), ImageRef)>,
     icon_race: Option<u32>,
     /// Goods icons from the Inventory page, by good id.
-    good_icons: Vec<(u8, Image)>,
+    good_icons: Vec<(u8, ImageRef)>,
     harvest: Harvest,
     /// Saved panel state before harvesting (page, cat).
     saved_page: Option<(u32, u32)>,
@@ -161,10 +168,11 @@ pub struct MobileHud {
     dirty: bool,
     last_snap_ms: u64,
     text_dumped: bool,
-    /// Visible part of the game frame (display `Fill` mode crops; HUD elements stay inside it).
+    /// Part of the window that shows the game (window pixels; display `Fit` leaves bars, HUD elements stay inside).
     view: Rect,
-    /// Minimap image + camera rectangle (refreshed every `MINI_REFRESH_MS`).
+    /// Minimap image + camera rectangle (refreshed every `MINI_REFRESH_MS`) and the image as RGBA for the layer.
     mini: Option<MiniData>,
+    mini_img: Option<ImageRef>,
     last_mini_ms: u64,
     /// Geometry of the minimap widget / of the full-screen map from the last draw (hit tests).
     mini_geom: Option<MapGeom>,
@@ -207,6 +215,7 @@ impl Default for MobileHud {
             text_dumped: false,
             view: Rect::new(0, 0, 640, 480),
             mini: None,
+            mini_img: None,
             last_mini_ms: 0,
             mini_geom: None,
             map_geom: None,
@@ -226,7 +235,7 @@ pub fn install(m: &mut Machine, gog_patches: bool) {
 }
 
 impl MobileHud {
-    /// HUD scale factor: frame height relative to 480, times the user's `hud_scale`.
+    /// HUD scale factor (window px per HUD unit): window height relative to 480, times the user's `hud_scale`.
     fn k(&self) -> f32 {
         let (w, h) = (self.view.w.max(1) as f32, self.view.h.max(1) as f32);
         (h / 480.0).min(w / 640.0).max(0.5) * self.scale_pref.clamp(0.6, 1.6)
@@ -252,7 +261,7 @@ impl MobileHud {
         self.name(m, building_text_id(t))
     }
 
-    fn icon(&self, cat: u32, slot: u32) -> Option<&Image> {
+    fn icon(&self, cat: u32, slot: u32) -> Option<&ImageRef> {
         self.icons.iter().find(|(k, _)| *k == (cat, slot)).map(|(_, i)| i)
     }
 
@@ -282,6 +291,8 @@ impl MobileHud {
     // ------------------------------------------------------------ icon harvesting
 
     fn harvest_tick(&mut self, m: &mut Machine) {
+        let harvesting = matches!(self.harvest, Harvest::Cat { .. });
+        m.state::<HudShared>().borrow_mut().harvesting = harvesting;
         let Some(snap) = self.snap.clone() else { return };
         if self.icon_race != Some(snap.race) && self.harvest == Harvest::Done {
             self.harvest = Harvest::Idle;
@@ -337,13 +348,14 @@ impl MobileHud {
             game::queue(m, LogicAction::StartBuild { cat: c.max(1), slot: 0, btype: 0 });
             game::queue(m, LogicAction::Page { page: if page == 1 { 0 } else { page }, sub: None });
             self.harvest = Harvest::Done;
+            m.state::<HudShared>().borrow_mut().harvesting = false;
             self.sync_layout(m);
             self.dirty = true;
         }
     }
 
     /// Called in `draw` with the guest frame (before the HUD draws): copy the build slots of the shown page.
-    fn harvest_capture(&mut self, m: &mut Machine, c: &Canvas) {
+    fn harvest_capture(&mut self, m: &mut Machine, c: &FrameBuffer) {
         let Harvest::Cat { cat, wait_until, .. } = self.harvest else { return };
         let frames = m.state::<HudShared>().borrow_mut().panel_frames;
         if frames < wait_until {
@@ -355,7 +367,8 @@ impl MobileHud {
         } else {
             m.mem.read_u32(g + game::GD_PAGE) == 1 && m.mem.read_u32(g + game::GD_BUILD_CAT) == cat
         };
-        if !shown {
+        // The panel art needs a frame at least as high as the 640x480 layout (the zoom switches up for the harvest).
+        if !shown || c.height < game::HARVEST_MIN_H {
             return;
         }
         if m.mem.read_u32(game::L_PANEL_W) == 0 {
@@ -369,7 +382,7 @@ impl MobileHud {
         if cat == GOODS_PAGE {
             for &(good, row, col, _) in GOODS.iter() {
                 let (x, y, w, h) = inventory_icon_rect(row, col, cell, gx, gy);
-                let img = copy_rect(c, Rect::new(x, y, w, h));
+                let img = Arc::new(copy_rect(c, Rect::new(x, y, w, h)));
                 self.good_icons.retain(|(k, _)| *k != good);
                 self.good_icons.push((good, img));
             }
@@ -382,7 +395,7 @@ impl MobileHud {
                 continue;
             }
             let r = slot_rect(slot, cell, gx, gy);
-            let img = copy_rect(c, r);
+            let img = Arc::new(copy_rect(c, r));
             self.icons.retain(|(k, _)| *k != (cat, slot));
             self.icons.push(((cat, slot), img));
         }
@@ -536,7 +549,7 @@ impl MobileHud {
         self.targets.push((r, a));
     }
 
-    fn button(&mut self, c: &mut Canvas, r: Rect, label: &str, bg: Rgba, a: Action) {
+    fn button(&mut self, c: &mut Layer, r: Rect, label: &str, bg: Rgba, a: Action) {
         let pressed = self.pressed.as_ref().is_some_and(|(_, p)| *p == a);
         let bg = if pressed { CARD_HI } else { bg };
         c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(8.0) as f32, bg);
@@ -545,7 +558,7 @@ impl MobileHud {
         self.add(r, a);
     }
 
-    fn draw_bar(&mut self, c: &mut Canvas) {
+    fn draw_bar(&mut self, c: &mut Layer) {
         let v = self.view;
         let w = v.w;
         let bh = self.u(BAR_H);
@@ -594,7 +607,7 @@ impl MobileHud {
         }
     }
 
-    fn sheet_rect(&self, _c: &Canvas, rows_h: i32) -> Rect {
+    fn sheet_rect(&self, _c: &Layer, rows_h: i32) -> Rect {
         let v = self.view;
         let bh = self.u(BAR_H);
         let sh = rows_h.min(v.h - bh - self.u(8.0));
@@ -602,7 +615,7 @@ impl MobileHud {
         Rect::new(v.x + mx, v.y + v.h - bh - sh - self.u(4.0), v.w - 2 * mx, sh)
     }
 
-    fn draw_sheet_frame(&mut self, c: &mut Canvas, r: Rect, title: &str) -> Rect {
+    fn draw_sheet_frame(&mut self, c: &mut Layer, r: Rect, title: &str) -> Rect {
         c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(12.0) as f32, SHEET_BG);
         c.stroke_rounded_rect(r.x, r.y, r.w, r.h, self.u(12.0) as f32, 1.0, Rgba::rgba(255, 255, 255, 50));
         self.add(r, Action::Nothing);
@@ -613,7 +626,7 @@ impl MobileHud {
         Rect::new(r.x + self.u(8.0), r.y + th + self.u(6.0), r.w - self.u(16.0), r.h - th - self.u(12.0))
     }
 
-    fn draw_build_sheet(&mut self, m: &mut Machine, c: &mut Canvas, cat: u32) {
+    fn draw_build_sheet(&mut self, m: &mut Machine, c: &mut Layer, cat: u32) {
         let race = self.snap.as_ref().map(|s| s.race).unwrap_or(0);
         let slots: Vec<(u32, u8)> = (1..=12).filter_map(|s| build_type(race, cat, s).map(|t| (s, t))).collect();
         let cols = 4;
@@ -646,7 +659,7 @@ impl MobileHud {
         }
     }
 
-    fn draw_settlers_sheet(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_settlers_sheet(&mut self, m: &mut Machine, c: &mut Layer) {
         let Some(s) = self.snap.clone() else { return };
         let mut rows: Vec<(String, u32)> = s
             .settlers
@@ -677,7 +690,7 @@ impl MobileHud {
     }
 
     /// A row of buttons at the bottom of a sheet that open original panel pages.
-    fn tab_row(&mut self, m: &mut Machine, c: &mut Canvas, inner: Rect, tabs: &[(u32, u32)], act: fn(u32) -> Action) {
+    fn tab_row(&mut self, m: &mut Machine, c: &mut Layer, inner: Rect, tabs: &[(u32, u32)], act: fn(u32) -> Action) {
         let bh = self.u(36.0);
         let gap = self.u(6.0);
         let y = inner.y + inner.h - bh;
@@ -693,7 +706,7 @@ impl MobileHud {
         }
     }
 
-    fn draw_stats_sheet(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_stats_sheet(&mut self, m: &mut Machine, c: &mut Layer) {
         let Some(s) = self.snap.clone() else { return };
         let rows: Vec<(usize, u32)> = s.goods.iter().enumerate().filter(|(_, &n)| n > 0).map(|(g, &n)| (g, n)).collect();
         let line = self.u(19.0);
@@ -723,7 +736,7 @@ impl MobileHud {
     }
 
     /// Centred dialog over a dimmed map; returns the inner rect.
-    fn dialog(&mut self, c: &mut Canvas, rows: i32, title: &str) -> Rect {
+    fn dialog(&mut self, c: &mut Layer, rows: i32, title: &str) -> Rect {
         let v = self.view;
         let above_bar = v.h - self.u(BAR_H);
         c.fill_rect(v.x, v.y, v.w, above_bar, Rgba::rgba(0, 0, 0, 110));
@@ -736,7 +749,7 @@ impl MobileHud {
         self.draw_sheet_frame(c, r, title)
     }
 
-    fn draw_menu(&mut self, c: &mut Canvas) {
+    fn draw_menu(&mut self, c: &mut Layer) {
         let bh = self.u(40.0);
         let gap = self.u(7.0);
         let inner = self.dialog(c, 4, "Game menu");
@@ -751,7 +764,7 @@ impl MobileHud {
     }
 
     /// Settings: display (crate::display: mode / filter / FPS counter), zoom, HUD size, full-screen map, UI mode.
-    fn draw_settings(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_settings(&mut self, m: &mut Machine, c: &mut Layer) {
         let bh = self.u(40.0);
         let gap = self.u(7.0);
         let inner = self.dialog(c, 7, "Settings");
@@ -779,7 +792,7 @@ impl MobileHud {
     }
 
     /// Resource strip (top left; the FPS counter uses the top-right corner): building materials, food and population, with the game's own goods icons.
-    fn draw_resources(&mut self, c: &mut Canvas) {
+    fn draw_resources(&mut self, c: &mut Layer) {
         let Some(s) = self.snap.as_ref() else { return };
         let gv = |g: usize| s.goods.get(g).copied().unwrap_or(0);
         // (icon good id, amount, fallback label). Food = bread + fish + meat.
@@ -823,11 +836,11 @@ impl MobileHud {
         }
     }
 
-    fn good_icon(&self, g: u8) -> Option<&Image> {
+    fn good_icon(&self, g: u8) -> Option<&ImageRef> {
         self.good_icons.iter().find(|(k, _)| *k == g).map(|(_, i)| i)
     }
 
-    fn draw_selection(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_selection(&mut self, m: &mut Machine, c: &mut Layer) {
         let Some(s) = self.snap.clone() else { return };
         let w = self.view.x + self.view.w;
         let h = self.view.y + self.view.h;
@@ -863,7 +876,7 @@ impl MobileHud {
         }
     }
 
-    fn draw_placement(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_placement(&mut self, m: &mut Machine, c: &mut Layer) {
         let Some(s) = self.snap.clone() else { return };
         if s.page != 1 || s.slot == 0 || s.btype == 0 {
             return;
@@ -886,9 +899,9 @@ impl MobileHud {
     }
 
     /// Minimap widget (bottom left, above the bar): the game's minimap image + camera rectangle.
-    fn draw_minimap_widget(&mut self, c: &mut Canvas) {
+    fn draw_minimap_widget(&mut self, c: &mut Layer) {
         self.mini_geom = None;
-        let Some(d) = self.mini.clone() else { return };
+        let (Some(d), Some(img)) = (self.mini.clone(), self.mini_img.clone()) else { return };
         let v = self.view;
         let h = self.u(96.0);
         let w = h * 3 / 2;
@@ -898,7 +911,7 @@ impl MobileHud {
         c.fill_rounded_rect(card.x, card.y, card.w, card.h, self.u(10.0) as f32, Rgba::rgba(12, 15, 22, 215));
         c.stroke_rounded_rect(card.x, card.y, card.w, card.h, self.u(10.0) as f32, 1.0, if pressed { CARD_HI } else { Rgba::rgba(255, 255, 255, 60) });
         let g = MapGeom::fit(d.n, card.x + pad, card.y + pad, w, h);
-        minimap::draw(c, &d, &g, Rgba::WHITE);
+        minimap::draw(c, &img, &d, &g, Rgba::WHITE);
         // Small "expand" hint in the top-left corner (empty part of the sheared shape).
         let hx = card.x + self.u(7.0);
         let hy = card.y + self.u(7.0);
@@ -910,7 +923,7 @@ impl MobileHud {
     }
 
     /// Full-screen map overlay: the whole map scaled to the screen, camera rectangle, tap = jump + close.
-    fn draw_full_map(&mut self, c: &mut Canvas) {
+    fn draw_full_map(&mut self, c: &mut Layer) {
         self.map_geom = None;
         let v = self.view;
         c.fill_rect(v.x, v.y, v.w, v.h, Rgba::rgba(8, 10, 16, 240));
@@ -918,16 +931,16 @@ impl MobileHud {
         let top = self.u(40.0);
         c.text(v.x + self.u(12.0), v.y + self.u(10.0), self.k() * 17.0, Weight::Bold, ACCENT, "Map");
         c.text(v.x + self.u(60.0), v.y + self.u(13.0), self.k() * 12.0, Weight::Regular, TEXT_DIM, "Tap a place to go there");
-        match self.mini.clone() {
-            Some(d) => {
+        match (self.mini.clone(), self.mini_img.clone()) {
+            (Some(d), Some(img)) => {
                 let g = MapGeom::fit(d.n, v.x + self.u(8.0), v.y + top, v.w - self.u(16.0), v.h - top - self.u(8.0));
-                minimap::draw(c, &d, &g, Rgba::WHITE);
+                minimap::draw(c, &img, &d, &g, Rgba::WHITE);
                 minimap::draw_outline(c, &g, Rgba::rgba(255, 255, 255, 70));
                 let (bw, bh) = g.box_size();
                 self.add(Rect::new(g.x as i32, g.y as i32, bw as i32, bh as i32), Action::MapPoint);
                 self.map_geom = Some(g);
             }
-            None => {
+            _ => {
                 c.text_centered(v.x, v.y + v.h / 2 - self.u(12.0), v.w, self.u(24.0), self.k() * 14.0, Weight::Regular, TEXT_DIM, "Map not available yet");
             }
         }
@@ -935,14 +948,14 @@ impl MobileHud {
         self.button(c, close, "Close", BTN_ACTIVE, Action::CloseSheet);
     }
 
-    fn draw_peek(&mut self, c: &mut Canvas) {
+    fn draw_peek(&mut self, c: &mut Layer) {
         let w = self.view.x + self.view.w;
         let r = Rect::new(w - self.u(136.0), self.view.y + self.u(6.0), self.u(130.0), self.u(42.0));
         c.fill_rounded_rect(r.x - 2, r.y - 2, r.w + 4, r.h + 4, self.u(12.0) as f32, Rgba::rgba(0, 0, 0, 120));
         self.button(c, r, "Back to HUD", BTN_ACTIVE, Action::PeekDone);
     }
 
-    fn draw_preparing(&mut self, c: &mut Canvas) {
+    fn draw_preparing(&mut self, c: &mut Layer) {
         let (w, h) = (c.width() as i32, c.height() as i32);
         c.fill_rect(0, 0, w, h, Rgba::rgba(10, 12, 18, 235));
         c.text_centered(0, h / 2 - self.u(30.0), w, self.u(30.0), self.k() * 20.0, Weight::Bold, ACCENT, "Preparing touch HUD");
@@ -950,7 +963,7 @@ impl MobileHud {
         self.add(Rect::new(0, 0, w, h), Action::Nothing);
     }
 
-    fn draw_toast(&mut self, c: &mut Canvas) {
+    fn draw_toast(&mut self, c: &mut Layer) {
         let Some((t, until)) = self.toast.clone() else { return };
         if self.now >= until {
             self.toast = None;
@@ -1037,6 +1050,10 @@ impl Mod for MobileHud {
                         eprintln!("ui-hud: minimap n {} world {} cam {:?}", d.n, d.world, d.cam);
                     }
                 }
+                let same_pixels = matches!((&d, &self.mini), (Some(a), Some(b)) if a.n == b.n && a.pixels == b.pixels);
+                if !same_pixels {
+                    self.mini_img = d.as_ref().map(|d| Arc::new(minimap::to_image(d)));
+                }
                 self.mini = d;
                 self.dirty = true;
             }
@@ -1053,9 +1070,10 @@ impl Mod for MobileHud {
         self.active && self.dirty
     }
 
-    fn draw(&mut self, m: &mut Machine, c: &mut Canvas) {
+    fn draw_window(&mut self, m: &mut Machine, c: &mut Layer, frame: &FrameBuffer) {
         self.frame = (c.width(), c.height());
-        self.view = visible_view(m, c.width() as i32, c.height() as i32);
+        let vp = crate::draw_viewport(m);
+        self.view = visible_view(&vp, c.width() as i32, c.height() as i32);
         self.dirty = false;
         self.targets.clear();
         self.mini_geom = None;
@@ -1063,7 +1081,7 @@ impl Mod for MobileHud {
         if !self.active || !self.in_game {
             return;
         }
-        self.harvest_capture(m, c);
+        self.harvest_capture(m, frame);
         if let Harvest::Cat { .. } = self.harvest {
             self.draw_preparing(c);
             return;
@@ -1076,10 +1094,15 @@ impl Mod for MobileHud {
         if pw != 0 {
             // Cover mode (full-screen map off, or the landscape buffer is still too narrow until the next
             // display setup): hide the original panel below the minimap; the game's minimap stays usable.
-            let top = m.mem.read_u32(game::L_MINI_BOTTOM) as i32 + self.u(4.0);
-            let r = Rect::new(0, top, pw, c.height() as i32 - top);
+            let (fw, fh) = (frame.width as f32, frame.height as f32);
+            let mini_bottom = m.mem.read_u32(game::L_MINI_BOTTOM) as f32;
+            let (x0, top) = vp.game_to_window(0.0, mini_bottom);
+            let (x1, y1) = vp.game_to_window((pw as f32).min(fw), fh);
+            let (x0, x1, y1) = (x0.round() as i32, x1.round() as i32, y1.round() as i32);
+            let top = top.round() as i32 + self.u(4.0);
+            let r = Rect::new(x0, top, x1 - x0, y1 - top);
             c.fill_rect(r.x, r.y, r.w, r.h, Rgba::rgb(16, 19, 26));
-            c.fill_rect(pw - 1, top, 1, r.h, Rgba::rgba(255, 255, 255, 40));
+            c.fill_rect(x1 - 1, top, 1, r.h, Rgba::rgba(255, 255, 255, 40));
             self.add(r, Action::Nothing);
         }
         if self.sheet == Sheet::Map {
@@ -1114,8 +1137,10 @@ impl Mod for MobileHud {
         if !self.active || !self.in_game {
             return ModEvent::Pass;
         }
+        // HUD elements live in window pixels.
+        let (x, y) = crate::touch_window_pos(m, ev);
         match *ev {
-            TouchEvent::Down { id, x, y } => {
+            TouchEvent::Down { id, .. } => {
                 if let Some(a) = self.hit(x, y) {
                     if a == Action::Minimap {
                         self.mini_drag = Some((x, y, false));
@@ -1132,7 +1157,7 @@ impl Mod for MobileHud {
                 }
                 ModEvent::Pass
             }
-            TouchEvent::Move { id, x, y } => {
+            TouchEvent::Move { id, .. } => {
                 if let Some((pid, Action::Minimap)) = &self.pressed {
                     if *pid == id {
                         if let Some((x0, y0, dragging)) = self.mini_drag {
@@ -1150,7 +1175,7 @@ impl Mod for MobileHud {
                 }
                 ModEvent::Pass
             }
-            TouchEvent::Up { id, x, y } => {
+            TouchEvent::Up { id, .. } => {
                 let Some((pid, a)) = self.pressed.take() else { return ModEvent::Pass };
                 if pid != id {
                     self.pressed = Some((pid, a));
@@ -1246,8 +1271,8 @@ pub(crate) fn slot_rect(slot: u32, cell: i32, gx: i32, gy: i32) -> Rect {
 }
 
 /// Copy a rectangle of the frame into an RGBA image.
-fn copy_rect(c: &Canvas, r: Rect) -> Image {
-    let (fw, fh) = (c.fb.width as i32, c.fb.height as i32);
+fn copy_rect(c: &FrameBuffer, r: Rect) -> Image {
+    let (fw, fh) = (c.width as i32, c.height as i32);
     let mut img = Image::new(r.w.max(0) as u32, r.h.max(0) as u32);
     for y in 0..r.h {
         for x in 0..r.w {
@@ -1255,7 +1280,7 @@ fn copy_rect(c: &Canvas, r: Rect) -> Image {
             if sx < 0 || sy < 0 || sx >= fw || sy >= fh {
                 continue;
             }
-            let (cr, cg, cb) = s3_runtime::host::rgb565_to_rgb888(c.fb.pixels[(sy * fw + sx) as usize]);
+            let (cr, cg, cb) = s3_runtime::host::rgb565_to_rgb888(c.pixels[(sy * fw + sx) as usize]);
             let i = ((y * r.w + x) * 4) as usize;
             img.rgba[i..i + 4].copy_from_slice(&[cr, cg, cb, 255]);
         }
@@ -1264,7 +1289,7 @@ fn copy_rect(c: &Canvas, r: Rect) -> Image {
 }
 
 /// Blit keeping the aspect ratio, centred in `r`.
-fn blit_fit(c: &mut Canvas, img: &Image, r: Rect) {
+fn blit_fit(c: &mut Layer, img: &ImageRef, r: Rect) {
     if img.width == 0 || img.height == 0 || r.w <= 0 || r.h <= 0 {
         return;
     }
@@ -1274,7 +1299,7 @@ fn blit_fit(c: &mut Canvas, img: &Image, r: Rect) {
 }
 
 /// Text in up to two lines inside `r` (vertically centred).
-fn draw_wrapped(c: &mut Canvas, r: Rect, px: f32, text: &str) {
+fn draw_wrapped(c: &mut Layer, r: Rect, px: f32, text: &str) {
     let words: Vec<&str> = text.split_whitespace().collect();
     // Shrink the font if a single word does not fit (e.g. "Woodcutter's" in a narrow card).
     let widest = words.iter().map(|w| measure_text(px, Weight::Bold, w).0).max().unwrap_or(0);
@@ -1305,7 +1330,7 @@ fn draw_wrapped(c: &mut Canvas, r: Rect, px: f32, text: &str) {
     }
 }
 
-fn draw_house(c: &mut Canvas, r: Rect, k: f32) {
+fn draw_house(c: &mut Layer, r: Rect, k: f32) {
     let s = (r.w.min(r.h) as f32 * 0.8) as i32;
     let (x, y) = (r.x + (r.w - s) / 2, r.y + (r.h - s) / 2);
     c.fill_rect(x + s / 6, y + s / 2, s * 2 / 3, s / 2, TEXT_DIM);
@@ -1315,13 +1340,13 @@ fn draw_house(c: &mut Canvas, r: Rect, k: f32) {
     let _ = k;
 }
 
-fn draw_person(c: &mut Canvas, r: Rect, k: f32) {
+fn draw_person(c: &mut Layer, r: Rect, k: f32) {
     let (cx, cy) = (r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0);
     c.fill_circle(cx, cy - 6.0 * k, 5.0 * k, TEXT);
     c.fill_rounded_rect((cx - 8.0 * k) as i32, (cy) as i32, (16.0 * k) as i32, (10.0 * k) as i32, 4.0 * k, TEXT);
 }
 
-fn draw_bars(c: &mut Canvas, r: Rect, k: f32) {
+fn draw_bars(c: &mut Layer, r: Rect, k: f32) {
     let base = r.y + r.h - (2.0 * k) as i32;
     let bw = (5.0 * k) as i32;
     let x0 = r.x + r.w / 2 - (10.0 * k) as i32;
@@ -1331,7 +1356,7 @@ fn draw_bars(c: &mut Canvas, r: Rect, k: f32) {
     }
 }
 
-fn draw_burger(c: &mut Canvas, r: Rect, k: f32) {
+fn draw_burger(c: &mut Layer, r: Rect, k: f32) {
     let w = (20.0 * k) as i32;
     let x = r.x + (r.w - w) / 2;
     let y = r.y + r.h / 2 - (7.0 * k) as i32;
@@ -1340,9 +1365,9 @@ fn draw_burger(c: &mut Canvas, r: Rect, k: f32) {
     }
 }
 
-/// The visible part of the game frame (display `Fill` mode crops), clamped to the canvas.
-fn visible_view(m: &mut Machine, cw: i32, ch: i32) -> Rect {
-    let (x, y, w, h) = crate::display::visible_game_rect(m);
+/// The part of the window that shows the game (`Fit` leaves bars), clamped to the layer.
+fn visible_view(vp: &crate::display::Viewport, cw: i32, ch: i32) -> Rect {
+    let (x, y, w, h) = vp.dst_rect_clipped();
     let (x0, y0) = (x.clamp(0, cw), y.clamp(0, ch));
     let (x1, y1) = ((x + w).clamp(0, cw), (y + h).clamp(0, ch));
     if x1 - x0 < 160 || y1 - y0 < 120 {

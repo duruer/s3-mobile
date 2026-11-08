@@ -29,6 +29,10 @@ pub type EventFilter = fn(&mut Machine, HostEvent, &mut Vec<HostEvent>);
 pub type OverlayCompose = fn(&mut Machine, &mut FrameBuffer) -> bool;
 /// Cheap check before [`OverlayCompose`]: does the overlay draw anything now? (avoids a frame copy).
 pub type OverlayWanted = fn(&mut Machine) -> bool;
+/// Window-resolution overlay (s3-mods `layer`): called with the raw guest frame (read-only) on every present and
+/// overlay refresh, before the host sees the frame. The mods record their UI and hand it to the frontend
+/// themselves; the frame is not changed.
+pub type WindowOverlay = fn(&mut Machine, &FrameBuffer);
 
 /// Installed extensions (see [`Machine::ext`]).
 #[derive(Default)]
@@ -37,6 +41,10 @@ pub struct MachineExt {
     pub event_filter: Option<EventFilter>,
     pub overlay_wanted: Option<OverlayWanted>,
     pub overlay_compose: Option<OverlayCompose>,
+    pub window_overlay: Option<WindowOverlay>,
+    /// A frame-space overlay is currently on screen (an overlay-only refresh must re-present the raw frame once
+    /// it is gone).
+    pub(crate) frame_overlay_shown: bool,
     /// Hook address set given to every guest CPU (also to threads created later).
     pub(crate) hook_addrs: Option<Arc<HookAddrs>>,
     /// Native fast paths given to every guest CPU (also to threads created later); see `Cpu::set_native_blocks`.
@@ -126,14 +134,29 @@ impl Machine {
         }
     }
 
+    /// Is any overlay step installed (frame-space or window layer)?
+    pub(crate) fn has_overlay(&self) -> bool {
+        self.ext.overlay_compose.is_some() || self.ext.window_overlay.is_some()
+    }
+
+    /// Run the window-layer overlay for a guest frame (no-op when not installed).
+    pub(crate) fn run_window_overlay(&mut self, fb: &FrameBuffer) {
+        if let Some(f) = self.ext.window_overlay {
+            f(self, fb);
+        }
+    }
+
     /// Apply the overlay to a guest frame. Returns the frame to present (`None` = present `fb` unchanged).
     pub(crate) fn apply_overlay(&mut self, fb: &FrameBuffer) -> Option<FrameBuffer> {
-        self.ext.overlay_compose?;
+        if !self.has_overlay() {
+            return None;
+        }
         // Remember the raw guest frame for overlay-only refreshes.
         let mut last = self.ext.last_guest_frame.take().unwrap_or_default();
         copy_frame(&mut last, fb);
         self.ext.last_guest_size = (fb.width, fb.height);
         self.ext.last_guest_frame = Some(last);
+        self.run_window_overlay(fb);
         self.apply_overlay_to(fb)
     }
 
@@ -148,6 +171,7 @@ impl Machine {
         let mut out = self.ext.overlay_buf.take().unwrap_or_default();
         copy_frame(&mut out, fb);
         if compose(self, &mut out) {
+            self.ext.frame_overlay_shown = true;
             Some(out)
         } else {
             self.ext.overlay_buf = Some(out);
@@ -164,9 +188,13 @@ impl Machine {
     /// a HUD animation or touch feedback while the game presents nothing). Not counted in `stats.presents`.
     pub fn refresh_overlay(&mut self) {
         let Some(src) = self.ext.last_guest_frame.take() else { return };
+        self.run_window_overlay(&src);
+        // The window layer reaches the frontend by itself; the frame is re-presented only for frame-space overlays.
+        let shown = std::mem::take(&mut self.ext.frame_overlay_shown);
         match self.apply_overlay_to(&src) {
             Some(out) => self.present_cursor_owned(out),
-            None => self.present_cursor(&src),
+            None if shown => self.present_cursor(&src),
+            None => {}
         }
         if self.ext.last_guest_frame.is_none() {
             self.ext.last_guest_frame = Some(src);

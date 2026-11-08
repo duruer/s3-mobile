@@ -55,8 +55,8 @@ impl Layout {
             grid_y: mem.read_u32(addr::GRID_Y) as i32,
         };
         let sane = (1..=8).contains(&l.cell)
-            && (320..=2048).contains(&l.screen_w)
-            && (200..=2048).contains(&l.screen_h)
+            && (crate::res::MIN_W as i32..=crate::res::MAX_W as i32).contains(&l.screen_w)
+            && (crate::res::MIN_H as i32..=crate::res::MAX_H as i32).contains(&l.screen_h)
             && (40..l.screen_w / 2).contains(&l.panel_w);
         sane.then_some(l)
     }

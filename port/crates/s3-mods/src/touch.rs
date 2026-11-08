@@ -19,11 +19,12 @@
 //! left drags; everything else goes to the fallback mapping. The in-game test is a hook on
 //! `CLogicThread::HandleInput` (runs every logic tick) plus the layout globals matching the presented frame.
 
-use s3_runtime::{HookFlow, HostEvent, Machine, MouseButton};
+use s3_runtime::{FrameBuffer, HookFlow, HostEvent, Machine, MouseButton};
 
 use crate::fallback::CLICK_MS;
 use crate::gesture::{Phase, TouchEvent};
-use crate::overlay::{Canvas, Rgba};
+use crate::layer::Layer;
+use crate::overlay::Rgba;
 use crate::touch_fx::{self as fx, Fx};
 use crate::touch_game as game;
 use crate::touch_logic::{self as logic, CameraPan, DragKind, Layout, Mode, TapAction, View};
@@ -440,56 +441,76 @@ impl Mod for ContextTouch {
         self.draw_wanted
     }
 
-    fn draw(&mut self, m: &mut Machine, c: &mut Canvas) {
-        let frame = (c.width(), c.height());
+    fn draw_window(&mut self, m: &mut Machine, c: &mut Layer, _frame: &FrameBuffer) {
+        let frame = m.state::<ModsState>().borrow_mut().frame_size;
         let v = with_vis(m, game::view(m, frame, true));
         let Some(l) = v.layout else { return };
         let now = self.now;
+        let vp = crate::draw_viewport(m);
+        let u = c.ui();
+        let to_win = |x: f32, y: f32| vp.game_to_window(x, y);
         // Map-only effects are clipped to the map view.
-        c.set_clip(l.panel_w, 0, l.screen_w - l.panel_w, l.screen_h);
+        let mx = to_win(l.panel_w as f32, 0.0).0.round() as i32;
+        let (_, wy0, _, wh) = vp.dst_rect_clipped();
+        c.set_clip(mx, wy0, c.width() as i32 - mx, wh);
         if !v.selected.is_empty() {
+            let s = vp.scale().1;
             for h in v.hits.iter().filter(|h| h.own && !h.is_building() && v.selected.contains(&h.id)) {
-                fx::selection_marker(c, h.x as f32, h.y as f32);
+                let (x, y) = to_win(h.x as f32, h.y as f32);
+                fx::selection_marker(c, x, y, s);
             }
         }
         let cam = self.camera_now(m);
         for f in &self.fx {
             if matches!(f, Fx::Flag { .. }) {
-                fx::draw(c, f, now, cam);
+                fx::draw(c, f, now, cam, &to_win, u);
             }
         }
         c.reset_clip();
         for f in &self.fx {
             if matches!(f, Fx::Ripple { .. }) {
-                fx::draw(c, f, now, cam);
+                fx::draw(c, f, now, cam, &to_win, u);
             }
         }
         if let Some((x, y, t0)) = self.press {
             let age = now.saturating_sub(t0);
             if age >= PRESS_SHOW_MS {
                 let k = (age - PRESS_SHOW_MS) as f32 / (self.long_press_ms.saturating_sub(PRESS_SHOW_MS).max(1)) as f32;
-                fx::press_progress(c, x, y, k.min(1.0));
+                let (x, y) = to_win(x, y);
+                fx::press_progress(c, x, y, k.min(1.0), u);
             }
         }
         if let Some(Drag::Box { a, b }) = self.drag {
-            fx::selection_box(c, a, b);
+            fx::selection_box(c, to_win(a.0, a.1), to_win(b.0, b.1), u);
         }
         // Mode B (Mobile HUD) shows its own placement banner with Cancel; our ✕ would sit on its resource strip.
         let hud = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode == crate::settings::UiMode::MobileHud;
         if v.mode == Some(Mode::BuildPlacement) && !hud {
-            fx::cancel_button(c, logic::cancel_button_in(&l, v.vis));
+            fx::cancel_button(c, cancel_window_rect(m), u);
         }
     }
 }
 
-/// Add the visible frame rect (display mode) and the FPS counter height to a view (✕ button placement).
+/// Window rectangle of the ✕ button (top right of the shown game area, below the FPS counter).
+fn cancel_window_rect(m: &mut Machine) -> (i32, i32, i32, i32) {
+    let vp = crate::draw_viewport(m);
+    let top = match crate::display::display_settings(m).fps_counter {
+        crate::display::FpsCounter::Off => 0.0,
+        crate::display::FpsCounter::Fps => 22.0,
+        crate::display::FpsCounter::Detailed => 62.0,
+    };
+    fx::cancel_rect(vp.dst_rect_clipped(), top, vp.win_h as f32 / 600.0)
+}
+
+/// Add the visible frame rect (display mode) and the ✕ button (drawn in the window layer, mapped back to game
+/// pixels for the tap test) to a view.
 fn with_vis(m: &mut Machine, mut v: View) -> View {
     let r = crate::display::visible_game_rect(m);
-    let top = match crate::display::display_settings(m).fps_counter {
-        crate::display::FpsCounter::Off => 0,
-        crate::display::FpsCounter::Fps => 22,
-        crate::display::FpsCounter::Detailed => 62,
-    };
-    v.vis = Some((r, top));
+    v.vis = Some((r, 0));
+    let vp = crate::draw_viewport(m);
+    let (x, y, w, h) = cancel_window_rect(m);
+    let (gx0, gy0) = vp.window_to_game_f(x as f32, y as f32);
+    let (gx1, gy1) = vp.window_to_game_f((x + w) as f32, (y + h) as f32);
+    v.cancel = Some((gx0.floor() as i32, gy0.floor() as i32, (gx1 - gx0).ceil() as i32, (gy1 - gy0).ceil() as i32));
     v
 }
