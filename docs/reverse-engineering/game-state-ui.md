@@ -267,6 +267,11 @@ cursor composer (see [user32-gdi32.md](../porting/user32-gdi32.md)); the game ca
   command (0xf1..0xff family, part 1); a save writes `Save/slotNN.sav` without a name prompt.
 - **Open the menu programmatically** (ESC is not in the hotkey table): page 7 + sub-page 0 + dirty (VERIFIED).
   Then "Save Game"/"Quit Game" are grid clicks (table above) or the integration-log pixel recipe.
+- **Quit confirmation YES** (page 7 sub-page 1, grid x 3..16, y 87..91; handler `0x52e978..0x52e9b7`, STATIC):
+  `0x53e720(logic)` (thiscall `CLogicThread`, ends the game: computes the statistics, sets `[logic+0x234]`), then the
+  UI sound `0x53f560(logic, 0x33)`, sub-page := 0, panel dirty. NO (grid x 23..36) plays 0x3d and sets sub-page 0.
+  The Mobile HUD's own "Quit this game?" calls the same (`LogicAction::QuitGame`; VERIFIED 2026-11-08: statistics
+  screen follows).
 - After "Quit Game -> YES" the game shows the statistics screen and then the 800x600 main menu (main menu, load list,
   options are full-screen 800x600 screens of the app's menu system, not the panel; not analysed here).
 - Pause: P toggles page 9 (`0x52571b`).

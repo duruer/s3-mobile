@@ -32,6 +32,10 @@ pub const FN_QUEUE_POST: u32 = 0x0043_09c0;
 pub const FN_PLACEMENT_REFRESH: u32 = 0x004f_f3f0;
 /// `gd::CenterOn(tx, ty)` `0x51b560` (thiscall, ret 8): center the camera on a tile, clamps.
 pub const FN_CENTER_ON: u32 = 0x0051_b560;
+/// `CLogicThread` "end game" (thiscall logic), called by the panel's quit confirmation YES (`0x52e993`).
+pub const FN_QUIT_GAME: u32 = 0x0053_e720;
+/// UI sound (thiscall logic, sound id); the YES button plays 0x33 (`0x52e99c`).
+pub const FN_UI_SOUND: u32 = 0x0053_f560;
 /// Layout table setter `0x4c6d70(resIndex)` (stdcall).
 pub const FN_LAYOUT: u32 = 0x004c_6d70;
 /// Landscape ring-buffer init `0x54bec0` (thiscall on `[gfx+0x5f6cc]`, arg0 = width), called by the display setup.
@@ -164,6 +168,9 @@ pub enum LogicAction {
     Destroy { building: u16 },
     /// Center the camera on a tile (host-side formula of `0x51b560`).
     CenterOn { tx: u32, ty: u32 },
+    /// End the game like "Quit Game -> YES" on the original panel (page 7 sub-page 1): `0x53e720` (thiscall logic,
+    /// the handler at `0x52e993` calls it; then the statistics screen and the main menu follow).
+    QuitGame,
 }
 
 /// Render height the HUD icon harvest needs (the 640x480 panel art must fit).
@@ -479,6 +486,13 @@ fn run_action(m: &mut Machine, logic: u32, a: &LogicAction) -> Result<(), String
             // host left stale ring-buffer columns after a big jump, VERIFIED 2026-11-05).
             let w = m.mem.read_u32(g + GD_WORLD_W).max(1);
             crate::call::call_thiscall(m, FN_CENTER_ON, g, &[tx.min(w - 1), ty.min(w - 1)]);
+        }
+        LogicAction::QuitGame => {
+            // Exactly what the YES handler does: end the game, click sound, sub-page 0, panel dirty.
+            crate::call::call_thiscall(m, FN_QUIT_GAME, logic, &[]);
+            crate::call::call_thiscall(m, FN_UI_SOUND, logic, &[0x33]);
+            w(m, GD_SUBPAGE, 0);
+            w(m, GD_PANEL_DIRTY, 1);
         }
     }
     Ok(())

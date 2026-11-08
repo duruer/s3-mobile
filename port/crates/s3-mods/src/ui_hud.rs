@@ -93,6 +93,8 @@ pub(crate) enum Action {
     PanelSettlers(u32),
     MenuSave,
     MenuQuit,
+    /// Confirmation: really end the game.
+    MenuQuitYes,
     MenuPause,
     MenuToggleMode,
     MenuToggleFullMap,
@@ -121,6 +123,8 @@ pub(crate) enum Sheet {
     Stats,
     Menu,
     Settings,
+    /// "Quit this game?" confirmation (replaces the original panel's page 7 sub-page 1).
+    QuitConfirm,
     /// Full-screen map overlay.
     Map,
 }
@@ -455,10 +459,10 @@ impl MobileHud {
                 self.sheet = Sheet::None;
                 self.start_peek(7);
             }
-            Action::MenuQuit => {
-                game::queue(m, LogicAction::Page { page: 7, sub: Some(1) });
+            Action::MenuQuit => self.sheet = Sheet::QuitConfirm,
+            Action::MenuQuitYes => {
+                game::queue(m, LogicAction::QuitGame);
                 self.sheet = Sheet::None;
-                self.start_peek(7);
             }
             Action::MenuPause => {
                 // P toggles the pause page (game-state-ui.md: hotkey table).
@@ -760,7 +764,20 @@ impl MobileHud {
         self.button(c, Rect::new(inner.x, row(1), half, bh), "Save game", BTN_BG, Action::MenuSave);
         self.button(c, Rect::new(inner.x + half + gap, row(1), half, bh), "Pause", BTN_BG, Action::MenuPause);
         self.button(c, Rect { y: row(2), ..full }, "Settings...", BTN_BG, Action::MenuSettings);
-        self.button(c, Rect { y: row(3), ..full }, "Quit game (load: main menu)", BTN_DANGER, Action::MenuQuit);
+        self.button(c, Rect { y: row(3), ..full }, "Quit game", BTN_DANGER, Action::MenuQuit);
+    }
+
+    /// "Quit this game?" with Yes / No (No goes back to the game menu).
+    fn draw_quit_confirm(&mut self, c: &mut Layer) {
+        let bh = self.u(40.0);
+        let gap = self.u(7.0);
+        let inner = self.dialog(c, 2, "Quit this game?");
+        let half = (inner.w - gap) / 2;
+        let px = self.k() * 13.0;
+        c.text_centered(inner.x, inner.y, inner.w, bh, px, Weight::Regular, TEXT_DIM, "Progress since the last save is lost.");
+        let y = inner.y + bh + gap;
+        self.button(c, Rect::new(inner.x, y, half, bh), "No", BTN_BG, Action::Menu);
+        self.button(c, Rect::new(inner.x + half + gap, y, half, bh), "Yes, quit", BTN_DANGER, Action::MenuQuitYes);
     }
 
     /// Settings: display (crate::display: mode / filter / FPS counter), zoom, HUD size, full-screen map, UI mode.
@@ -1127,6 +1144,7 @@ impl Mod for MobileHud {
             Sheet::Stats => self.draw_stats_sheet(m, c),
             Sheet::Menu => self.draw_menu(c),
             Sheet::Settings => self.draw_settings(m, c),
+            Sheet::QuitConfirm => self.draw_quit_confirm(c),
             Sheet::Map | Sheet::None => {}
         }
         self.draw_bar(c);
@@ -1227,7 +1245,7 @@ impl Mod for MobileHud {
         }
         let next = match self.sheet {
             Sheet::None => return ModEvent::Pass,
-            Sheet::Settings => Sheet::Menu,
+            Sheet::Settings | Sheet::QuitConfirm => Sheet::Menu,
             _ => Sheet::None,
         };
         if !down {

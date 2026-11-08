@@ -2,6 +2,13 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Mobile HUD: own quit confirmation
+
+- "Quit game" in the HUD menu used to open the original panel's page 7 confirmation (peek), so the player saw the
+  Classic panel. RE: the YES handler calls `0x53e720(logic)` ([game-state-ui.md](reverse-engineering/game-state-ui.md)
+  section 4). The HUD now shows "Quit this game?" (No / Yes, quit) and runs that call on the logic thread
+  (`LogicAction::QuitGame`). Verified on desktop: statistics screen, no panel.
+
 ## 2026-11-08 — Cursor keeps its screen position, HUD jitter, panel leaves
 
 - Phone report: cursor still moved while zooming; panel edge effect still moved; Mobile HUD jittered. Screen
