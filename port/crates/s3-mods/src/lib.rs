@@ -26,6 +26,7 @@ pub mod end_stats; // statistics over game time on the end-of-game statistics sc
 pub mod stone; // generated stone texture behind menu layouts
 pub mod haptics; // vibration requests (Android frontend vibrates)
 pub mod lan_autoselect; // LAN screen: pick the only network provider
+pub mod menu_scroll; // finger scrolling of menu lists
 pub mod fallback;
 pub mod fast; // native fast paths for hot guest loops (docs/porting/performance.md)
 pub mod fast_blit;
@@ -254,7 +255,8 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     unit_orders::install(m, applied == Some("gog-base"));
     ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
     ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
-    add_mod(m, Box::new(lan_autoselect::LanAutoSelect::default())); // LAN screen: provider selected for the player
+    add_mod(m, Box::new(lan_autoselect::LanAutoSelect::default()));
+    add_mod(m, Box::new(menu_scroll::MenuScroll::default())); // drag a menu list = its arrow buttons // LAN screen: provider selected for the player
     add_mod(m, Box::new(end_stats::EndStatsMod::default())); // charts on the end-of-game statistics screen
     add_mod(m, Box::new(game_time::GameTimeMod::default())); // game time, drawn on top of the UI modes
     add_mod(m, Box::new(fps::FpsMod::default())); // FPS counter, drawn on top of the UI modes

@@ -157,3 +157,9 @@ stone texture (`s3-mods/src/stone.rs`: tileable 256x256 value noise + diagonal c
 sampled from the game's stone screens; no game asset). One texel per game pixel, aligned to the canvas, so its grain
 matches the pieces. CPU renderer: `render_xrgb`; GLES: `Gles::draw_stone` (`GL_REPEAT` texture). Not a tile of the
 frame: clean stone patches there are only ~40 px (panels, vines).
+
+## Finger scrolling of lists (2026-11-08)
+
+`s3-mods/src/menu_scroll.rs`: a vertical one-finger drag starting on a known list (`LISTS`: list rect, arrow points,
+row height in 800x600 game pixels; now the map picker) is turned into clicks on the list's scroll arrows, one per
+row of finger movement. Taps still select.

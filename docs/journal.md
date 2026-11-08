@@ -3,6 +3,13 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — Finger scrolling of the map list
+
+- `menu_scroll.rs`: a one-finger vertical drag on the Game Setup map picker list (game 118..242 x 242..442; SP
+  scenario and MP host) clicks the list's own scroll arrows (233,250) / (233,435), one click per 15 px row of
+  finger movement (finger up = later maps). Verified desktop 2316x904: drag up -> list moved 8 rows. Other lists
+  (Load Game, LAN open games) can be added to `LISTS` once their scroll bars are measured.
+
 ## 2026-11-08 — LAN screen selects the provider by itself
 
 - `lan_autoselect.rs`: on the "Multi-player Game: LAN" screen (layout `lan-game` / `-full`) the first "Type of
