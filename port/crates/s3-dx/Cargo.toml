@@ -11,7 +11,9 @@ s3-mem.workspace = true
 s3-cpu.workspace = true
 s3-runtime.workspace = true
 s3-net.workspace = true
+# Embedded relay for LAN play (dplay_net.rs LanCtx).
+s3-relay = { path = "../s3-relay" }
+log.workspace = true
 
 [dev-dependencies]
-s3-relay = { path = "../s3-relay" }
 tokio = { version = "1.47", default-features = false, features = ["rt", "rt-multi-thread"] }

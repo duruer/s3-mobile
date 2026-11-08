@@ -15,8 +15,14 @@ cd port && CARGO_TARGET_DIR=$PWD/target cargo test -p s3-net -p s3-relay -p s3-d
 CARGO_TARGET_DIR=$PWD/target cargo build --release -j 4 -p s3-desktop -p s3-relay
 cd .. && port/scripts/mp-local-test.sh scratch/mp-test 120     # ends with "RESULT: IDENTICAL (no desync)"
 ```
+**Status 2026-11-08 (lan-mp): LAN play works out of the box** (no relay to start, no IP to type): every instance
+runs an embedded relay, the host announces itself by UDP broadcast, joiners find it in "Open Games". Verified phone
+(host) <-> Windows PC (join) over Wi-Fi and desktop+desktop. Design and evidence: [section 8](#8-lan-play-out-of-the-box-embedded-relay--udp-discovery).
+`LAN=1 port/scripts/mp-local-test.sh` runs the two-instance test without `s3-relay`.
+
+Internet / explicit relay: setting a relay URL switches LAN mode off.
 Run a relay: `port/target/release/s3-relay --listen 0.0.0.0:7777 [--gog-only] [--grace 20] [-v]`; point the game at it
-with `S3_RELAY_URL=ws://host:7777/` (default `ws://127.0.0.1:7777/`). Android: one line in `<data dir>/relay-url.txt`
+with `S3_RELAY_URL=ws://host:7777/`. Android: one line in `<data dir>/relay-url.txt`
 (e.g. `ws://10.0.2.2:7788/` = the PC from the emulator), read at engine start; the APK has the `INTERNET` permission.
 Android joining a desktop host is verified (ux-verify1, [integration-log.md](integration-log.md)).
 
@@ -453,13 +459,92 @@ paused at different frames. Always key comparisons by simulation tick.
 
 - Hook the game's own desync detection ("Desync!" `0x53ad7c`, "Message ChecksumFailure" `0x53b59a`) and call
   `dplay_net::report_desync` so the relay forwards it (the relay side exists).
-- Android: the APK manifest has no `android.permission.INTERNET` yet (needed before `InitializeConnection` can reach a
-  relay; s3-dx with s3-net/tokio already compiles for `aarch64-linux-android`).
 - Lobby launch (1.2) from a native mobile lobby, and a frontend setting for the relay URL (Android: today only the
   env var / `dplay_net::set_config`).
-- Cross-host: run the same test with one peer on arm64 (emulator-5610 / phone) — determinism.md golden vectors first.
+- Cross-host: an x86_64 peer against an arm64 peer (2026-11-08 LAN run was arm64 phone + arm64 Windows PC).
 - Exact meaning of setup types 16/20/26/27, of class-0x22 logic messages and of the per-peer tile bytes
   (+0x09/+0x0b/+0x0c/+0x0d masked; +0x0f differs on a few tiles after ~3400-5000 ticks, unmasked).
 - Host migration / player leaving in game (relay supports it; game reaction untested).
 - More than 2 players; the 20-slot `dwMaxPlayers` path.
 
+## 8. LAN play out of the box (embedded relay + UDP discovery)
+
+Implemented 2026-11-08 (lan-mp) after the user report "hosting and joining over LAN does not work" (on a phone nobody
+runs `s3-relay`, so InitializeConnection failed, "Type of Network" stayed empty and New/Join Game showed errors).
+
+### 8.1 Design
+
+- **Mode switch**: no relay URL configured (`S3_RELAY_URL` unset/empty, Android: no `relay-url.txt`) = **LAN mode**;
+  `S3_LAN=0` forces the old behaviour (relay at `ws://127.0.0.1:7777/`). A configured URL = Internet/explicit relay
+  mode, unchanged.
+- **Every instance runs an embedded relay** (`s3_relay::spawn_background`: own thread + current-thread tokio
+  runtime, listens on `0.0.0.0:7777`, else any free port; `S3_LAN_RELAY_PORT` changes the first choice). It starts in
+  `InitializeConnection` (= when the game's LAN screen tests our connection), once per process, and keeps running.
+  The local `NetClient` connects to it via `127.0.0.1`, so the connection entry always works. In LAN mode the entry
+  is called **"Local network / Wi-Fi (Settlers 3 Port)"**.
+- **Host = the device that presses New Game**: `Open(CREATE)` creates the session on its own relay and starts the
+  announcement (`Discovery::set_hosting(port, session name)`); `Close` stops it.
+- **Join**: `EnumSessions` merges the sessions of the own relay with those of every discovered host relay (one cached
+  `NetClient` per host relay) and remembers instance GUID -> relay client. `Open(JOIN)` switches the active client to
+  the relay the session came from; all later calls (players, Send/Receive, pump) use the active client. `Close`
+  switches back to the local relay. No federation between relays: each game lives on exactly one relay, the host's.
+- **Two hosts** on one LAN: both are announced (keyed by a per-process nonce), both games appear in "Open Games".
+  Two instances on one PC: the second relay gets an ephemeral port (the beacon carries the real port).
+- Why not one shared relay per LAN: electing one would need a protocol and break when that device leaves. With
+  "relay = host", the game's own host-leaves behaviour is unchanged (the session ends with the host anyway: the
+  relay's host migration only helps when the host's client, not its device, drops).
+
+### 8.2 Discovery protocol (`port/crates/s3-net/src/lan.rs`)
+
+UDP port **47777**. Packet: `"S3PLAN1"` kind:u8 (1 query, 2 beacon) nonce:u64le exe_tag:8 (first 8 bytes of the
+exe sha256; other builds are ignored, lockstep needs identical code) relay_port:u16le name_len:u8 name.
+
+- One listen socket on `0.0.0.0:47777` with `SO_REUSEADDR` (several instances on one PC; broadcasts reach all of
+  them), one socket per local IPv4 interface (bound to that address, ephemeral port) and one unbound socket.
+  Interfaces: Unix `getifaddrs` (real broadcast address, e.g. `192.168.1.255` on the test Wi-Fi, a /22); Windows:
+  the host name's addresses (std only) with a /24 guess plus 255.255.255.255. Re-read every 10 s.
+- Every second: not hosting -> **query**; hosting -> **beacon**; sent from every interface socket to
+  `255.255.255.255:47777` and the interface broadcast, and to `127.0.0.1:47777`. A host answers a query with a
+  unicast beacon to the query's source address.
+- The receiver takes the relay address from the beacon's **source IP** + port. A host with several interfaces
+  (Wi-Fi, VPN, Hyper-V switch) is heard on each; candidates are ranked by common prefix bits with a local address and
+  tried in that order (2 s connect timeout each). Hosts expire after 6 s of silence.
+- Firewall: the joiner's queries go out and the host's answers come back as unicast replies to a broadcast, which
+  the Windows firewall allows by default ("unicast response to multicast/broadcast", 3 s window). So **a Windows PC
+  can join a phone host without any firewall rule** (verified). A Windows PC as **host** needs inbound TCP 7777
+  (relay) and inbound UDP 47777 (queries) for `s3run.exe`; Windows asks on first listen, or once, elevated:
+  `netsh advfirewall firewall add rule name="Settlers 3 Port LAN" dir=in action=allow program="<path>\s3run.exe" enable=yes profile=private`
+  (HYPOTHESIS: not tested here; the PC-host case was not needed for the verification).
+- Android: Wi-Fi drivers may filter broadcasts unless a `WifiManager.MulticastLock` is held. `s3-android/src/wifilock.rs`
+  registers `s3_net::lan::set_start_hook`; the first discovery start acquires a non-refcounted lock (JNI, global
+  ref kept forever). Manifest: `ACCESS_WIFI_STATE`, `CHANGE_WIFI_MULTICAST_STATE` (normal permissions, no prompt).
+  Logcat: `WifiService: acquireMulticastLock uid=...` + `lan: Wi-Fi multicast lock acquired`.
+
+### 8.3 Verification
+
+- Unit tests: `cargo test -p s3-net lan` (packet round trip, address ranking, two discovery instances in one process
+  find each other, other exe tag ignored).
+- Desktop + desktop (Windows ARM64, two headless s3run): `LAN=1 PYTHON=python S3RUN=.../s3run.exe GAME_DIR=...
+  bash port/scripts/mp-local-test.sh scratch/lan3 100` -> joiner logs `lan: host 'Player's game' relay
+  192.168.1.51:7777`, `LAN: connected to host relay ...`, joined; 946 ticks **IDENTICAL (no desync)**. One run during
+  a parallel APK build (`scratch/lan2`) joined fine but the game did not start before the timed clicks (timing only).
+- **Phone (Galaxy Z Fold4 cover, host) <-> Windows PC (headless s3run, join) over Wi-Fi** (`scratch/lanphone/`):
+  phone LAN screen lists "Local network / Wi-Fi (Settlers 3 Port)", New Game on Artokia, PC finds `relay
+  192.168.1.50:7777` within a second of "Search for games", joins, both ready, phone starts; both run the map.
+  PC run 240 s: 2326 simulation ticks (~2.5 min game time); the phone player's selection + 3 move orders (tapped on
+  the phone, Classic Touch) were executed on the PC at ticks 1037-1063 (`exec ... msg=0103/0109` in `pc.hash`); the
+  game's own periodic sync messages (`01fb`, every ~256 ticks) kept coming and the game never logged
+  Desync/ChecksumFailure (`S3_GAME_LOG=1`). No firewall rule, no relay-url.txt, no typed IP. Both peers arm64
+  (phone; Windows 11 ARM64 s3run). Screens: `scratch/lanphone/phone-ingame.png`, `pc-*.png` (local only).
+
+Driving the phone (cover display 2316x904, layouts of menu-layout.md): main menu "Multi-player Game: LAN" 354,773;
+LAN screen network entry 331,134, New Game 1965,596; map picker tab "Multi-player Map" 201,180, first map 154,381,
+OK 2140,840; Game Setup OK 1586,813; waiting room ready (host row) 2027,259, OK 2140,847.
+
+### 8.4 Open
+
+- PC as host with a phone joiner needs the firewall rule above (or the user accepting Windows' prompt).
+- Networks with client isolation (guest Wi-Fi, some hotspots) block both broadcast and device-to-device TCP; then only
+  the Internet relay (relay-url.txt) works. Phone hotspot (host on the hotspot phone): untested.
+- No manual "join by IP" field yet (would be `relay-url.txt` today).
+- The beacon keeps running while the game is in progress (harmless: the relay refuses joins to a full session).

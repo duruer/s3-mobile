@@ -24,6 +24,8 @@ use crate::{put_u32, ret};
 
 /// Name shown in the game's "Type of Network" list.
 pub const CONNECTION_NAME: &str = "Internet (Settlers 3 Port)";
+/// Same entry in LAN mode (embedded relay + discovery, no relay URL configured).
+pub const LAN_CONNECTION_NAME: &str = "Local network / Wi-Fi (Settlers 3 Port)";
 /// Opaque connection blob handed to the game (it copies it and passes it back to InitializeConnection).
 const BLOB_MAGIC: &[u8; 8] = b"S3PORTv1";
 
@@ -31,14 +33,18 @@ const BLOB_MAGIC: &[u8; 8] = b"S3PORTv1";
 #[derive(Debug, Clone)]
 pub struct NetConfig {
     pub relay_url: String,
+    /// LAN mode (no relay URL configured): embedded relay + UDP discovery, `relay_url` unused. See [`LanCtx`].
+    pub lan: bool,
     /// Client name shown in relay logs (the in-game player name comes from the game's own dialog).
     pub client_name: String,
 }
 
 impl NetConfig {
     pub fn from_env() -> Self {
+        let url = std::env::var("S3_RELAY_URL").ok().filter(|u| !u.trim().is_empty());
         NetConfig {
-            relay_url: std::env::var("S3_RELAY_URL").unwrap_or_else(|_| "ws://127.0.0.1:7777/".into()),
+            lan: url.is_none() && std::env::var("S3_LAN").map(|v| v != "0").unwrap_or(true),
+            relay_url: url.unwrap_or_else(|| "ws://127.0.0.1:7777/".into()),
             client_name: std::env::var("S3_NET_NAME").unwrap_or_else(|_| "s3port".into()),
         }
     }
@@ -83,7 +89,9 @@ struct Queued {
 #[derive(Default)]
 pub struct DpNet {
     config: Option<NetConfig>,
+    /// Active relay client (LAN mode: the local relay, or the host's relay after a JOIN).
     client: Option<Arc<NetClient>>,
+    lan: Option<Arc<LanCtx>>,
     sessions: Arc<Mutex<Vec<SessionDesc>>>,
     refreshing: Arc<AtomicBool>,
     /// Guest copies of session names (the game may keep the pointer from EnumSessions).
@@ -96,6 +104,114 @@ pub struct DpNet {
 }
 
 const SCRATCH_SIZE: u32 = 0x400;
+
+/// TCP port the embedded LAN relay tries first (then any free port; the discovery beacon carries the real one).
+pub const LAN_RELAY_PORT: u16 = 7777;
+
+/// LAN mode (docs/porting/multiplayer.md section 8): every instance runs an embedded relay and the discovery
+/// service. Hosting = creating the session on the own relay (and announcing it); joining = talking to the relay of
+/// the host the session was found on.
+pub struct LanCtx {
+    pub local: Arc<NetClient>,
+    pub relay_port: u16,
+    pub disc: Arc<s3_net::lan::Discovery>,
+    name: String,
+    remotes: Mutex<HashMap<std::net::SocketAddr, Arc<NetClient>>>,
+    routes: Mutex<HashMap<Guid, Arc<NetClient>>>,
+}
+
+/// The process-wide embedded relay (port), started on first use.
+fn embedded_relay() -> std::io::Result<u16> {
+    static PORT: Mutex<Option<u16>> = Mutex::new(None);
+    let mut g = PORT.lock().unwrap();
+    if let Some(p) = *g {
+        return Ok(p);
+    }
+    let first = std::env::var("S3_LAN_RELAY_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(LAN_RELAY_PORT);
+    let addrs = [std::net::SocketAddr::from(([0, 0, 0, 0], first)), std::net::SocketAddr::from(([0, 0, 0, 0], 0))];
+    let a = s3_relay::spawn_background(&addrs, s3_relay::RelayConfig::default())?;
+    *g = Some(a.port());
+    Ok(a.port())
+}
+
+impl LanCtx {
+    fn start(name: &str) -> Result<LanCtx, String> {
+        let port = embedded_relay().map_err(|e| format!("embedded relay: {e}"))?;
+        let mut cc = ClientConfig::new(format!("ws://127.0.0.1:{port}/"), name.to_string());
+        cc.request_timeout = Duration::from_secs(5);
+        let disc = s3_net::lan::Discovery::global(&cc.exe_sha256);
+        let local = NetClient::connect(cc).map_err(|e| e.to_string())?;
+        Ok(LanCtx {
+            local: Arc::new(local),
+            relay_port: port,
+            disc,
+            name: name.to_string(),
+            remotes: Mutex::new(HashMap::new()),
+            routes: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Relay client for a session found by [`LanCtx::list`] (default: the local relay).
+    fn route(&self, instance: Guid) -> Arc<NetClient> {
+        self.routes.lock().unwrap().get(&instance).cloned().unwrap_or_else(|| self.local.clone())
+    }
+
+    /// Client for a host's relay: cached, else the first candidate address that accepts a connection.
+    fn remote(&self, h: &s3_net::lan::LanHost) -> Option<(std::net::SocketAddr, Arc<NetClient>)> {
+        {
+            let r = self.remotes.lock().unwrap();
+            if let Some(a) = h.relays.iter().find(|a| r.contains_key(a)) {
+                return Some((*a, r[a].clone()));
+            }
+        }
+        for a in &h.relays {
+            let mut cc = ClientConfig::new(s3_net::lan::LanHost::url(a), self.name.clone());
+            cc.request_timeout = Duration::from_secs(2);
+            match NetClient::connect(cc) {
+                Ok(c) => {
+                    log::info!("dplay: LAN: connected to host relay {a} ('{}')", h.name);
+                    let c = Arc::new(c);
+                    self.remotes.lock().unwrap().insert(*a, c.clone());
+                    return Some((*a, c));
+                }
+                Err(e) => log::warn!("dplay: LAN: host relay {a} unreachable: {e}"),
+            }
+        }
+        None
+    }
+
+    /// Sessions on the own relay plus on every host found on the LAN (waits up to `wait` for the first host).
+    fn list(&self, app: Guid, wait: Duration) -> Vec<SessionDesc> {
+        let mut out = Vec::new();
+        let mut routes = HashMap::new();
+        if let Ok(l) = self.local.list_sessions(app) {
+            for d in l {
+                routes.insert(d.instance, self.local.clone());
+                out.push(d);
+            }
+        }
+        for h in self.disc.wait_hosts(wait) {
+            let Some((addr, c)) = self.remote(&h) else { continue };
+            match c.list_sessions(app) {
+                Ok(l) => {
+                    for d in l {
+                        if !routes.contains_key(&d.instance) {
+                            routes.insert(d.instance, c.clone());
+                            out.push(d);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("dplay: LAN: list on {addr} failed: {e}");
+                    self.remotes.lock().unwrap().remove(&addr);
+                }
+            }
+        }
+        self.routes.lock().unwrap().extend(routes);
+        out
+    }
+}
+
 
 fn state(m: &mut Machine) -> s3_runtime::Shared<DpNet> {
     m.state::<DpNet>()
@@ -340,7 +456,10 @@ pub fn enum_connections(m: &mut Machine) -> ThunkResult {
     let mut b = BLOB_MAGIC.to_vec();
     b.extend_from_slice(&dp::SP_GUID_S3PORT);
     m.mem.write_bytes(blob, &b);
-    let nb = dpname_bytes(name, CONNECTION_NAME, CONNECTION_NAME);
+    let st = state(m);
+    let lan = st.borrow_mut().config.get_or_insert_with(NetConfig::from_env).lan;
+    let label = if lan { LAN_CONNECTION_NAME } else { CONNECTION_NAME };
+    let nb = dpname_bytes(name, label, label);
     m.mem.write_bytes(name, &nb);
     m.call_guest(cb, &[guid, blob, b.len() as u32, name, dp::DPCONNECTION_DIRECTPLAY, ctx]);
     ret(dp::DP_OK, 5)
@@ -357,6 +476,21 @@ pub fn initialize_connection(m: &mut Machine) -> ThunkResult {
     }
     let st = state(m);
     let cfg = st.borrow_mut().config.get_or_insert_with(NetConfig::from_env).clone();
+    if cfg.lan {
+        return match LanCtx::start(&cfg.client_name) {
+            Ok(l) => {
+                log(m, &format!("LAN mode: embedded relay on port {}, connected as client {}", l.relay_port, l.local.client_id()));
+                let mut s = st.borrow_mut();
+                s.client = Some(l.local.clone());
+                s.lan = Some(Arc::new(l));
+                ret(dp::DP_OK, 3)
+            }
+            Err(e) => {
+                m.log(LogLevel::Warn, &format!("dplay: LAN relay unavailable: {e}"));
+                ret(dperr::UNAVAILABLE, 3)
+            }
+        };
+    }
     let mut cc = ClientConfig::new(cfg.relay_url.clone(), cfg.client_name.clone());
     cc.request_timeout = Duration::from_secs(5);
     match NetClient::connect(cc) {
@@ -415,22 +549,30 @@ pub fn enum_sessions(m: &mut Machine) -> ThunkResult {
     }
     let app = if sd != 0 { read_guid(m, sd + 0x18) } else { s3_net::S3_APP_GUID };
     let st = state(m);
-    let (cache, refreshing) = {
+    let (cache, refreshing, lan) = {
         let s = st.borrow_mut();
-        (s.sessions.clone(), s.refreshing.clone())
+        (s.sessions.clone(), s.refreshing.clone(), s.lan.clone())
     };
     let list = if flags & dp::DPENUMSESSIONS_ASYNC != 0 {
         // Return what we have; refresh in the background (the game polls every 250 ms).
         if !refreshing.swap(true, Ordering::AcqRel) {
-            let (c2, cache2, r2) = (c.clone(), cache.clone(), refreshing.clone());
+            let (c2, cache2, r2, lan2) = (c.clone(), cache.clone(), refreshing.clone(), lan.clone());
             std::thread::spawn(move || {
-                if let Ok(l) = c2.list_sessions(app) {
+                let l = match &lan2 {
+                    Some(lan) => Ok(lan.list(app, Duration::ZERO)),
+                    None => c2.list_sessions(app),
+                };
+                if let Ok(l) = l {
                     *cache2.lock().unwrap() = l;
                 }
                 r2.store(false, Ordering::Release);
             });
         }
         cache.lock().unwrap().clone()
+    } else if let Some(lan) = &lan {
+        let l = lan.list(app, Duration::from_millis(1200));
+        *cache.lock().unwrap() = l.clone();
+        l
     } else {
         match c.list_sessions(app) {
             Ok(l) => {
@@ -461,11 +603,17 @@ pub fn enum_sessions(m: &mut Machine) -> ThunkResult {
 /// Open(this, lpsd, dwFlags).
 pub fn open(m: &mut Machine) -> ThunkResult {
     let (sd, flags) = (m.arg_u32(1), m.arg_u32(2));
-    let Some(c) = client(m) else { return ret(dperr::UNINITIALIZED, 3) };
+    let Some(mut c) = client(m) else { return ret(dperr::UNINITIALIZED, 3) };
     if sd == 0 {
         return ret(dperr::INVALIDPARAMS, 3);
     }
     let desc = read_session_desc(m, sd);
+    let lan = state(m).borrow_mut().lan.clone();
+    if let Some(lan) = &lan {
+        // CREATE on our own relay; JOIN on the relay the session was found on.
+        c = if flags & dp::DPOPEN_CREATE != 0 { lan.local.clone() } else { lan.route(desc.instance) };
+        state(m).borrow_mut().client = Some(c.clone());
+    }
     let r = if flags & dp::DPOPEN_CREATE != 0 {
         c.create_session(desc.clone())
     } else {
@@ -486,6 +634,9 @@ pub fn open(m: &mut Machine) -> ThunkResult {
                     j.players.len()
                 ),
             );
+            if let (Some(lan), true) = (&lan, flags & dp::DPOPEN_CREATE != 0) {
+                lan.disc.set_hosting(Some((lan.relay_port, j.desc.name.clone())));
+            }
             let st = state(m);
             let mut s = st.borrow_mut();
             s.in_session = true;
@@ -493,6 +644,9 @@ pub fn open(m: &mut Machine) -> ThunkResult {
             ret(dp::DP_OK, 3)
         }
         Err(e) => {
+            if let Some(lan) = &lan {
+                state(m).borrow_mut().client = Some(lan.local.clone());
+            }
             m.log(LogLevel::Warn, &format!("dplay: Open({flags:#x}) failed: {e}"));
             ret(hr_for(&e), 3)
         }
@@ -502,17 +656,21 @@ pub fn open(m: &mut Machine) -> ThunkResult {
 /// Close(this).
 pub fn close(m: &mut Machine) -> ThunkResult {
     let st = state(m);
-    let (c, was) = {
+    let (c, was, lan) = {
         let mut s = st.borrow_mut();
         let was = s.in_session;
         s.in_session = false;
         s.local.clear();
         s.queue.clear();
-        (s.client.clone(), was)
+        (s.client.clone(), was, s.lan.clone())
     };
     if let (Some(c), true) = (c, was) {
         let _ = c.leave_session();
         log(m, "left session");
+    }
+    if let Some(lan) = lan {
+        lan.disc.set_hosting(None);
+        st.borrow_mut().client = Some(lan.local.clone());
     }
     ret(dp::DP_OK, 1)
 }

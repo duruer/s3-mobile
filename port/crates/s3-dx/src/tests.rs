@@ -621,7 +621,7 @@ impl Drop for TestRelay {
 fn dp_machine(url: &str) -> (Machine, u32) {
     use dplay::*;
     let mut m = machine();
-    dplay_net::set_config(&mut m, dplay_net::NetConfig { relay_url: url.into(), client_name: "test".into() });
+    dplay_net::set_config(&mut m, dplay_net::NetConfig { relay_url: url.into(), lan: false, client_name: "test".into() });
     let (_, f) = m.com.factories[&CLSID_DIRECTPLAY];
     let dp = f(&mut m, IID_IDIRECTPLAY4A).unwrap();
     // EnumConnectionsCallback (stdcall, 6 args): store lpConnection (arg 2) at CODE+0x800, count at CODE+0x804.

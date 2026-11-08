@@ -9,6 +9,7 @@
 #        its start-position search can take 30-100 s, during which both peers show "Initiating player2player
 #        communication" and wait for each other),
 #        HOST_MT / JOIN_MT=1 (run that peer in the multi-core mode, docs/porting/multicore.md),
+#        LAN=1 (no s3-relay: embedded relays + UDP LAN discovery, the out-of-the-box path),
 #        PYTHON (default python3)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -22,11 +23,16 @@ HASH_EVERY="${HASH_EVERY:-1}"
 MAP="${MAP:-artokia}"
 mkdir -p "$OUT"
 rm -rf "$OUT/host-data" "$OUT/join-data"
-"$RELAY" --listen "127.0.0.1:$PORT" -v >"$OUT/relay.log" 2>&1 &
-RELAY_PID=$!
-trap 'kill $RELAY_PID 2>/dev/null || true' EXIT
-sleep 0.5
-export S3_RELAY_URL="ws://127.0.0.1:$PORT/"
+if [ -n "${LAN:-}" ]; then
+  # LAN mode: no external relay; each instance runs its embedded relay and finds the host by UDP discovery.
+  unset S3_RELAY_URL
+else
+  "$RELAY" --listen "127.0.0.1:$PORT" -v >"$OUT/relay.log" 2>&1 &
+  RELAY_PID=$!
+  trap 'kill $RELAY_PID 2>/dev/null || true' EXIT
+  sleep 0.5
+  export S3_RELAY_URL="ws://127.0.0.1:$PORT/"
+fi
 
 # Menu coordinates (800x600): main menu "Multi-player Game: LAN" 165,275; LAN screen: network list entry 200,131,
 # "Search for games" 175,240, first open game 200,330, "Join Game" 610,567, "New Game" 730,567;

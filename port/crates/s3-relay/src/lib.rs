@@ -98,6 +98,42 @@ impl RelayHandle {
     }
 }
 
+/// Embedded relay for LAN play (docs/porting/multiplayer.md section 8): start the relay on its own thread with its
+/// own tokio runtime, trying each address in `listen` in turn. Blocks until bound; the relay then runs for the rest
+/// of the process. Returns the bound address.
+pub fn spawn_background(listen: &[SocketAddr], cfg: RelayConfig) -> std::io::Result<SocketAddr> {
+    let addrs = listen.to_vec();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new().name("s3-relay".into()).spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = tx.send(Err(e));
+                return;
+            }
+        };
+        rt.block_on(async move {
+            let mut last = std::io::Error::other("no listen address");
+            for a in addrs {
+                match start(RelayConfig { listen: a, ..cfg.clone() }).await {
+                    Ok(h) => {
+                        let _ = tx.send(Ok(h.local_addr));
+                        // Keep the handle (dropping it does not stop the tasks, but keep it anyway) and park.
+                        let _keep = h;
+                        std::future::pending::<()>().await;
+                    }
+                    Err(e) => {
+                        log::warn!("embedded relay: cannot listen on {a}: {e}");
+                        last = e;
+                    }
+                }
+            }
+            let _ = tx.send(Err(last));
+        });
+    })?;
+    rx.recv().map_err(|_| std::io::Error::other("relay thread died"))?
+}
+
 /// Bind and start the relay on the current tokio runtime.
 pub async fn start(cfg: RelayConfig) -> std::io::Result<RelayHandle> {
     let listener = TcpListener::bind(cfg.listen).await?;

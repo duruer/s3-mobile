@@ -19,6 +19,7 @@ path = "src/bin/s3det.rs"
 s3-runtime.workspace = true
 s3-engine.workspace = true
 s3-mods.workspace = true
+log.workspace = true
 png = "0.17"
 minifb = { version = "0.29", default-features = false, features = ["x11"] }
 cpal = { version = "0.15", optional = true }

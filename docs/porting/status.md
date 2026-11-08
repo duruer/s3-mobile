@@ -91,7 +91,7 @@ Full steps: [android.md](android.md#install-for-users-phone). Short version:
    [ui-modes.md](ui-modes.md)): tap = select / move / place, drag = pan, long press then drag = box select,
    two-finger tap = cancel/deselect, pinch = resolution; Save / Quit via the floating **Menu** button (A) or the HUD
    menu (B). Back = Esc, three-finger tap = soft keyboard (the ESC/ABC/RMB letterbox buttons were removed 2026-11-07).
-   Multiplayer: put the relay URL (e.g. `ws://host:7788/`) in `<data dir>/relay-url.txt`, then "Multi-player Game: LAN".
+   Multiplayer on the same Wi-Fi: "Multi-player Game: LAN" -> "Local network / Wi-Fi" -> New Game on one device, Search for games + Join Game on the others (embedded relay + UDP discovery, multiplayer.md section 8). Internet: put a relay URL (e.g. `ws://host:7788/`) in `<data dir>/relay-url.txt`.
 
 ## Known issues
 
@@ -101,7 +101,7 @@ Full steps: [android.md](android.md#install-for-users-phone). Short version:
 | Esc / Back does not open an in-game menu | Esc does nothing in game on desktop either; use the panel's computer icon (Save / Quit) |
 | Loading time varies on desktop | one verify1 run needed ~77 s from players OK to in game (usually 9-10 s; load average was low). HYPOTHESIS: host contention or map variance; not reproduced in 2 later runs |
 | Three-finger tap (keyboard toggle) untested on a device | adb has no multi-touch; the `ABC` button works |
-| Multiplayer: LAN menu entry, no lobby UI | DirectPlay HLE over our relay works (2 desktop peers, lockstep, no simulation desync in runs of up to ~6 min, [multiplayer.md](multiplayer.md)); Android joins a desktop host (ux-verify1). Relay URL: env `S3_RELAY_URL` (desktop) or one line in `<data dir>/relay-url.txt` (Android, read at engine start); no in-app setting yet. "Multi-player Game: Internet" (Blue Byte lobby, wsock32) stays unavailable; no arm64 peer tested; no desync hash on Android |
+| Multiplayer: LAN menu entry, no lobby UI | **LAN play out of the box (2026-11-08): phone host <-> Windows PC join over Wi-Fi verified, no desync** (embedded relay + UDP discovery, multiplayer.md section 8). DirectPlay HLE over our relay works (2 desktop peers, lockstep, no simulation desync in runs of up to ~6 min, [multiplayer.md](multiplayer.md)); Android joins a desktop host (ux-verify1). Relay URL: env `S3_RELAY_URL` (desktop) or one line in `<data dir>/relay-url.txt` (Android, read at engine start); no in-app setting yet. "Multi-player Game: Internet" (Blue Byte lobby, wsock32) stays unavailable; no x86_64 <-> arm64 peer tested; no desync hash on Android |
 | HUD (mode B) after an in-game switch from mode A | covers the panel ("cover mode") until the next game start, then full screen (by design, [ui-hud.md](ui-hud.md)). After B -> A the minimap showed map pixels for a few seconds, then cleared (Android, cosmetic) |
 | Box select needs a long press then drag | not testable with adb (no hold-then-move); verified on desktop. Two-finger gestures and pinch: desktop inject + unit tests only |
 | x87 precision | 53-bit, round-to-nearest only; unmasked FPU exceptions not delivered (see [x87-fpu.md](x87-fpu.md)) |
@@ -125,7 +125,7 @@ Priority order:
    [ui-classic.md](ui-classic.md), [ui-hud.md](ui-hud.md)), verified on Android (ux-verify1). Next: real phone,
    in-app settings screen (mode, relay URL). Old letterbox buttons removed 2026-11-07.
 9. **Videos**: Indeo 5 decoder (or keep skipping).
-10. **Multiplayer**: DirectPlay HLE over our relay works desktop <-> desktop and Android -> desktop (ux-verify1); next: relay URL setting + lobby UI on Android, public relay, arm64 peer test, Android-hosted game.
+10. **Multiplayer**: LAN works out of the box (embedded relay + discovery, phone host <-> PC verified 2026-11-08); DirectPlay HLE over our relay works desktop <-> desktop and Android -> desktop (ux-verify1); next: relay URL setting + lobby UI on Android, public relay.
 11. **iOS**: same Rust core (interpreter only, no JIT needed), a UIKit/Metal frontend implementing `Host`.
 
 ## Licensing (checked 2026-11-06, three times)

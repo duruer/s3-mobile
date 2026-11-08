@@ -1141,6 +1141,7 @@ dependencies = [
  "s3-dx",
  "s3-engine",
  "s3-mods",
+ "s3-net",
  "s3-runtime",
 ]
 
@@ -1160,6 +1161,7 @@ name = "s3-desktop"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "log",
  "minifb",
  "png",
  "s3-engine",
@@ -1171,6 +1173,7 @@ dependencies = [
 name = "s3-dx"
 version = "0.1.0"
 dependencies = [
+ "log",
  "s3-cpu",
  "s3-mem",
  "s3-net",
@@ -1219,7 +1222,9 @@ name = "s3-net"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "libc",
  "log",
+ "socket2",
  "tokio",
  "tokio-tungstenite",
 ]

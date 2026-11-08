@@ -9,6 +9,7 @@
 
 pub mod client;
 pub mod dplay;
+pub mod lan;
 pub mod link;
 pub mod protocol;
 pub mod wire;

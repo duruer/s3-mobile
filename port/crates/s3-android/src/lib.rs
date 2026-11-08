@@ -26,6 +26,8 @@ mod present;
 mod uithread;
 #[cfg(target_os = "android")]
 mod bgservice;
+#[cfg(target_os = "android")]
+mod wifilock;
 
 /// Package id of the APK.
 pub const PACKAGE: &str = "com.settlers3port.app";

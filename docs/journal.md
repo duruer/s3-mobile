@@ -3,6 +3,17 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — LAN multiplayer works out of the box (lan-mp)
+
+- User report: hosting/joining over LAN did not work (no relay on the phone -> empty "Type of Network").
+- Every instance now runs an **embedded relay** (`s3_relay::spawn_background`, 0.0.0.0:7777) when no relay URL is
+  configured; the host announces its game by **UDP broadcast on port 47777** (`s3_net::lan`), joiners query by
+  broadcast and get unicast answers (passes the Windows firewall without a rule), list the host's sessions in
+  "Open Games" and Join switches to the host's relay. Android holds a Wi-Fi MulticastLock (JNI, `wifilock.rs`).
+- Verified: desktop+desktop (`LAN=1 mp-local-test.sh`, 946 ticks identical) and **Fold4 phone host <-> Windows PC
+  join over Wi-Fi**, 2326 ticks, phone move orders executed on the PC, no game desync.
+- Docs: [multiplayer.md section 8](porting/multiplayer.md#8-lan-play-out-of-the-box-embedded-relay--udp-discovery).
+
 ## 2026-11-08 — Classic "Save / Quit" opens the HUD game menu dialog
 
 - UI mode A's "Save / Quit" (floating menu column) no longer opens the original panel page 7: it sets

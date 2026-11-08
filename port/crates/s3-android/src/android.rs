@@ -82,6 +82,7 @@ fn android_main(app: AndroidApp) {
     }));
     log::info!("Settlers 3 Mobile {} starting", env!("CARGO_PKG_VERSION"));
     app.set_window_flags(WindowManagerFlags::FULLSCREEN | WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
+    crate::wifilock::install(&app);
     let ui_thread = UiThread::new(&app);
     if let Some(u) = &ui_thread {
         u.immersive();

@@ -18,6 +18,8 @@ s3-dx = { workspace = true, optional = true }
 # Gesture recognition / context-aware touch run on the engine thread (RMB button, keyboard request flags);
 # display modes + the shared screen<->game transform (s3_mods::display) are used by the presenter in every build.
 s3-mods.workspace = true
+# LAN discovery start hook (wifilock.rs: Wi-Fi multicast lock).
+s3-net.workspace = true
 log = "0.4"
 # 8x8 bitmap font (MIT) for the status / test-pattern screen.
 font8x8 = { version = "0.3", default-features = false }

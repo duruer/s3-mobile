@@ -575,7 +575,24 @@ mod window {
     }
 }
 
+/// `log` crate output of the network crates (LAN discovery, embedded relay, relay client) on stderr.
+struct NetLog;
+
+impl log::Log for NetLog {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        m.level() <= log::Level::Info && (m.target().starts_with("s3_net") || m.target().starts_with("s3_relay") || m.target().starts_with("s3_dx"))
+    }
+    fn log(&self, r: &log::Record) {
+        if self.enabled(r.metadata()) {
+            eprintln!("[{}] {}: {}", r.level(), r.target(), r.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
 fn main() {
+    let _ = log::set_logger(&NetLog);
+    log::set_max_level(log::LevelFilter::Info);
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if let Some(r) = layout_tool::run(&raw) {
         if let Err(e) = r {

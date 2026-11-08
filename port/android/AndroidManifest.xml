@@ -8,6 +8,9 @@
 
     <!-- Online multiplayer: WebSocket connection to our relay (docs/porting/multiplayer.md). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- LAN game discovery (UDP broadcast, port 47777): docs/porting/multiplayer.md section 8. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- Background play (docs/porting/android.md): foreground service + notifications, CPU awake while it runs. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />

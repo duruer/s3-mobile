@@ -11,3 +11,7 @@ log.workspace = true
 tokio = { version = "1.47", default-features = false, features = ["rt", "net", "sync", "time", "macros"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+socket2 = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
