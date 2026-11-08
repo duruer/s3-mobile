@@ -122,7 +122,7 @@ pub const DPSESSIONDESC2_SIZE: usize = 0x50;
 /// `DPNAME` size.
 pub const DPNAME_SIZE: usize = 16;
 
-/// Service provider GUID our HLE reports from EnumConnections ("Internet (Settlers 3 Port)").
+/// Service provider GUID our HLE reports from EnumConnections ("Internet (Settlers 3 Mobile)").
 /// Random GUID owned by this project (not a Microsoft SP); the game only displays the name and passes the
 /// connection blob back to InitializeConnection (HYPOTHESIS to confirm in the build phase).
 pub const SP_GUID_S3PORT: crate::protocol::Guid = crate::protocol::guid("{6A2F4C1E-3B5D-4E8F-9A10-53335056F4E1}");
