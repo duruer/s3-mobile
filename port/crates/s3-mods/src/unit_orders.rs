@@ -351,7 +351,9 @@ impl UnitOrders {
             return Vec::new();
         }
         let vp = crate::draw_viewport(m);
-        let (vx, vy, vw, vh) = vp.dst_rect_clipped();
+        // Window rect, not the shown frame's: that moves with the zoom (crop / bars), the buttons must not
+        // (user report 2026-11-08).
+        let (vx, vy, vw, vh) = (0, 0, vp.win_w as i32, vp.win_h as i32);
         if vw < 160 || vh < 120 {
             return Vec::new();
         }
@@ -379,9 +381,15 @@ impl UnitOrders {
                 // Bottom of the map, right of the panel; the Menu / speed buttons sit bottom right.
                 let q = |v: f32| (v * vp.win_h as f32 / 600.0).round() as i32;
                 let (bw, bh, gap) = (q(46.0), q(40.0), q(8.0));
-                let pw = game::layout(m).map_or(0, |l| l.panel_w);
-                let gh = vp.game_h as f32;
-                let x = vp.game_to_window(pw as f32, gh - 1.0).0.round() as i32 + q(10.0);
+                // Right edge of the panel at its constant scale (the last panel column, not the first map column,
+                // whose window position depends on the map zoom).
+                let x = match vp.panel {
+                    Some(p) => vp.game_to_window(p.w as f32 - 1.0, p.h as f32 - 1.0).0.round() as i32 + 1 + q(10.0),
+                    None => {
+                        let pw = game::layout(m).map_or(0, |l| l.panel_w);
+                        vp.game_to_window(pw as f32, vp.game_h as f32 - 1.0).0.round() as i32 + q(10.0)
+                    }
+                };
                 (x.max(vx + q(8.0)), vy + vh - bh - q(14.0), bw, bh, gap)
             }
         };

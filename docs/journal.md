@@ -3,6 +3,12 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — Group buttons fixed on screen
+
+- `unit_orders::group_rects`: placed from the window rect and the Classic panel's last column (constant scale), not
+  the shown frame rect / first map column, which move with the zoom. Verified desktop: same position before and
+  after a pinch zoom.
+
 ## 2026-11-08 — Orders work at fast game speed
 
 - At 2x..8x unit orders (quick right clicks) were ignored: button-ups are scheduled on the wall clock, the game
