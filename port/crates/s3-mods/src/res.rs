@@ -543,6 +543,41 @@ pub fn set_target_mode(m: &mut Machine, t: Option<(u32, u32)>, mode: Option<(u32
     };
 }
 
+/// In the frame renderer's minimap block, right after the camera rectangle (minimap image px) is computed from the
+/// snapshot's view (`0x4b3a3c..0x4b3ab7`): x = `[ebp-0x1c]`, y = `esi`, w = `[ebp-0x2c]`, h = `[ebp-0x44]`.
+const MINIMAP_RECT_DONE: u32 = 0x004b_3aba;
+
+/// UI mode A zoomed in below 480 rows shows only a centred crop of the map view (`zoom::classic_crop`), but the
+/// game's minimap rectangle still covers the whole 480-row view, so it stopped shrinking at that zoom (user report
+/// 2026-11-08). Shrink it to the shown part (presentation only: the rectangle is just drawn).
+fn minimap_rect_hook(c: &mut HookCtx) -> HookFlow {
+    let Some(crop) = crate::zoom::classic_crop(c.m) else { return HookFlow::Continue };
+    let (gw, gh) = (c.m.mem.read_u32(L_SCREEN_W) as f32, c.m.mem.read_u32(L_SCREEN_H) as f32);
+    let pw = c.m.mem.read_u32(L_PANEL_W) as f32;
+    if crop as f32 >= gh || gw <= pw + 1.0 || gh <= 1.0 {
+        return HookFlow::Continue;
+    }
+    // Shown part of the map view (same formula as `display::Viewport::map_src`), as fractions of the view.
+    let x0 = pw + crate::display::map_skip(pw as u32, CLASSIC_VARIANT.h) as f32;
+    let mw = gw - x0;
+    let (ch, cw) = (crop as f32, mw * crop as f32 / gh);
+    let (sx, sy) = (x0 + (mw - cw) / 2.0, (gh - ch) / 2.0);
+    let view_w = gw - pw;
+    let (ox, fw) = ((sx - pw) / view_w, cw / view_w);
+    let (oy, fh) = (sy / gh, ch / gh);
+    let ebp = c.reg(s3_cpu::EBP);
+    let rd = |c: &mut HookCtx, o: u32| c.m.mem.read_u32(ebp.wrapping_sub(o)) as i32 as f32;
+    let (x, w, h) = (rd(c, 0x1c), rd(c, 0x2c), rd(c, 0x44));
+    let y = c.reg(s3_cpu::ESI) as i32 as f32;
+    let (nx, ny) = ((x + w * ox).round() as i32, (y + h * oy).round() as i32);
+    let (nw, nh) = ((w * fw).round().max(1.0) as i32, (h * fh).round().max(1.0) as i32);
+    c.m.mem.write_u32(ebp.wrapping_sub(0x1c), nx as u32);
+    c.m.mem.write_u32(ebp.wrapping_sub(0x2c), nw as u32);
+    c.m.mem.write_u32(ebp.wrapping_sub(0x44), nh as u32);
+    c.set_reg(s3_cpu::ESI, ny as u32);
+    HookFlow::Continue
+}
+
 /// Is a game frame being rendered (switch hook seen within the last second)?
 pub fn in_game(m: &mut Machine) -> bool {
     let now = m.real_ms();
@@ -674,6 +709,7 @@ pub fn install(m: &mut Machine) -> Result<(), String> {
         HookFlow::Continue
     });
     hooks::add_hook(m, FN_RUNTIME_SWITCH, "res:switch", switch_hook);
+    hooks::add_hook(m, MINIMAP_RECT_DONE, "res:minimap-rect", minimap_rect_hook);
     if trace() {
         for (a, n) in [(0x0053_db30u32, "logic-tick"), (0x004c_74f0, "game-switch-1"), (0x004c_75ae, "game-switch-2"), (0x004c_767a, "game-switch-3"), (0x004c_6d70, "layout")] {
             hooks::add_hook(m, a, "res:trace", move |c: &mut HookCtx| {

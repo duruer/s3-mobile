@@ -2,6 +2,14 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Minimap camera rectangle follows the Classic crop zoom
+
+- Below 480 rows UI mode A shows a centred crop of a 480-row view, but the game's minimap rectangle covered the
+  whole view, so it stopped shrinking. Hook `res:minimap-rect` at `0x4b3aba` (rectangle just computed: x
+  `[ebp-0x1c]`, y `esi`, w `[ebp-0x2c]`, h `[ebp-0x44]`, minimap image px) scales it to the shown part
+  (`display::Viewport::map_src` fractions). Verified desktop: small rectangle at deep zoom, unchanged at >= 480.
+  s3det fast vs S3_FAST=0: IDENTICAL (also covers the guest clock change of the speed feature at 1x).
+
 ## 2026-11-08 — Game speed 1x-4x, long press 350 ms, no FPS counter in menus
 
 - Game speed (single player, like Settlers United's speed-up): `Machine::set_time_scale` makes the guest clock run

@@ -108,7 +108,8 @@ by the same function.
   (`gfx+0x5f6a4..b0`, from the image) and draws the new one in white (`0xffff`) and stores it (`gfx+0x5f694..a0`).
   Camera rectangle in image coordinates (`0x4b3a3c`): `k = (mw << 8) / [snap+0x2c]`,
   `x = ([snap+0x24] + 11)*k >> 8`, `y = ([snap+0x28] + 16)*k >> 8`, `w = [snap+0x30]*k >> 8`,
-  `h = ([snap+0x34] - 40)*k >> 8` (signed, truncating). After `0x4b3cf3`: the drag-selection box (`0x7dfd34`,
+  `h = ([snap+0x34] - 40)*k >> 8` (signed, truncating). At `0x4b3aba` the results are in x `[ebp-0x1c]`, y `esi`,
+  w `[ebp-0x2c]`, h `[ebp-0x44]` (`ebp+8` = snap); the port's `res:minimap-rect` hook rescales them there. After `0x4b3cf3`: the drag-selection box (`0x7dfd34`,
   `0x7dfb98..`). Skipping both blocks (jump) hides the minimap without side effects (Mobile HUD, ui-hud.md).
 - **Map rect**: `x >= [0x730f24]` (the minimap's sheared right edge overlaps the map at the top). The map is rendered
   under the panel frame; the view origin is the camera.
