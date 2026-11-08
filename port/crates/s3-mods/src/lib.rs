@@ -517,7 +517,9 @@ fn event_filter(m: &mut Machine, e: HostEvent, out: &mut Vec<HostEvent>) {
 /// Scheduler service: long press timing, delayed mouse events, mod ticks, overlay refresh.
 fn service(m: &mut Machine) {
     let now = m.real_ms();
+    let scale = m.time_scale();
     let st = m.state::<ModsState>();
+    st.borrow_mut().fallback.time_scale = scale;
     let mut evs = Vec::new();
     {
         let mut s = st.borrow_mut();

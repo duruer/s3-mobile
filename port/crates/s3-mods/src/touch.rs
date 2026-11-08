@@ -21,7 +21,6 @@
 
 use s3_runtime::{FrameBuffer, HookFlow, HostEvent, Machine, MouseButton};
 
-use crate::fallback::CLICK_MS;
 use crate::gesture::{Phase, TouchEvent};
 use crate::layer::Layer;
 use crate::overlay::Rgba;
@@ -105,7 +104,8 @@ fn click(m: &mut Machine, t: u64, x: i32, y: i32, b: MouseButton) {
 fn key(m: &mut Machine, t: u64, vk: u32) {
     with_fallback(m, |f| {
         f.push(t, HostEvent::Key { vk, down: true });
-        f.push(t + CLICK_MS, HostEvent::Key { vk, down: false });
+        let c = f.click_ms();
+        f.push(t + c, HostEvent::Key { vk, down: false });
     });
 }
 
@@ -194,10 +194,11 @@ impl ContextTouch {
             }
             TapAction::SelectSameType { x, y } => {
                 // After the second tap's click (its button-up is CLICK_MS later).
-                let t = now + CLICK_MS + 20;
+                let c = with_fallback(m, |f| f.click_ms());
+                let t = now + c + 20;
                 mouse(m, t, HostEvent::Key { vk: 0x11, down: true });
                 click(m, t + 10, x, y, MouseButton::Left);
-                mouse(m, t + 10 + CLICK_MS + 10, HostEvent::Key { vk: 0x11, down: false });
+                mouse(m, t + 10 + c + 10, HostEvent::Key { vk: 0x11, down: false });
                 self.fx.push(ripple(fx::SELECT));
             }
             TapAction::Nothing => {}

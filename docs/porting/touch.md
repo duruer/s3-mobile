@@ -181,3 +181,7 @@ Verified desktop 2316x904: the camera rectangle follows the finger for hold-drag
 - `Settings::unit_paths` = `PathMode` Selected / Units / All (old `show_unit_paths` migrated to All). Units = own
   selectable types only (`unit_orders::selectable_type`: soldiers, priest, geologist, thief, pioneer, war machines,
   ships).
+
+Click length at game speed: taps send a button down and the up `fallback::TouchMouse::click_ms()` later = 60 ms of
+game time (60 / speed on the wall clock, at least 12 ms); the game ignores long right clicks, so a fixed 60 ms wall
+time broke orders at 2x..8x (2026-11-08).

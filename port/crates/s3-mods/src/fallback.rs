@@ -38,6 +38,10 @@ pub struct TouchMouse {
     pub right_next_vk: u32,
     pub keyboard_request: bool,
     pub long_press_right_click: bool,
+    /// Game speed (`Machine::time_scale`, set by the scheduler service): button-ups are scheduled on the wall
+    /// clock, but the game measures click length on its (faster) guest clock and ignores long right clicks, so
+    /// at 2x..8x the orders (quick right clicks) were dropped (user report 2026-11-08). 0 = 1x.
+    pub time_scale: f64,
 }
 
 impl TouchMouse {
@@ -47,10 +51,21 @@ impl TouchMouse {
         self.queue.push((t, e));
     }
 
+    /// Button / key hold time on the wall clock: [`CLICK_MS`] of game time at the current game speed (at least
+    /// 12 ms so the game still sees the press).
+    pub fn click_ms(&self) -> u64 {
+        if self.time_scale > 1.0 {
+            ((CLICK_MS as f64 / self.time_scale).round() as u64).max(12)
+        } else {
+            CLICK_MS
+        }
+    }
+
     pub(crate) fn click(&mut self, t: u64, p: (i32, i32), button: MouseButton) {
+        let c = self.click_ms();
         self.push(t, HostEvent::MouseMove { x: p.0, y: p.1 });
         self.push(t, HostEvent::MouseButton { button, down: true });
-        self.push(t + CLICK_MS, HostEvent::MouseButton { button, down: false });
+        self.push(t + c, HostEvent::MouseButton { button, down: false });
     }
 
     /// Map one unconsumed touch event. `frame` = current game frame size.
@@ -65,7 +80,8 @@ impl TouchMouse {
                         // byte of the button events, `0x45b370`).
                         self.push(now, HostEvent::Key { vk, down: true });
                         self.click(now + 10, pt(x, y), MouseButton::Right);
-                        self.push(now + 10 + CLICK_MS + 10, HostEvent::Key { vk, down: false });
+                        let c = self.click_ms();
+                        self.push(now + 10 + c + 10, HostEvent::Key { vk, down: false });
                     } else {
                         self.click(now, pt(x, y), MouseButton::Right);
                     }

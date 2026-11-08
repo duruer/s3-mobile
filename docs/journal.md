@@ -3,6 +3,13 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — Orders work at fast game speed
+
+- At 2x..8x unit orders (quick right clicks) were ignored: button-ups are scheduled on the wall clock, the game
+  measures the click on its faster guest clock and ignores long right clicks. `fallback::TouchMouse::click_ms`
+  (and the Classic panel click) now hold `CLICK_MS` of game time (60 / speed ms, >= 12). Verified desktop at 4x:
+  box select + tap = the soldiers walk.
+
 ## 2026-11-08 — Vibration, "Paths: units"
 
 - Vibration on long presses / group assign / game messages and background message notifications, switchable

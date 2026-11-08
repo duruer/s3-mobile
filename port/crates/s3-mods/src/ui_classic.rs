@@ -418,7 +418,9 @@ impl ClassicTouch {
         m.log(LogLevel::Debug, &format!("ui-classic: panel click at {},{} (page {})", p.0, p.1, self.view.panel.page));
         m.input.push(HostEvent::MouseMove { x: p.0, y: p.1 });
         m.input.push(HostEvent::MouseButton { button: MouseButton::Left, down: true });
-        self.queue.push((now + CLICK_MS, HostEvent::MouseButton { button: MouseButton::Left, down: false }));
+        // CLICK_MS of game time (the guest clock runs faster at game speed 2x..8x, see `fallback::TouchMouse::click_ms`).
+        let hold = if m.time_scale() > 1.0 { ((CLICK_MS as f64 / m.time_scale()).round() as u64).max(12) } else { CLICK_MS };
+        self.queue.push((now + hold, HostEvent::MouseButton { button: MouseButton::Left, down: false }));
     }
 
     fn update_target(&mut self) {
