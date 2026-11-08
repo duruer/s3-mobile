@@ -3,6 +3,13 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — LAN screen selects the provider by itself
+
+- `lan_autoselect.rs`: on the "Multi-player Game: LAN" screen (layout `lan-game` / `-full`) the first "Type of
+  Network" row (game 200,132) is clicked once after 700 ms, so New Game / Join Game no longer say "Before
+  connecting, a provider has to be selected!" (our HLE lists exactly one provider). Verified desktop: LAN -> New
+  Game opens Game Setup directly.
+
 ## 2026-11-08 — LAN multiplayer works out of the box (lan-mp)
 
 - User report: hosting/joining over LAN did not work (no relay on the phone -> empty "Type of Network").

@@ -548,3 +548,6 @@ OK 2140,840; Game Setup OK 1586,813; waiting room ready (host row) 2027,259, OK 
   the Internet relay (relay-url.txt) works. Phone hotspot (host on the hotspot phone): untested.
 - No manual "join by IP" field yet (would be `relay-url.txt` today).
 - The beacon keeps running while the game is in progress (harmless: the relay refuses joins to a full session).
+
+Provider auto-select (2026-11-08): `s3-mods/src/lan_autoselect.rs` clicks the only "Type of Network" entry once
+when the LAN screen appears (else the game asks "Before connecting, a provider has to be selected!").
