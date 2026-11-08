@@ -80,7 +80,7 @@ fn android_main(app: AndroidApp) {
     std::panic::set_hook(Box::new(|info| {
         log::error!("PANIC: {info}");
     }));
-    log::info!("Settlers 3 Port {} starting", env!("CARGO_PKG_VERSION"));
+    log::info!("Settlers 3 Mobile {} starting", env!("CARGO_PKG_VERSION"));
     app.set_window_flags(WindowManagerFlags::FULLSCREEN | WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
     let ui_thread = UiThread::new(&app);
     if let Some(u) = &ui_thread {

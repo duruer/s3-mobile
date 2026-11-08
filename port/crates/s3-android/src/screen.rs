@@ -152,7 +152,7 @@ pub fn draw_panel(fb: &mut FrameBuffer, title: &str, body: &str, bottom: bool) {
 /// Full status screen: test pattern + panel.
 pub fn status_screen(title: &str, body: &str) -> FrameBuffer {
     let mut fb = test_pattern(STATUS_W, STATUS_H);
-    draw_text(&mut fb, 32, 8, "Settlers 3 Port", 3, BLACK);
+    draw_text(&mut fb, 32, 8, "Settlers 3 Mobile", 3, BLACK);
     draw_panel(&mut fb, title, body, false);
     fb
 }
@@ -166,7 +166,7 @@ pub fn first_run_screen(title: &str, body: &str) -> FrameBuffer {
     let mut fb = FrameBuffer::new(w, h);
     fb.pixels.fill(rgb(10, 14, 30));
     fill_rect(&mut fb, 0, 0, w, 56, rgb(30, 50, 90));
-    draw_text(&mut fb, 16, 12, "Settlers 3 Port", 4, WHITE);
+    draw_text(&mut fb, 16, 12, "Settlers 3 Mobile", 4, WHITE);
     let margin = 16u32;
     let mut y = 72i32;
     draw_text(&mut fb, margin as i32, y, title, 3, YELLOW);

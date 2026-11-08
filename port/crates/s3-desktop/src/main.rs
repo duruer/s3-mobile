@@ -461,7 +461,7 @@ mod window {
             if self.win.is_none() {
                 let size = self.want.map(|(w, h)| (w as usize, h as usize)).unwrap_or((fb.width as usize, fb.height as usize));
                 let opts = WindowOptions { resize: true, scale_mode: ScaleMode::UpperLeft, ..WindowOptions::default() };
-                match Window::new("Settlers 3 Port (s3run)", size.0, size.1, opts) {
+                match Window::new("Settlers 3 Mobile (s3run)", size.0, size.1, opts) {
                     Ok(mut w) => {
                         w.set_target_fps(0);
                         // The game's cursor is composed into the frame (s3_runtime::cursor).

@@ -2,6 +2,13 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+
+## 2026-11-08 — App name "Settlers 3 Mobile"
+
+- Launcher label, notification titles, status screen and desktop window title renamed from "Settlers 3 Port" (user
+  request). Package id `com.settlers3port.app` unchanged (a new id would need a reinstall, which deletes the game files
+  on the phone).
+
 ## 2026-11-08 — Tap, then press-and-drag = box select
 
 - `gesture.rs`: a touch down within 300 ms after a nearby tap that then drags starts the box selection at once
