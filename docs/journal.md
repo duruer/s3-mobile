@@ -2,6 +2,19 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Game speed 1x-4x, long press 350 ms, no FPS counter in menus
+
+- Game speed (single player, like Settlers United's speed-up): `Machine::set_time_scale` makes the guest clock run
+  faster (GetTickCount / timeGetTime / waits / timers via `Machine::now_ms`, QueryPerformanceCounter scaled
+  incrementally); display pacing (DirectDraw limiter), audio mixing and all mod / frontend UI timing use the wall
+  clock (`Machine::real_ms`). `speed.rs`: 1x/2x/3x/4x, allowed only in a single-player game (`*(0x7e3408) != 0`),
+  back to 1x outside a game. Buttons: Mobile HUD pill right of the resource strip, Classic ">> 1x" left of Menu.
+  Verified desktop: game clock `[0x7dfd48]` +156 per 10 s at 1x, +625 at 4x.
+- Long press (box select / press-and-drag) 500 -> 350 ms (`settings::LONG_PRESS_MS`; saved 500 migrated).
+- FPS counter hidden outside a game (menu layouts / no game frame).
+- Classic finger panning: works on desktop and the phone (camera follows, inertia); open question what the
+  user's case is.
+
 ## 2026-11-08 — Classic magnifier uses the display filter
 
 - The magnifier bubble is now a frame inset (`Cmd::FrameInset`, layer hole + source rect) drawn by the frontends

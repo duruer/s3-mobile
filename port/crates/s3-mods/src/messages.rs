@@ -51,7 +51,7 @@ struct Shown {
 #[derive(Default)]
 struct Shared {
     shown: Mutex<Shown>,
-    /// `m.now_ms()` of the last composite call (the game renders a game frame).
+    /// `m.real_ms()` of the last composite call (the game renders a game frame).
     last_ms: std::sync::atomic::AtomicU64,
 }
 
@@ -99,7 +99,7 @@ pub fn install(m: &mut Machine) {
         if snap != 0 {
             let s = read_snapshot(c.m, snap);
             *sh.shown.lock().unwrap() = s;
-            sh.last_ms.store(c.m.now_ms(), std::sync::atomic::Ordering::Relaxed);
+            sh.last_ms.store(c.m.real_ms(), std::sync::atomic::Ordering::Relaxed);
         }
         c.return_from_function(0, 1)
     });

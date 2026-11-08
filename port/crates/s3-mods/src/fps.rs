@@ -128,7 +128,11 @@ impl Mod for FpsMod {
     }
 
     fn draw_window(&mut self, m: &mut Machine, c: &mut Layer, _frame: &FrameBuffer) {
-        let now = m.now_ms();
+        // In game only: not over the menus (user request 2026-11-08).
+        if crate::draw_viewport(m).layout.is_some() || !crate::res::in_game_frame(m) {
+            return;
+        }
+        let now = m.real_ms();
         let p = m.stats.presents;
         if p != self.seen_presents {
             self.seen_presents = p;

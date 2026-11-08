@@ -117,7 +117,7 @@ fn valid_gd(m: &Machine, gd: u32) -> bool {
 }
 
 fn on_handle_input(m: &mut Machine, logic: u32) {
-    let now = m.now_ms();
+    let now = m.real_ms();
     let st = m.state::<ClassicShared>();
     let gd = m.mem.read_u32(logic.wrapping_add(gog::LOGIC_GD));
     let pending = {
@@ -194,6 +194,8 @@ enum FloatBtn {
     FpsPos,
     /// Shown while the menu is open: cycle the display filter (Pixel / Smooth / Sharp / xBR / AI).
     Filter,
+    /// Always (single-player game): game speed 1x / 2x / 3x / 4x, left of Menu.
+    Speed,
     /// Shown while the menu is open: cycle the display mode (Fit / Fill / Stretch / Native wide).
     Screen,
     /// Shown while the menu is open: zoom in / out one level (render resolution, docs/porting/resolution-zoom.md).
@@ -213,6 +215,8 @@ pub struct ClassicTouch {
     /// (UI mode, FPS, filter, zoom...) are shown; the panel's own computer icon opens just the game's page
     /// (user report 2026-11-08).
     menu_by_float: bool,
+    /// Game speed label ("2x") while it can be changed (`crate::speed::allowed`), refreshed each tick.
+    speed: Option<String>,
     /// The menu page was seen open since `menu_by_float` was set (it is cleared when the page closes).
     menu_seen_open: bool,
     /// Delayed host events (click button-up).
@@ -252,6 +256,7 @@ impl ClassicTouch {
             touch: None,
             pressed: None,
             menu_by_float: false,
+            speed: None,
             menu_seen_open: false,
             queue: Vec::new(),
             texts: Default::default(),
@@ -278,7 +283,7 @@ impl ClassicTouch {
         self.in_game = hooked
             && layout.is_some()
             && valid_gd(m, gd)
-            && m.now_ms().saturating_sub(last) < IN_GAME_MS;
+            && m.real_ms().saturating_sub(last) < IN_GAME_MS;
         if !self.in_game {
             self.view = GameView::default();
             return;
@@ -363,6 +368,10 @@ impl ClassicTouch {
         let (right, bottom) = (vx + vw, vy + vh);
         let menu = (right - w - self.q(8.0), bottom - h - self.q(14.0), w, h);
         let mut v = vec![(FloatBtn::Menu, menu)];
+        if self.speed.is_some() {
+            let sw = self.q(60.0);
+            v.push((FloatBtn::Speed, (menu.0 - sw - self.q(10.0), menu.1, sw, h)));
+        }
         if self.view.panel.page == 7 && self.menu_by_float {
             let hw = self.q(150.0);
             let mut y = menu.1;
@@ -392,7 +401,7 @@ impl ClassicTouch {
     }
 
     fn queue_click(&mut self, m: &mut Machine, p: (i32, i32)) {
-        let now = m.now_ms();
+        let now = m.real_ms();
         m.log(LogLevel::Debug, &format!("ui-classic: panel click at {},{} (page {})", p.0, p.1, self.view.panel.page));
         m.input.push(HostEvent::MouseMove { x: p.0, y: p.1 });
         m.input.push(HostEvent::MouseButton { button: MouseButton::Left, down: true });
@@ -518,7 +527,7 @@ impl ClassicTouch {
                     crate::display::DisplayMode::Stretch => "Screen: Stretch",
                     crate::display::DisplayMode::NativeWide => "Screen: Wide",
                 }),
-                FloatBtn::ZoomIn | FloatBtn::ZoomOut | FloatBtn::FpsLimit | FloatBtn::FpsPos | FloatBtn::Filter => (BG, ""),
+                FloatBtn::ZoomIn | FloatBtn::ZoomOut | FloatBtn::FpsLimit | FloatBtn::FpsPos | FloatBtn::Filter | FloatBtn::Speed => (BG, ""),
             };
             let zoom_label;
             let text = match k {
@@ -540,6 +549,10 @@ impl ClassicTouch {
                 }
                 FloatBtn::Filter => {
                     zoom_label = format!("Filter: {}", self.disp.filter.label());
+                    zoom_label.as_str()
+                }
+                FloatBtn::Speed => {
+                    zoom_label = format!(">> {}", self.speed.clone().unwrap_or_default());
                     zoom_label.as_str()
                 }
                 _ => text,
@@ -663,7 +676,13 @@ impl Mod for ClassicTouch {
                                     self.dirty = true;
                                     return ModEvent::Consumed;
                                 }
-                                                FloatBtn::Fps | FloatBtn::Screen | FloatBtn::FpsLimit | FloatBtn::FpsPos | FloatBtn::Filter => {
+                                                FloatBtn::Speed => {
+                                    crate::speed::cycle(m);
+                                    self.speed = crate::speed::allowed(m).then(|| crate::speed::label(m));
+                                    self.dirty = true;
+                                    return ModEvent::Consumed;
+                                }
+                                FloatBtn::Fps | FloatBtn::Screen | FloatBtn::FpsLimit | FloatBtn::FpsPos | FloatBtn::Filter => {
                                     // Presentation settings only: no game action.
                                     if k == FloatBtn::Fps {
                                         crate::display::cycle_fps(m);
@@ -727,6 +746,11 @@ impl Mod for ClassicTouch {
     }
 
     fn tick(&mut self, m: &mut Machine, now: u64) {
+        let speed = crate::speed::allowed(m).then(|| crate::speed::label(m));
+        if speed != self.speed {
+            self.speed = speed;
+            self.dirty = true;
+        }
         let mode = m.state::<ModsState>().borrow_mut().settings.ui_mode;
         self.active = self.env_mode.unwrap_or(mode == UiMode::ClassicTouch);
         if !self.queue.is_empty() {

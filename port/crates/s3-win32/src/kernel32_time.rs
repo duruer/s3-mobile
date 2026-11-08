@@ -35,6 +35,8 @@ pub(crate) fn register(reg: &mut Registry) {
 struct QpcState {
     start: Option<Instant>,
     last: u64,
+    /// Host microseconds at the last call (the counter advances by host time x game speed since then).
+    last_host: u64,
 }
 
 fn get_tick_count(m: &mut Machine) -> ThunkResult {
@@ -47,7 +49,12 @@ fn query_performance_counter(m: &mut Machine) -> ThunkResult {
     let v = {
         let mut s = st.borrow_mut();
         let start = *s.start.get_or_insert_with(Instant::now);
-        let mut v = start.elapsed().as_micros() as u64;
+        let host = start.elapsed().as_micros() as u64;
+        let dt = host.saturating_sub(s.last_host);
+        s.last_host = host;
+        let scale = m.time_scale();
+        let step = if scale == 1.0 { dt } else { (dt as f64 * scale) as u64 };
+        let mut v = s.last + step;
         if v <= s.last {
             v = s.last + 1;
         }

@@ -329,7 +329,7 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     if !enabled(m) {
         return false;
     }
-    let now = m.now_ms();
+    let now = m.real_ms();
     let (fw, fh) = m.last_frame_size();
     // Size of the frame on screen (the viewport the touches were mapped through at the gesture start).
     let (mapped_w, mapped_h) =

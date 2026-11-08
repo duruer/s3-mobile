@@ -33,7 +33,7 @@ impl Mod for DebugTouch {
         if self.enabled != Some(true) {
             return;
         }
-        self.last_event_ms = m.now_ms();
+        self.last_event_ms = m.real_ms();
         self.dirty = true;
         // Window position of the event (the layer draws in window pixels).
         let (x, y) = crate::touch_window_pos(m, ev);

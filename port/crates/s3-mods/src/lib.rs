@@ -17,6 +17,7 @@ pub mod call;
 pub mod menu_layout;
 pub mod messages; // game message lines in the window layer (game-state-ui.md section 7) // full-screen layouts of the 800x600 menus (docs/porting/menu-layout.md)
 pub mod cursor_layer; // the game's cursor in the window layer (docs/porting/display.md)
+pub mod speed; // game speed 1x-4x (single player)
 pub mod display; // display modes + shared screen<->game transform (docs/porting/display.md)
 pub mod fps; // FPS counter overlay
 pub mod fallback;
@@ -244,6 +245,7 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
     ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
     add_mod(m, Box::new(fps::FpsMod::default())); // FPS counter, drawn on top of the UI modes
+    speed::install(m); // back to 1x outside a single-player game
     cursor_layer::install(m); // the game's mouse cursor at a constant size, on top of everything
     hooks::commit(m);
     display::apply_fps_limit(m); // FPS limit setting -> DirectDraw frame limiter
@@ -431,7 +433,7 @@ fn handle_pointer(m: &mut Machine, id: u32, phase: PointerPhase, x: i32, y: i32,
 }
 
 fn handle_pointer_game(m: &mut Machine, id: u32, phase: PointerPhase, x: i32, y: i32) {
-    let now = m.now_ms();
+    let now = m.real_ms();
     let st = m.state::<ModsState>();
     let (fx, fy) = (x as f32, y as f32);
     let captured = st.borrow_mut().captured.get(&id).copied();
@@ -471,7 +473,7 @@ fn event_filter(m: &mut Machine, e: HostEvent, out: &mut Vec<HostEvent>) {
     match e {
         HostEvent::Pointer { id, phase, x, y, wx, wy } => {
             handle_pointer(m, id, phase, x, y, wx, wy);
-            let now = m.now_ms();
+            let now = m.real_ms();
             out.extend(m.state::<ModsState>().borrow_mut().fallback.drain_due(now));
         }
         HostEvent::Key { vk, down } => {
@@ -485,7 +487,7 @@ fn event_filter(m: &mut Machine, e: HostEvent, out: &mut Vec<HostEvent>) {
 
 /// Scheduler service: long press timing, delayed mouse events, mod ticks, overlay refresh.
 fn service(m: &mut Machine) {
-    let now = m.now_ms();
+    let now = m.real_ms();
     let st = m.state::<ModsState>();
     let mut evs = Vec::new();
     {
@@ -569,7 +571,7 @@ fn window_compose(m: &mut Machine, frame: &FrameBuffer) {
         }
     }
     let list = l.finish();
-    let now = m.now_ms();
+    let now = m.real_ms();
     let st = m.state::<ModsState>();
     let mut s = st.borrow_mut();
     s.draw_vp = None;
@@ -611,7 +613,7 @@ fn overlay_compose(m: &mut Machine, fb: &mut FrameBuffer) -> bool {
         });
     }
     if drew {
-        m.state::<ModsState>().borrow_mut().last_refresh_ms = m.now_ms();
+        m.state::<ModsState>().borrow_mut().last_refresh_ms = m.real_ms();
     }
     drew
 }

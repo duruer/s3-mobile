@@ -50,7 +50,7 @@ pub fn install(m: &mut Machine) -> Result<(), String> {
     crate::hooks::add_hook(m, game::HANDLE_INPUT, "touch-context:logic-tick", |c| {
         let logic = c.reg(s3_cpu::ECX);
         game::note_logic(c.m, logic);
-        let now = c.m.now_ms();
+        let now = c.m.real_ms();
         let st = c.m.state::<TouchGame>();
         let mut g = st.borrow_mut();
         g.last_logic_tick_ms = now;
@@ -288,7 +288,7 @@ impl Mod for ContextTouch {
     }
 
     fn on_touch(&mut self, m: &mut Machine, ev: &TouchEvent) -> ModEvent {
-        self.now = m.now_ms();
+        self.now = m.real_ms();
         let right_armed = m.state::<ModsState>().borrow_mut().fallback.right_next;
         match *ev {
             TouchEvent::Down { x, y, .. } => {

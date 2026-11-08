@@ -37,7 +37,7 @@ pub struct TouchSettings {
 impl Default for TouchSettings {
     fn default() -> Self {
         TouchSettings {
-            long_press_ms: 500,
+            long_press_ms: LONG_PRESS_MS,
             tap_max_ms: 500,
             tap_slop: 8.0,
             double_tap_ms: 300,
@@ -82,6 +82,11 @@ impl Default for Settings {
     }
 }
 
+/// Hold time before a touch becomes a long press (box select / drag start). Was 500 ms until 2026-11-08
+/// ("press and drag takes too long").
+pub const LONG_PRESS_MS: u64 = 350;
+const OLD_LONG_PRESS_MS: u64 = 500;
+
 impl Settings {
     pub fn path(data_dir: &Path) -> PathBuf {
         data_dir.join(SETTINGS_FILE)
@@ -91,8 +96,14 @@ impl Settings {
     pub fn load(data_dir: &Path) -> (Settings, Option<String>) {
         let p = Self::path(data_dir);
         match std::fs::read(&p) {
-            Ok(b) => match serde_json::from_slice(&b) {
-                Ok(s) => (s, None),
+            Ok(b) => match serde_json::from_slice::<Settings>(&b) {
+                Ok(mut s) => {
+                    // The old default was saved into every settings file: move it to the new one.
+                    if s.touch.long_press_ms == OLD_LONG_PRESS_MS {
+                        s.touch.long_press_ms = LONG_PRESS_MS;
+                    }
+                    (s, None)
+                }
                 Err(e) => (Settings::default(), Some(format!("{}: {e}", p.display()))),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Settings::default(), None),
@@ -132,7 +143,7 @@ mod tests {
         let s3 = Settings::load(&dir).0;
         assert_eq!(s3.ui_mode, UiMode::MobileHud);
         assert_eq!(s3.touch.tap_slop, 12.5);
-        assert_eq!(s3.touch.long_press_ms, 500);
+        assert_eq!(s3.touch.long_press_ms, LONG_PRESS_MS);
         // Broken file: defaults + error.
         std::fs::write(Settings::path(&dir), "{").unwrap();
         let (s4, err) = Settings::load(&dir);

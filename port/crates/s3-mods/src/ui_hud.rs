@@ -110,6 +110,8 @@ pub(crate) enum Action {
     PeekDone,
     /// The minimap widget (drag = pan, tap = full-screen map).
     Minimap,
+    /// Game speed 1x / 2x / 3x / 4x (single player).
+    Speed,
     /// The full-screen map image (tap = jump there).
     MapPoint,
     MenuSettings,
@@ -162,6 +164,8 @@ pub struct MobileHud {
     /// Panel page the peek shows (auto-exit once the game has shown it and left it again).
     peek_page: Option<u32>,
     peek_seen: bool,
+    /// Game speed label while it can be changed (`crate::speed::allowed`).
+    speed: Option<String>,
     snap: Option<GameSnapshot>,
     in_game: bool,
     frame: (u32, u32),
@@ -212,6 +216,7 @@ impl Default for MobileHud {
             peek: false,
             peek_page: None,
             peek_seen: false,
+            speed: None,
             snap: None,
             in_game: false,
             frame: (640, 480),
@@ -541,6 +546,11 @@ impl MobileHud {
                 }
             }
             Action::Minimap => self.sheet = Sheet::Map,
+            Action::Speed => {
+                let s = crate::speed::cycle(m);
+                self.speed = crate::speed::allowed(m).then(|| crate::speed::label(m));
+                self.set_toast(&format!("Game speed {s}x"));
+            }
             Action::MapPoint | Action::Nothing => {}
         }
         self.sync_layout(m);
@@ -879,6 +889,16 @@ impl MobileHud {
             }
             x += wd;
         }
+        // Game speed pill right of the strip (single player).
+        if let Some(sp) = self.speed.clone() {
+            let t = format!(">> {sp}");
+            let sw = measure_text(px, Weight::Bold, &t).0 + self.u(18.0);
+            let r = Rect::new(x0 + total + self.u(6.0), y0, sw, h);
+            let bg = if sp == "1x" { Rgba::rgba(18, 22, 30, 200) } else { ACCENT.fade(0.85) };
+            c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(10.0) as f32, bg);
+            c.text_centered(r.x, r.y, r.w, r.h, px, Weight::Bold, TEXT, &t);
+            self.add(r, Action::Speed);
+        }
     }
 
     fn good_icon(&self, g: u8) -> Option<&ImageRef> {
@@ -1029,6 +1049,11 @@ impl Mod for MobileHud {
     }
 
     fn tick(&mut self, m: &mut Machine, now: u64) {
+        let speed = crate::speed::allowed(m).then(|| crate::speed::label(m));
+        if speed != self.speed {
+            self.speed = speed;
+            self.dirty = true;
+        }
         self.now = now;
         let (mode, scale) = {
             let st = m.state::<ModsState>();

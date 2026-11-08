@@ -569,7 +569,8 @@ fn buf_set_frequency(m: &mut Machine) -> ThunkResult {
 
 /// Scheduler service: mix everything that should have been played by now (+ latency) and queue it.
 pub fn mixer_service(m: &mut Machine) {
-    let now = m.now_ms();
+    // Wall clock: audio plays in real time whatever the game speed.
+    let now = m.real_ms();
     if m.input.paused {
         // Do not run ahead while the app is in the background; restart pacing on resume.
         state(m).borrow_mut().start_ms = None;

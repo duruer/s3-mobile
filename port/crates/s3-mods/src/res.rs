@@ -545,7 +545,7 @@ pub fn set_target_mode(m: &mut Machine, t: Option<(u32, u32)>, mode: Option<(u32
 
 /// Is a game frame being rendered (switch hook seen within the last second)?
 pub fn in_game(m: &mut Machine) -> bool {
-    let now = m.now_ms();
+    let now = m.real_ms();
     let s = m.state::<ResState>();
     let s = s.borrow_mut();
     s.frames > 0 && now.saturating_sub(s.last_frame_ms) < 1000
@@ -560,7 +560,7 @@ pub fn in_game_frame(m: &mut Machine) -> bool {
     if in_game(m) {
         return true;
     }
-    let now = m.now_ms();
+    let now = m.real_ms();
     let (frames, last) = {
         let s = m.state::<ResState>();
         let s = s.borrow_mut();
@@ -695,7 +695,7 @@ pub fn install(m: &mut Machine) -> Result<(), String> {
 
 /// `0x4c7490` entry (render thread, every in-game frame, before the game's own F1-F3 check).
 fn switch_hook(c: &mut HookCtx) -> HookFlow {
-    let now = c.m.now_ms();
+    let now = c.m.real_ms();
     let gfx = c.reg(ECX);
     let snap = c.arg(0);
     let (target, applied, anchor, anchor_map) = {

@@ -685,7 +685,7 @@ fn frame_phase(now_ms: u64) -> (f64, u64) {
 fn dd_get_scan_line(m: &mut Machine) -> ThunkResult {
     let p = m.arg_u32(1);
     let (_, h, _) = state(m).borrow_mut().mode();
-    let (ph, _) = frame_phase(m.now_ms());
+    let (ph, _) = frame_phase(m.real_ms());
     let total = h + h / 20;
     put_u32(m, p, ((ph * total as f64) as u32).min(total - 1));
     ret(DD_OK, 2)
@@ -693,7 +693,7 @@ fn dd_get_scan_line(m: &mut Machine) -> ThunkResult {
 
 fn dd_get_vertical_blank_status(m: &mut Machine) -> ThunkResult {
     let p = m.arg_u32(1);
-    let (ph, _) = frame_phase(m.now_ms());
+    let (ph, _) = frame_phase(m.real_ms());
     put_u32(m, p, (ph > 0.95) as u32);
     ret(DD_OK, 2)
 }
@@ -733,7 +733,8 @@ fn dd_wait_for_vertical_blank(m: &mut Machine) -> ThunkResult {
         return ret(DDERR_UNSUPPORTED, 3);
     }
     let cap = fps_cap();
-    let now = m.now_ms() as f64;
+    // Wall clock: the display pace does not change with the game speed (`Machine::set_time_scale`).
+    let now = m.real_ms() as f64;
     let st = state(m);
     let mut s = st.borrow_mut();
     if cap == 0 {

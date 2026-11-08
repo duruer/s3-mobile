@@ -59,7 +59,7 @@ pub struct GestureConfig {
 
 impl Default for GestureConfig {
     fn default() -> Self {
-        GestureConfig { long_press_ms: 500, tap_max_ms: 500, tap_slop: 8.0, double_tap_ms: 300, double_tap_slop: 24.0, multi_tap_max_ms: 500 }
+        GestureConfig { long_press_ms: crate::settings::LONG_PRESS_MS, tap_max_ms: 500, tap_slop: 8.0, double_tap_ms: 300, double_tap_slop: 24.0, multi_tap_max_ms: 500 }
     }
 }
 
@@ -385,9 +385,9 @@ mod tests {
         let mut g = rec();
         let mut o = Vec::new();
         g.down(1, 50.0, 60.0, 1000, &mut o);
-        g.tick(1499, &mut o);
+        g.tick(1000 + crate::settings::LONG_PRESS_MS - 1, &mut o);
         assert!(high(&o).is_empty());
-        g.tick(1500, &mut o);
+        g.tick(1000 + crate::settings::LONG_PRESS_MS, &mut o);
         g.tick(1600, &mut o);
         assert_eq!(high(&o), vec![TouchEvent::LongPress { x: 50.0, y: 60.0 }]);
         o.clear();

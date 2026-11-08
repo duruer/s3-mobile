@@ -268,6 +268,25 @@ pub struct Machine {
     /// Debug/analysis hook called before (`false`) and after (`true`) each top-level scheduling turn of a thread
     /// (`run_thread`), e.g. `s3det --write-trace` (which memory each thread writes). Never changes guest state.
     pub run_observer: Option<RunObserver>,
+    /// Guest time base (game speed, [`Machine::set_time_scale`]).
+    clock: GuestClock,
+}
+
+/// The guest's clock: host time scaled by the game speed, continuous across speed changes.
+#[derive(Debug, Clone, Copy)]
+struct GuestClock {
+    scale: f64,
+    base_host: u64,
+    base_guest: u64,
+}
+
+impl GuestClock {
+    fn at(&self, host_ms: u64) -> u64 {
+        if self.scale == 1.0 {
+            return self.base_guest + host_ms.saturating_sub(self.base_host);
+        }
+        self.base_guest + (host_ms.saturating_sub(self.base_host) as f64 * self.scale) as u64
+    }
 }
 
 /// See [`Machine::run_observer`]: `(machine, thread slot, after)`.
@@ -326,6 +345,7 @@ impl Machine {
             rr: 0,
             mt: None,
             run_observer: None,
+            clock: GuestClock { scale: 1.0, base_host: 0, base_guest: 0 },
         })
     }
 
@@ -351,9 +371,29 @@ impl Machine {
         self.threads.iter().position(|t| t.tid == tid)
     }
 
-    /// Host monotonic time in ms.
+    /// Guest time in ms: what the game sees (GetTickCount, timeGetTime, waits, timers). Host time scaled by the
+    /// game speed ([`Machine::set_time_scale`]); equal to [`Machine::real_ms`] at speed 1.
     pub fn now_ms(&self) -> u64 {
+        self.clock.at(self.host.now_ms())
+    }
+
+    /// Host monotonic time in ms (wall clock): UI timing, audio, display pacing.
+    pub fn real_ms(&self) -> u64 {
         self.host.now_ms()
+    }
+
+    /// Game speed (1.0 = normal).
+    pub fn time_scale(&self) -> f64 {
+        self.clock.scale
+    }
+
+    /// Set the game speed: guest time then runs `scale` times as fast as the wall clock (continuous: no jump).
+    /// Single-player only (lockstep multiplayer peers must share one speed).
+    pub fn set_time_scale(&mut self, scale: f64) {
+        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        let host = self.host.now_ms();
+        let guest = self.clock.at(host);
+        self.clock = GuestClock { scale, base_host: host, base_guest: guest };
     }
 
     /// Present a frame through the host (counts presents).
@@ -666,7 +706,7 @@ impl Machine {
             }
             KernelObject::Process => Some(false),
             KernelObject::Timer { signaled, due_ms, .. } => {
-                Some(*signaled || due_ms.map(|d| self.host.now_ms() >= d).unwrap_or(false))
+                Some(*signaled || due_ms.map(|d| self.now_ms() >= d).unwrap_or(false))
             }
             KernelObject::Other(..) => None,
         }
@@ -691,7 +731,7 @@ impl Machine {
                 *recursion += 1;
             }
             Some(KernelObject::Timer { manual_reset, signaled, due_ms, period_ms }) => {
-                let now = self.host.now_ms();
+                let now = self.clock.at(self.host.now_ms());
                 if let Some(d) = *due_ms {
                     if now >= d {
                         *due_ms = if *period_ms > 0 {
@@ -769,7 +809,7 @@ impl Machine {
             return false;
         }
         match self.threads[self.cur].block_since {
-            Some(t0) => self.host.now_ms().saturating_sub(t0) >= timeout_ms as u64,
+            Some(t0) => self.now_ms().saturating_sub(t0) >= timeout_ms as u64,
             None => false,
         }
     }
@@ -1083,7 +1123,7 @@ impl Machine {
             }
             ThunkResult::Block => {
                 if t.block_since.is_none() {
-                    t.block_since = Some(self.host.now_ms());
+                    t.block_since = Some(self.clock.at(self.host.now_ms()));
                 }
                 t.state = ThreadState::Blocked;
                 Disp::Blocked

@@ -299,7 +299,7 @@ pub fn install_hooks(m: &mut Machine) {
 
 /// Panel renderer entry (render thread, every in-game frame).
 fn panel_hook(c: &mut HookCtx) -> HookFlow {
-    let now = c.m.now_ms();
+    let now = c.m.real_ms();
     let st = c.m.state::<HudShared>();
     let mut s = st.borrow_mut();
     s.panel_frames += 1;

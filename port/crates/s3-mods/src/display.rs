@@ -718,7 +718,7 @@ pub fn panel_split(m: &mut Machine) -> Option<PanelSplit> {
                 "panel_split: none: zoom {} in_game {} t {} frame {fw}x{fh} glob {}x{} last {}",
                 crate::zoom::enabled(m),
                 crate::res::in_game_frame(m),
-                m.now_ms(),
+                m.real_ms(),
                 m.mem.read_u32(crate::res::L_SCREEN_W),
                 m.mem.read_u32(crate::res::L_SCREEN_H),
                 m.state::<crate::res::ResState>().borrow_mut().last_frame_ms
