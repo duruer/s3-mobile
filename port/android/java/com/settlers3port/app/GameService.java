@@ -123,10 +123,15 @@ public class GameService extends Service {
     }
 
     private Notification running() {
-        return new Notification.Builder(this, CH_RUNNING)
+        Notification.Builder b = new Notification.Builder(this, CH_RUNNING);
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            // Android 12+ delays foreground-service notifications by up to 10 s unless asked to show at once.
+            b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
+        }
+        return b
             .setSmallIcon(icon())
             .setContentTitle("Settlers III — running")
-            .setContentText("Game time (tap to return)")
+            .setContentText("Tap to return")
             .setUsesChronometer(true)
             .setShowWhen(true)
             .setWhen(System.currentTimeMillis() - gameMs)

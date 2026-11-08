@@ -338,3 +338,7 @@ Uninstalling the app deletes both folders.
 | Intro and mission videos are skipped | MCI AVI faked |
 | Long press needs < ~3 % screen movement within 500 ms | a slow drag turns into a right click |
 | Not tested on a real arm64 phone | the arm64 library is built and in the APK |
+
+Running notification (2026-11-08 follow-up): `setForegroundServiceBehavior(FOREGROUND_SERVICE_IMMEDIATE)` on
+Android 12+ (the system otherwise delays a foreground-service notification by up to 10 s, user report); text
+"Tap to return" (the chronometer already shows the game time).
