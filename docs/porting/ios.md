@@ -2,7 +2,7 @@
 
 Status 2026-11-08: the app builds and links without a Mac: `scripts/build-ios.sh` -> `port/ios/xtool/S3Mobile.app`
 (Mach-O arm64, 10 MB, iOS 17.0+), SDK from `Xcode_27.2.xip` via `xtool sdk install` (no Apple login needed for
-that). Not yet signed / installed / run: needs `xtool auth` (Apple ID) and the iPhone over USB. Target: iPhone,
+that). Signed and installed on the iPhone 2026-11-09 (`build-ios.sh --install`, patched usbmuxd below); first run pending. Target: iPhone,
 iOS 17+, free Apple ID (re-sign every 7 days).
 
 ## Pieces
@@ -47,9 +47,23 @@ xtool 1.24.0 at `~/.local/bin/xtool`. Remaining (user, needs Apple login):
 2. Login (user, once): `xtool auth login` (or `xtool setup`) -> "Password" for a free Apple ID. Any Apple ID works, it
    does not have to be the one on the iPhone; xtool suggests a separate one because this login uses private Apple
    APIs. The iPhone is registered as a test device of that account.
-3. iPhone over USB into WSL: `usbipd` (learn.microsoft.com/windows/wsl/connect-usb), or the iTunes relay from xtool
-   issue #19 if `AFCClient.Error.muxError`. Developer Mode on the iPhone; trust the developer certificate in
-   Settings after the first install.
+3. iPhone over USB into WSL (verified 2026-11-09, iPhone 14 Pro `iPhone15,2`, iOS 27.2):
+   - `winget install --exact dorssel.usbipd-win` (5.3.0 arm64), then elevated `usbipd bind --force --busid <id>`
+     (`--force`: Windows' own composite/WPD driver holds the phone even without iTunes), `usbipd attach --wsl
+     --busid <id>` (a WSL distro must be running).
+   - Tap "Trust" on the phone; `ideviceinfo -k DeviceName` answers.
+   - **usbmuxd 1.1.1 over usbipd-win breaks app uploads**: the phone logs `asyncReadComplete, message was too large
+     (65536 bytes, max = 65535)` and xtool fails with `LockdownClient.Error.muxError` / hangs at Packaging
+     (usbmuxd issue #247, open). Cause (HYPOTHESIS, fits the symptom): usbipd-win drops the separate zero-length
+     packet usbmuxd sends after a transfer that is a multiple of wMaxPacketSize (512), so the phone merges two
+     transfers. Fix: `port/ios/usbmuxd-usbipd-zlp.patch` (on usbmuxd 3ded00c) splits such TCP packets so no
+     transfer needs a ZLP. Build in WSL (`./autogen.sh --without-preflight --without-systemd && make`, deps
+     `libusb-1.0-0-dev libplist-dev libimobiledevice-dev libimobiledevice-glue-dev`), stop the stock daemon, run
+     `sudo ~/usbmuxd-src/src/usbmuxd -f -v`. With it the install went through (Installing/Verifying 100%).
+   - The iTunes relay of xtool issue #19 (Windows usbmuxd on port 27015) needs Apple Mobile Device Support, which
+     is x64-only drivers: not available on this ARM64 PC.
+   - On the phone: Settings > Privacy & Security > Developer Mode (appears after the first install attempt), and
+     Settings > General > VPN & Device Management > trust the Apple ID's developer certificate.
 
 ## Build
 

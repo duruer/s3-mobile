@@ -25,7 +25,7 @@ WSL Ubuntu + xtool (github.com/xtool-org/xtool).
    `xtool dev` builds/signs/installs.
 
 ## In progress
-- Done: steps 1-4; app builds + links (`scripts/build-ios.sh`). Next: user `xtool auth login`, iPhone via usbipd, `build-ios.sh --install`, test on device.
+- Done: steps 1-4; app installed on the iPhone 2026-11-09 (patched usbmuxd, docs/porting/ios.md Setup). Next: first run on device (launcher, game files via upload/Files, game), fix issues.
 
 ## Verify
 - `cargo check --target aarch64-apple-ios -p s3-ios`; desktop/Android builds still pass; later on device.

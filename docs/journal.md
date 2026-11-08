@@ -3,6 +3,15 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-09 — iOS: first install on the iPhone (ios)
+
+- `xtool auth login` (free Apple ID; xtool asks for SMS only when the account has no trusted devices, so the user
+  removed the lost iPhone from the account). usbipd-win 5.3.0 arm64, `bind --force`, attach to WSL.
+- Upload to the phone failed with stock usbmuxd 1.1.1 (`message was too large (65536 bytes, max = 65535)`, usbmuxd
+  issue #247). Patched usbmuxd to never need a zero-length packet (`port/ios/usbmuxd-usbipd-zlp.patch`): install
+  then reached Installing/Verifying 100%. iTunes relay is impossible here (x64 drivers on ARM64 Windows).
+- Docs: [ios](porting/ios.md) "Setup".
+
 ## 2026-11-08 — iOS: Rust core + Swift shell (ios)
 
 - Toolchain without a Mac: WSL Ubuntu 26.04 aarch64 + swiftly Swift 6.4.2 + xtool 1.24.0 (AppImage). The iOS SDK

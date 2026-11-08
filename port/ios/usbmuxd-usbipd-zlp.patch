@@ -1,0 +1,32 @@
+diff --git a/src/device.c b/src/device.c
+index ce73718..c24dc7a 100644
+--- a/src/device.c
++++ b/src/device.c
+@@ -507,12 +507,25 @@ void device_client_process(int device_id, struct mux_client *client, short event
+ 			connection_teardown(conn);
+ 			return;
+ 		}
+-		res = send_tcp(conn, TH_ACK, conn->ob_buf, size);
++		/* usbipd-win (WSL) loses the separate zero-length packet that usb_send() adds after a transfer whose length
++		 * is a multiple of wMaxPacketSize; the device then merges two transfers ("message was too large (65536
++		 * bytes, max = 65535)", usbmuxd issue #247). Split such a packet so no transfer needs a ZLP. */
++		int ovh = ((conn->dev->version < 2) ? 8 : (int)sizeof(struct mux_header)) + (int)sizeof(struct tcphdr);
++		int first = (size > 1 && (size + ovh) % 512 == 0) ? size - 1 : size;
++		res = send_tcp(conn, TH_ACK, conn->ob_buf, first);
+ 		if(res < 0) {
+ 			connection_teardown(conn);
+ 			return;
+ 		}
+-		conn->tx_seq += size;
++		conn->tx_seq += first;
++		if(first < size) {
++			res = send_tcp(conn, TH_ACK, conn->ob_buf + first, size - first);
++			if(res < 0) {
++				connection_teardown(conn);
++				return;
++			}
++			conn->tx_seq += size - first;
++		}
+ 	}
+ 
+ 	update_connection(conn);
