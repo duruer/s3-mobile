@@ -428,7 +428,12 @@ impl crate::Mod for ZoomMod {
         // Outside a game (menus) for a while: the next game starts at the zoom that shows the whole start area,
         // not at the last zoom of the previous game (user request 2026-11-08). The game centres the camera on
         // the castle itself (res switch hook, anchor centre).
-        if res::in_game(m) {
+        // "Out of a game" = no game frame for a while, or a full-screen menu layout is shown (briefing, loading
+        // screen, menus): campaign briefings and the statistics screen can keep the frame renderer busy, so
+        // `in_game` alone could stay true from one mission to the next (user report 2026-11-08: zoom kept after
+        // re-entering a campaign). Layouts are never used in a running game.
+        let menu_frame = crate::draw_viewport(m).layout.is_some();
+        if res::in_game(m) && !menu_frame {
             self.out_since = 0;
             self.start_zoom_set = false;
         } else if self.out_since == 0 {

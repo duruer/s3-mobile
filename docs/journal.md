@@ -3,6 +3,13 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — Start zoom also after campaign briefings
+
+- `zoom.rs` ZoomMod: a shown full-screen menu layout (briefing, loading screen, menus) now counts as "out of a game"
+  for the start zoom, not only "no game frame for 3 s" (user report: zoom kept when re-entering a campaign).
+  Verified desktop: campaign mission, pinch in to 480 rows, quit, statistics, briefing, OK -> new mission at the
+  start zoom (2424x1000 at 2316x904).
+
 ## 2026-11-08 — Generated stone background behind menu layouts
 
 - Stone screens' surroundings: `Background::Stone` (`stone.rs`, procedural, no asset) instead of flat grey (user
