@@ -143,6 +143,13 @@ struct Gles {
     sharp: Program,
     /// xBR-lv2 upscaler (`gl::FS_XBR`); id 0 if it failed to compile (then sharp bilinear is used).
     xbr: Program,
+    /// The context is GLES 3 (needed by the AI filter).
+    es3: bool,
+    /// AI upscaler (created on first use; `ai_failed` after an error, then sharp bilinear is used).
+    ai: Option<crate::upscale_ai::AiUpscaler>,
+    ai_failed: bool,
+    /// AI output texture for the current game frame (`None` = run the network on the next draw).
+    ai_out: Option<GLuint>,
     tex: GLuint,
     tex_size: (u32, u32),
     tex_filter: GLint,
@@ -157,13 +164,21 @@ impl Gles {
         if display == EGL_NO_DISPLAY || eglInitialize(display, std::ptr::null_mut(), std::ptr::null_mut()) == 0 {
             return Err(format!("eglInitialize: {:#x}", eglGetError()));
         }
-        let attribs = [
-            EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-            EGL_RED_SIZE, 5, EGL_GREEN_SIZE, 6, EGL_BLUE_SIZE, 5, EGL_DEPTH_SIZE, 0, EGL_NONE,
-        ];
+        // GLES 3 capable configs first (the AI filter needs a GLES 3 context), else GLES 2.
         let mut configs = [std::ptr::null_mut(); 32];
         let mut n = 0;
-        if eglChooseConfig(display, attribs.as_ptr(), configs.as_mut_ptr(), 32, &mut n) == 0 || n == 0 {
+        let mut es3 = false;
+        for bits in [EGL_OPENGL_ES2_BIT | EGL_OPENGL_ES3_BIT_KHR, EGL_OPENGL_ES2_BIT] {
+            let attribs = [
+                EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, bits,
+                EGL_RED_SIZE, 5, EGL_GREEN_SIZE, 6, EGL_BLUE_SIZE, 5, EGL_DEPTH_SIZE, 0, EGL_NONE,
+            ];
+            if eglChooseConfig(display, attribs.as_ptr(), configs.as_mut_ptr(), 32, &mut n) != 0 && n > 0 {
+                es3 = bits & EGL_OPENGL_ES3_BIT_KHR != 0;
+                break;
+            }
+        }
+        if n == 0 {
             return Err(format!("eglChooseConfig: {:#x}", eglGetError()));
         }
         // Prefer an exact RGB565 / no-alpha config (cheapest scan-out), else the first one.
@@ -181,11 +196,20 @@ impl Gles {
                 }
             }
         }
-        let ctx_attribs = [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE];
-        let context = eglCreateContext(display, config, EGL_NO_CONTEXT, ctx_attribs.as_ptr());
+        let mut context = EGL_NO_CONTEXT;
+        if es3 {
+            let ctx3 = [EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE];
+            context = eglCreateContext(display, config, EGL_NO_CONTEXT, ctx3.as_ptr());
+            es3 = context != EGL_NO_CONTEXT;
+        }
+        if context == EGL_NO_CONTEXT {
+            let ctx_attribs = [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE];
+            context = eglCreateContext(display, config, EGL_NO_CONTEXT, ctx_attribs.as_ptr());
+        }
         if context == EGL_NO_CONTEXT {
             return Err(format!("eglCreateContext: {:#x}", eglGetError()));
         }
+        log::info!("present: GLES {} context", if es3 { 3 } else { 2 });
         Ok(Gles {
             display,
             config,
@@ -194,6 +218,10 @@ impl Gles {
             plain: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
             sharp: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
             xbr: Program { id: 0, u_rect: -1, u_uv: -1, u_tex: -1, u_size: -1, u_scale: -1 },
+            es3,
+            ai: None,
+            ai_failed: false,
+            ai_out: None,
             tex: 0,
             tex_size: (0, 0),
             tex_filter: -1,
@@ -265,6 +293,7 @@ impl Gles {
     }
 
     unsafe fn upload(&mut self, fb: &FrameBuffer) {
+        self.ai_out = None;
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, self.tex);
         let p = fb.pixels.as_ptr() as *const c_void;
@@ -313,7 +342,44 @@ impl Gles {
         glBindTexture(GL_TEXTURE_2D, self.tex);
     }
 
+    /// AI filter: the 2x texture of the current game frame (runs the network once per new frame), `None` when it
+    /// does not apply (not wanted, scale below 1.2, menu layout, no GLES 3, or it failed).
+    unsafe fn ai_frame(&mut self, vp: &Viewport, filter: ScaleFilter) -> Option<GLuint> {
+        let (sx, sy) = vp.scale();
+        if filter != ScaleFilter::Ai || vp.layout.is_some() || sx < 1.2 || sy < 1.2 || !self.es3 || self.ai_failed {
+            return None;
+        }
+        if let Some(t) = self.ai_out {
+            return Some(t);
+        }
+        if self.ai.is_none() {
+            match crate::upscale_ai::AiUpscaler::new() {
+                Ok(a) => self.ai = Some(a),
+                Err(e) => {
+                    log::warn!("AI upscaler unavailable: {e}");
+                    self.ai_failed = true;
+                    return None;
+                }
+            }
+        }
+        let (w, h) = self.tex_size;
+        let r = self.ai.as_mut().unwrap().run(self.tex, w, h);
+        self.tex_filter = -1; // the passes changed the frame texture's filtering
+        match r {
+            Ok(t) => {
+                self.ai_out = Some(t);
+                Some(t)
+            }
+            Err(e) => {
+                log::warn!("AI upscaler failed: {e}");
+                self.ai_failed = true;
+                None
+            }
+        }
+    }
+
     unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter) {
+        let ai = self.ai_frame(vp, filter);
         let (ww, wh) = (vp.win_w as f32, vp.win_h as f32);
         glViewport(0, 0, vp.win_w as i32, vp.win_h as i32);
         match vp.layout.map(|l| l.background) {
@@ -332,10 +398,18 @@ impl Gles {
             ScaleFilter::Xbr if sx < 1.0 || sy < 1.0 => (&self.plain, GL_LINEAR),
             ScaleFilter::Xbr if self.xbr.id != 0 => (&self.xbr, GL_NEAREST),
             ScaleFilter::Xbr => (&self.sharp, GL_LINEAR),
+            ScaleFilter::Ai if ai.is_some() => (&self.plain, GL_LINEAR),
+            ScaleFilter::Ai if sx < 1.0 || sy < 1.0 => (&self.plain, GL_LINEAR),
+            ScaleFilter::Ai => (&self.sharp, GL_LINEAR),
         };
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, self.tex);
-        if self.tex_filter != tf {
+        if let Some(t) = ai {
+            // The 2x network output (linear filtering set at creation); same normalized coordinates.
+            glBindTexture(GL_TEXTURE_2D, t);
+        } else {
+            glBindTexture(GL_TEXTURE_2D, self.tex);
+        }
+        if ai.is_none() && self.tex_filter != tf {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, tf);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, tf);
             self.tex_filter = tf;

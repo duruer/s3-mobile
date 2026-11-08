@@ -70,16 +70,20 @@ pub enum ScaleFilter {
     /// Pixel-art edge upscaler (xBR level 2, Hyllian's algorithm; GPU shader in the Android presenter): smooth
     /// diagonal and curved edges at any zoom. The desktop CPU scaler uses sharp bilinear for it.
     Xbr,
+    /// Neural x2 upscaler (Anime4K CNN S, MIT; GLES 3 passes in the Android presenter, `upscale_ai.rs`) when the
+    /// frame is shown at >= 1.2x; sharp bilinear otherwise and on the desktop.
+    Ai,
 }
 
 impl ScaleFilter {
-    pub const ALL: [ScaleFilter; 4] = [ScaleFilter::Nearest, ScaleFilter::Linear, ScaleFilter::SharpBilinear, ScaleFilter::Xbr];
+    pub const ALL: [ScaleFilter; 5] = [ScaleFilter::Nearest, ScaleFilter::Linear, ScaleFilter::SharpBilinear, ScaleFilter::Xbr, ScaleFilter::Ai];
     pub fn label(self) -> &'static str {
         match self {
             ScaleFilter::Nearest => "Pixel",
             ScaleFilter::Linear => "Smooth",
             ScaleFilter::SharpBilinear => "Sharp",
             ScaleFilter::Xbr => "xBR (HD edges)",
+            ScaleFilter::Ai => "AI (Anime4K)",
         }
     }
     pub fn next(self) -> ScaleFilter {
@@ -92,6 +96,7 @@ impl ScaleFilter {
             "linear" | "bilinear" | "smooth" => Some(ScaleFilter::Linear),
             "sharp" | "sharp-bilinear" => Some(ScaleFilter::SharpBilinear),
             "xbr" | "hd" => Some(ScaleFilter::Xbr),
+            "ai" | "anime4k" => Some(ScaleFilter::Ai),
             _ => None,
         }
     }
@@ -552,7 +557,7 @@ pub fn axis_taps(filter: ScaleFilter, src_n: u32, dst_from: i32, dst_n: u32, dst
                 let f = c.floor();
                 (f.max(0.0) as u32, ((f + 1.0).max(0.0) as u32), c - f)
             }
-            ScaleFilter::SharpBilinear | ScaleFilter::Xbr => {
+            ScaleFilter::SharpBilinear | ScaleFilter::Xbr | ScaleFilter::Ai => {
                 // Same as the GLES shader: linear only across a 1-window-pixel band around texel edges.
                 let fl = s.floor();
                 let fr = s - fl - 0.5;

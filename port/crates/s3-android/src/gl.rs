@@ -25,6 +25,7 @@ pub const EGL_SURFACE_TYPE: EGLint = 0x3033;
 pub const EGL_WINDOW_BIT: EGLint = 0x0004;
 pub const EGL_RENDERABLE_TYPE: EGLint = 0x3040;
 pub const EGL_OPENGL_ES2_BIT: EGLint = 0x0004;
+pub const EGL_OPENGL_ES3_BIT_KHR: EGLint = 0x0040;
 pub const EGL_NATIVE_VISUAL_ID: EGLint = 0x302E;
 pub const EGL_CONTEXT_CLIENT_VERSION: EGLint = 0x3098;
 pub const EGL_WIDTH: EGLint = 0x3057;
@@ -83,6 +84,13 @@ pub const GL_ONE_MINUS_SRC_ALPHA: GLenum = 0x0303;
 pub const GL_ONE: GLenum = 0x0001;
 pub const GL_SCISSOR_TEST: GLenum = 0x0C11;
 pub const GL_DITHER: GLenum = 0x0BD0;
+pub const GL_TEXTURE1: GLenum = 0x84C1;
+pub const GL_FRAMEBUFFER: GLenum = 0x8D40;
+pub const GL_COLOR_ATTACHMENT0: GLenum = 0x8CE0;
+pub const GL_FRAMEBUFFER_COMPLETE: GLenum = 0x8CD5;
+pub const GL_RGBA8: GLenum = 0x8058;
+pub const GL_RGBA16F: GLenum = 0x881A;
+pub const GL_HALF_FLOAT: GLenum = 0x140B;
 
 #[cfg_attr(target_os = "android", link(name = "GLESv2"))]
 extern "C" {
@@ -123,6 +131,12 @@ extern "C" {
     pub fn glDrawArrays(mode: GLenum, first: GLint, count: GLsizei);
     pub fn glGetError() -> GLenum;
     pub fn glFinish();
+    // Framebuffer objects (GLES 2 core; used with a GLES 3 context by `crate::upscale_ai`).
+    pub fn glGenFramebuffers(n: GLsizei, f: *mut GLuint);
+    pub fn glDeleteFramebuffers(n: GLsizei, f: *const GLuint);
+    pub fn glBindFramebuffer(target: GLenum, f: GLuint);
+    pub fn glFramebufferTexture2D(target: GLenum, attachment: GLenum, textarget: GLenum, t: GLuint, level: GLint);
+    pub fn glCheckFramebufferStatus(target: GLenum) -> GLenum;
 }
 
 /// Quad vertex shader: `u_rect` = destination (x0, y0, x1, y1) in clip space; `u_uv` = source (u0, v0, u1, v1)
@@ -284,6 +298,44 @@ pub unsafe fn program(fs: &str) -> Result<Program, String> {
         u_size: glGetUniformLocation(p, c"u_size".as_ptr()),
         u_scale: glGetUniformLocation(p, c"u_scale".as_ptr()),
     })
+}
+
+/// GLSL ES 3.00 full-target pass vertex shader (offscreen passes): the unit quad covers the whole viewport,
+/// `v_uv` = 0..1 (texel centres when the viewport has the target's size).
+pub const VS3: &str = "#version 300 es\n\
+in vec2 a_pos;\n\
+out vec2 v_uv;\n\
+void main() {\n\
+  v_uv = a_pos;\n\
+  gl_Position = vec4(a_pos * 2.0 - 1.0, 0.0, 1.0);\n\
+}\n";
+
+/// Link a GLSL ES 3.00 fragment shader with [`VS3`] (attribute 0 = `a_pos`).
+pub unsafe fn program_es3(fs: &str) -> Result<GLuint, String> {
+    let v = compile(GL_VERTEX_SHADER, VS3)?;
+    let f = compile(GL_FRAGMENT_SHADER, fs)?;
+    let p = glCreateProgram();
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glBindAttribLocation(p, 0, c"a_pos".as_ptr());
+    glLinkProgram(p);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    let mut ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &mut ok);
+    if ok == 0 {
+        let mut buf = vec![0 as c_char; 1024];
+        let mut n = 0;
+        glGetProgramInfoLog(p, 1024, &mut n, buf.as_mut_ptr());
+        glDeleteProgram(p);
+        return Err(format!("link: {}", CStr::from_ptr(buf.as_ptr()).to_string_lossy()));
+    }
+    Ok(p)
+}
+
+/// Uniform location by name.
+pub unsafe fn uniform(p: GLuint, name: &CStr) -> GLint {
+    glGetUniformLocation(p, name.as_ptr())
 }
 
 /// Unit quad (triangle strip), client-side array.

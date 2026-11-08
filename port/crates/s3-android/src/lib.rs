@@ -16,6 +16,10 @@ pub mod touch;
 mod android;
 pub mod gl;
 #[cfg(target_os = "android")]
+mod anime4k;
+#[cfg(target_os = "android")]
+mod upscale_ai;
+#[cfg(target_os = "android")]
 mod present;
 #[cfg(target_os = "android")]
 mod uithread;

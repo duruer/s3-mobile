@@ -2,6 +2,13 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — AI upscaling filter (Anime4K CNN)
+
+- New display filter "AI (Anime4K)": Anime4K v3.2 CNN x2 (S) converted to GLSL ES 3.00 (`tools/anime4k_to_gles.py`
+  -> `anime4k.rs`), run in 5 GPU passes per frame (`upscale_ai.rs`); the presenter now creates a GLES 3 context
+  when possible. Phone (inner screen, 400 px zoom): 120 fps, visibly smoother than sharp bilinear. Classic menu
+  got a "Filter" floating button. Details: [display.md](porting/display.md).
+
 ## 2026-11-08 — Foldable: resizeable activity
 
 - Report: unfolding the phone in game kept the old screen. Cause: `resizeableActivity="false"` -> size compat

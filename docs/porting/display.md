@@ -100,6 +100,19 @@ Fold4 cover at 240 px height: compiles on Adreno, 120 fps with xBR and with shar
 units, buildings and rocks become smooth, ground texture looks "painted". Cycle it with "Filter" in the HUD
 settings / Classic (CLI `--filter xbr`).
 
+**AI upscaling filter (2026-11-08).** `ScaleFilter::Ai` ("AI (Anime4K)"): the small CNN x2 upscaler of Anime4K
+v3.2 (`Anime4K_Upscale_CNN_x2_S`, https://github.com/bloc97/Anime4K, **MIT**, license text kept in the generated
+file) on the GPU. `tools/anime4k_to_gles.py` converts the mpv user shader into GLSL ES 3.00 fragment shaders
+(`s3-android/src/anime4k.rs`, generated: 4 conv passes + depth-to-space); `s3-android/src/upscale_ai.rs` runs
+them per presented game frame: 4 passes at the frame size into RGBA16F textures (ping-pong, FBO), then
+depth-to-space into an RGBA8 texture of twice the frame size (= bilinear frame + the network's luma residual),
+which the presenter draws instead of the frame (same normalized coordinates, so the Classic split / quads work).
+Needs a GLES 3 context: the presenter now asks for an ES3-capable config + context and falls back to GLES 2
+(then and on any shader / framebuffer error: sharp bilinear, logged once). Used only when the frame is shown at
+>= 1.2x and not for menu layouts. Fold4 inner screen (2176x1812) at 400 px height: 120 fps like sharp bilinear;
+units, buildings and rocks look smooth and detailed instead of blocky (softer than xBR). Cycle with "Filter" in
+the HUD settings or the Classic menu's floating buttons (new "Filter" button there).
+
 **Plan, not started: HD sprites (option 2).** If shader upscaling is not enough: upscale the game's sprites and
 landscape textures 2-4x with an AI model (Real-ESRGAN class) **generated locally from the user's own files** (never
 distributed: derived game assets), and render the game at 2x internally. Needs a native draw path for sprites,
