@@ -81,6 +81,8 @@ pub struct Shared {
     /// Presenter -> engine: display presents per second and the panel refresh rate (f32 bits; 0 = unknown).
     pub host_fps: AtomicU32,
     pub refresh_hz: AtomicU32,
+    /// Activity thread -> engine: screen density in dpi (`AConfiguration_getDensity`; 0 = unknown).
+    pub density_dpi: AtomicU32,
     /// Engine (mods) -> presenter: the window-resolution overlay layer (`s3_mods::layer`); publishing wakes the
     /// render thread.
     pub layer: Arc<SceneSlot>,
@@ -123,6 +125,7 @@ impl Shared {
             letterbox: Mutex::new(None),
             host_fps: AtomicU32::new(0),
             refresh_hz: AtomicU32::new(0),
+            density_dpi: AtomicU32::new(0),
             layer,
         }
     }
@@ -512,6 +515,7 @@ fn sync_display(shared: &Shared, m: &mut s3_runtime::Machine, seen_viewport: &mu
         (v > 0.0).then_some(v)
     };
     s3_mods::display::set_host_rates(m, f(&shared.host_fps), f(&shared.refresh_hz));
+    s3_mods::display::set_density(m, shared.density_dpi.load(Ordering::Relaxed));
 }
 
 /// Pass the mod layer's three-finger keyboard request to the UI thread.

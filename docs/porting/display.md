@@ -113,6 +113,10 @@ Needs a GLES 3 context: the presenter now asks for an ES3-capable config + conte
 units, buildings and rocks look smooth and detailed instead of blocky (softer than xBR). Cycle with "Filter" in
 the HUD settings or the Classic menu's floating buttons (new "Filter" button there).
 
+Filters are chosen per drawn part (`present.rs` `Gles::use_filter`, 2026-11-08): with the Classic panel split the
+panel quad (2-4x) and the map quad (any zoom) each get the program for their own scale, so xBR / AI also apply to
+the original panel; the AI network runs when any part or a menu layout is enlarged >= 1.2x.
+
 **Plan, not started: HD sprites (option 2).** If shader upscaling is not enough: upscale the game's sprites and
 landscape textures 2-4x with an AI model (Real-ESRGAN class) **generated locally from the user's own files** (never
 distributed: derived game assets), and render the game at 2x internally. Needs a native draw path for sprites,

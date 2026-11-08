@@ -184,6 +184,10 @@ pub struct HudShared {
     /// The HUD is reading building icons from the game's panel: the zoom keeps the render size at least
     /// [`HARVEST_MIN_H`] high meanwhile (the panel art needs it; `crate::zoom::target_size`).
     pub harvesting: bool,
+    /// The HUD shows an original panel page (save list, goods / settlers tabs, building details): like
+    /// `harvesting`, the zoom keeps the render size at least [`HARVEST_MIN_H`] high, else the 480 px panel art
+    /// is cut and scaled huge in a small zoomed-in frame (user report 2026-11-08: "Save Game" huge, half hidden).
+    pub peeking: bool,
     /// Wanted: full-screen map (panel hidden).
     pub fullscreen_map: bool,
     /// The full-screen layout is currently written to the layout globals (with this original panel width).

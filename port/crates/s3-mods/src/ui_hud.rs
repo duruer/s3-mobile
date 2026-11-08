@@ -290,6 +290,13 @@ impl MobileHud {
         let want = self.active && self.fullscreen_map && !self.peek && self.harvest_done_or_idle();
         let st = m.state::<HudShared>();
         let mut s = st.borrow_mut();
+        let peeking = self.active && self.peek;
+        if s.peeking != peeking {
+            s.peeking = peeking;
+            drop(s);
+            crate::zoom::update_target(m);
+            s = st.borrow_mut();
+        }
         if s.fullscreen_map != want {
             s.fullscreen_map = want;
             drop(s);

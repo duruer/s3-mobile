@@ -135,10 +135,15 @@ fn android_main(app: AndroidApp) {
                         u.immersive();
                     }
                     prefs_hz = None;
+                    shared.density_dpi.store(app.config().density().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
                     presenter.set_window(app.native_window());
                 }
                 MainEvent::TerminateWindow { .. } => presenter.set_window(None),
-                MainEvent::WindowResized { .. } | MainEvent::ConfigChanged { .. } => presenter.set_window(app.native_window()),
+                MainEvent::WindowResized { .. } | MainEvent::ConfigChanged { .. } => {
+                    // Folding / unfolding changes the density too.
+                    shared.density_dpi.store(app.config().density().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+                    presenter.set_window(app.native_window());
+                }
                 MainEvent::RedrawNeeded { .. } | MainEvent::ContentRectChanged { .. } => presenter.invalidate(),
                 MainEvent::Pause => {
                     log::info!("lifecycle: pause");

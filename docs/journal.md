@@ -2,6 +2,22 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Panel fonts, panel pages in the HUD, Classic menu buttons, message size, filters per part
+
+- HUD "Save game" etc. showed the original panel page with "Save Game" huge and cut: (1) the page was shown in a
+  zoomed-in frame smaller than the 480 px panel art -> `HudShared::peeking` keeps the render height >= 480 while
+  a panel page is shown (like the icon harvest); (2) the HUD still used a layout variant per height, and after a
+  zoom from the 1024x768 variant to 640x480 the game kept the big panel fonts -> `res::variant_for_mode` now
+  returns the 640x480 variant in both UI modes. Verified desktop (2316x904, zoomed in): page whole, normal text.
+- Classic: the panel's computer icon also showed our floating buttons (they appeared for any open menu page).
+  Now only after our own Menu button (`ClassicTouch::menu_by_float`). Verified on the phone.
+- Message lines: 13 dp when the frontend reports the density (`display::set_density` / `dp`, Android
+  `AConfiguration` density, refreshed on config changes), else the window-height scale. Inner screen: smaller,
+  cover screen: bigger than before.
+- Display filters are chosen per drawn part (`Gles::use_filter`): the Classic panel (2-4x) gets xBR / AI even
+  when the map part is zoomed out; the AI network runs when any part (or a menu layout) is enlarged >= 1.2x.
+  Phone (inner, AI, Classic): panel smoothed, 110-112 fps.
+
 ## 2026-11-08 — Start zoom shows the whole start territory
 
 - Games started at the previous game's zoom. Now the zoom is reset in the menus to `zoom::start_height` (start

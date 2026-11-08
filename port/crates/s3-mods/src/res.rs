@@ -351,14 +351,12 @@ pub fn variant_for(h: u32) -> Variant {
 /// report 2026-11-08). The panel is shown at a constant on-screen scale anyway (`display::PanelSplit`).
 pub const CLASSIC_VARIANT: Variant = VARIANTS[0];
 
-/// Variant for a custom size of height `h`: [`CLASSIC_VARIANT`] in UI mode A, else [`variant_for`].
-pub fn variant_for_mode(m: &mut Machine, h: u32) -> Variant {
-    let ui = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode;
-    if ui == crate::settings::UiMode::ClassicTouch && h >= CLASSIC_VARIANT.h {
-        CLASSIC_VARIANT
-    } else {
-        variant_for(h)
-    }
+/// Variant for a custom size: [`CLASSIC_VARIANT`] at every height, in both UI modes. The Mobile HUD used
+/// [`variant_for`]: after a zoom from a big variant (fonts of the 1024x768 panel) down to the 640x480 one the game
+/// kept the big panel fonts, so the HUD's panel pages (save list etc.) showed "Save Game" huge and cut (user
+/// report 2026-11-08). (Heights below 480 get the 640x480 variant from `variant_for` anyway.)
+pub fn variant_for_mode(_m: &mut Machine, _h: u32) -> Variant {
+    CLASSIC_VARIANT
 }
 
 pub fn variant(index: u32) -> Option<Variant> {

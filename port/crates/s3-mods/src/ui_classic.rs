@@ -209,6 +209,12 @@ pub struct ClassicTouch {
     view: GameView,
     touch: Option<PanelTouch>,
     pressed: Option<(u32, FloatBtn, bool)>,
+    /// The game's menu page was opened with our floating Menu button: only then the extra floating buttons
+    /// (UI mode, FPS, filter, zoom...) are shown; the panel's own computer icon opens just the game's page
+    /// (user report 2026-11-08).
+    menu_by_float: bool,
+    /// The menu page was seen open since `menu_by_float` was set (it is cleared when the page closes).
+    menu_seen_open: bool,
     /// Delayed host events (click button-up).
     queue: Vec<(u64, HostEvent)>,
     texts: std::collections::HashMap<u32, Option<String>>,
@@ -245,6 +251,8 @@ impl ClassicTouch {
             view: GameView::default(),
             touch: None,
             pressed: None,
+            menu_by_float: false,
+            menu_seen_open: false,
             queue: Vec::new(),
             texts: Default::default(),
             dirty: false,
@@ -291,6 +299,12 @@ impl ClassicTouch {
             .then(|| mem.read_u8(gd + gog::GD_BUILDINGS + bid * gog::BUILDING_SIZE + 6));
         let snap = mem.read_u32(logic.wrapping_add(gog::LOGIC_SNAP));
         let tip = if snap >= 0x1_0000 { mem.read_u32(snap + gog::SNAP_TOOLTIP) } else { u32::MAX };
+        if page == 7 {
+            self.menu_seen_open = true;
+        } else if self.menu_seen_open {
+            self.menu_seen_open = false;
+            self.menu_by_float = false;
+        }
         self.view = GameView {
             layout,
             panel: PanelState { page, sub: rd(gog::GD_SUBPAGE), category: rd(gog::GD_CATEGORY), race },
@@ -349,7 +363,7 @@ impl ClassicTouch {
         let (right, bottom) = (vx + vw, vy + vh);
         let menu = (right - w - self.q(8.0), bottom - h - self.q(14.0), w, h);
         let mut v = vec![(FloatBtn::Menu, menu)];
-        if self.view.panel.page == 7 {
+        if self.view.panel.page == 7 && self.menu_by_float {
             let hw = self.q(150.0);
             let mut y = menu.1;
             for k in [FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut] {
@@ -629,8 +643,15 @@ impl Mod for ClassicTouch {
                         let (wx, wy) = crate::touch_window_pos(m, ev);
                         if self.float_at(wx, wy) == Some(k) {
                             let action = match k {
-                                FloatBtn::Menu if self.view.panel.page == 7 => Action::CloseMenu,
-                                FloatBtn::Menu => Action::OpenMenu,
+                                FloatBtn::Menu if self.view.panel.page == 7 => {
+                                    self.menu_by_float = false;
+                                    Action::CloseMenu
+                                }
+                                FloatBtn::Menu => {
+                                    self.menu_by_float = true;
+                                    self.menu_seen_open = false;
+                                    Action::OpenMenu
+                                }
                                 FloatBtn::HudMode => {
                                     // Close the menu page, then hand over to mode B (settings are saved).
                                     let mut s = crate::settings(m);

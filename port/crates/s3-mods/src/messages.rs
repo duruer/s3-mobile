@@ -142,7 +142,11 @@ impl Mod for MessagesMod {
         if crate::draw_viewport(m).layout.is_some() {
             return;
         }
-        let (wh, ui) = (l.height() as f32, l.ui());
+        // Constant physical size: 13 dp when the frontend reports the density (Android), else the window-height
+        // scale. With the height scale the text was huge on a foldable's tall inner screen and small on the
+        // cover screen (user report 2026-11-08). `ui` = px per "reference px" (text 14 reference px).
+        let wh = l.height() as f32;
+        let ui = crate::display::dp(m).map_or(l.ui(), |d| d * 13.0 / 14.0);
         let vp = crate::draw_viewport(m);
         // Left edge: right of the Classic panel; in the Mobile HUD right of its minimap (like the game's 50c).
         let panel_w = m.mem.read_u32(crate::res::L_PANEL_W) as f32;

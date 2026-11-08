@@ -659,6 +659,8 @@ pub struct DisplayState {
     pub host_fps: Option<f32>,
     /// Display refresh rate the frontend runs at, if known.
     pub refresh_hz: Option<f32>,
+    /// Screen density in dpi (frontend; 0 = unknown).
+    pub density_dpi: u32,
     /// Bumped whenever [`DisplaySettings`] change through this module (frontends may poll it).
     pub settings_seq: u64,
 }
@@ -758,6 +760,18 @@ pub fn frame_viewport(m: &mut Machine) -> Viewport {
 }
 
 /// Frontend: report display-side rates (shown by the detailed FPS counter).
+/// Frontend: screen density in dpi (0 = unknown, e.g. desktop).
+pub fn set_density(m: &mut Machine, dpi: u32) {
+    m.state::<DisplayState>().borrow_mut().density_dpi = dpi;
+}
+
+/// Window pixels per Android dp (density / 160), if the frontend reported a density. UI that should keep a
+/// constant physical size on every screen (phone cover / foldable inner screen / tablet) uses it.
+pub fn dp(m: &mut Machine) -> Option<f32> {
+    let d = m.state::<DisplayState>().borrow_mut().density_dpi;
+    (d >= 80).then(|| d as f32 / 160.0)
+}
+
 pub fn set_host_rates(m: &mut Machine, host_fps: Option<f32>, refresh_hz: Option<f32>) {
     let st = m.state::<DisplayState>();
     let mut s = st.borrow_mut();

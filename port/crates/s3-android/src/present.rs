@@ -345,8 +345,15 @@ impl Gles {
     /// AI filter: the 2x texture of the current game frame (runs the network once per new frame), `None` when it
     /// does not apply (not wanted, scale below 1.2, menu layout, no GLES 3, or it failed).
     unsafe fn ai_frame(&mut self, vp: &Viewport, filter: ScaleFilter) -> Option<GLuint> {
-        let (sx, sy) = vp.scale();
-        if filter != ScaleFilter::Ai || vp.layout.is_some() || sx < 1.2 || sy < 1.2 || !self.es3 || self.ai_failed {
+        // Run when any part is enlarged >= 1.2x: the map, the Classic panel (shown at ~2-4x even when the map is
+        // zoomed out) or a menu layout.
+        let up = if vp.layout.is_some() {
+            let (sx, sy) = vp.scale();
+            sx.min(sy)
+        } else {
+            vp.quads().iter().map(|(s, d)| (d[2] / s[2].max(1.0)).min(d[3] / s[3].max(1.0))).fold(0.0, f32::max)
+        };
+        if filter != ScaleFilter::Ai || up < 1.2 || !self.es3 || self.ai_failed {
             return None;
         }
         if let Some(t) = self.ai_out {
@@ -378,6 +385,38 @@ impl Gles {
         }
     }
 
+    /// Select and bind the program (+ frame texture filtering) for a part shown at `sx` x `sy` window px per game
+    /// px; sets `u_tex`, `u_size`, `u_scale`. Returns the program's uniform locations.
+    unsafe fn use_filter(&mut self, filter: ScaleFilter, sx: f32, sy: f32, ai: bool, vp: &Viewport) -> Program {
+        let integer = (sx - sx.round()).abs() < 1e-3 && (sy - sy.round()).abs() < 1e-3;
+        let down = sx < 1.0 || sy < 1.0;
+        let (prog, tf) = match filter {
+            _ if ai => (&self.plain, GL_LINEAR),
+            ScaleFilter::Nearest => (&self.plain, GL_NEAREST),
+            ScaleFilter::Linear => (&self.plain, GL_LINEAR),
+            ScaleFilter::SharpBilinear if integer || down => (&self.plain, if down { GL_LINEAR } else { GL_NEAREST }),
+            ScaleFilter::SharpBilinear => (&self.sharp, GL_LINEAR),
+            ScaleFilter::Xbr if down => (&self.plain, GL_LINEAR),
+            ScaleFilter::Xbr if self.xbr.id != 0 => (&self.xbr, GL_NEAREST),
+            ScaleFilter::Xbr => (&self.sharp, GL_LINEAR),
+            ScaleFilter::Ai if down => (&self.plain, GL_LINEAR),
+            ScaleFilter::Ai => (&self.sharp, GL_LINEAR),
+        };
+        let p = Program { id: prog.id, u_rect: prog.u_rect, u_uv: prog.u_uv, u_tex: prog.u_tex, u_size: prog.u_size, u_scale: prog.u_scale };
+        if !ai && self.tex_filter != tf {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, tf);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, tf);
+            self.tex_filter = tf;
+        }
+        glUseProgram(p.id);
+        glUniform1i(p.u_tex, 0);
+        if p.u_size >= 0 {
+            glUniform2f(p.u_size, vp.game_w as f32, vp.game_h as f32);
+            glUniform2f(p.u_scale, sx.max(1.0), sy.max(1.0));
+        }
+        p
+    }
+
     unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter) {
         let ai = self.ai_frame(vp, filter);
         let (ww, wh) = (vp.win_w as f32, vp.win_h as f32);
@@ -389,19 +428,6 @@ impl Gles {
         glClear(GL_COLOR_BUFFER_BIT);
         // Game frame.
         let (sx, sy) = vp.scale();
-        let integer = (sx - sx.round()).abs() < 1e-3 && (sy - sy.round()).abs() < 1e-3;
-        let (prog, tf) = match filter {
-            ScaleFilter::Nearest => (&self.plain, GL_NEAREST),
-            ScaleFilter::Linear => (&self.plain, GL_LINEAR),
-            ScaleFilter::SharpBilinear if integer || sx < 1.0 || sy < 1.0 => (&self.plain, if sx < 1.0 || sy < 1.0 { GL_LINEAR } else { GL_NEAREST }),
-            ScaleFilter::SharpBilinear => (&self.sharp, GL_LINEAR),
-            ScaleFilter::Xbr if sx < 1.0 || sy < 1.0 => (&self.plain, GL_LINEAR),
-            ScaleFilter::Xbr if self.xbr.id != 0 => (&self.xbr, GL_NEAREST),
-            ScaleFilter::Xbr => (&self.sharp, GL_LINEAR),
-            ScaleFilter::Ai if ai.is_some() => (&self.plain, GL_LINEAR),
-            ScaleFilter::Ai if sx < 1.0 || sy < 1.0 => (&self.plain, GL_LINEAR),
-            ScaleFilter::Ai => (&self.sharp, GL_LINEAR),
-        };
         glActiveTexture(GL_TEXTURE0);
         if let Some(t) = ai {
             // The 2x network output (linear filtering set at creation); same normalized coordinates.
@@ -409,31 +435,24 @@ impl Gles {
         } else {
             glBindTexture(GL_TEXTURE_2D, self.tex);
         }
-        if ai.is_none() && self.tex_filter != tf {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, tf);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, tf);
-            self.tex_filter = tf;
-        }
-        glUseProgram(prog.id);
-        glUniform1i(prog.u_tex, 0);
-        if prog.u_size >= 0 {
-            glUniform2f(prog.u_size, vp.game_w as f32, vp.game_h as f32);
-            glUniform2f(prog.u_scale, sx.max(1.0), sy.max(1.0));
-        }
         let Some(l) = vp.layout else {
-            // The whole frame, or (UI mode A panel split) the panel and the map part at their own scales.
+            // The whole frame, or (UI mode A panel split) the panel and the map part at their own scales: the
+            // filter is chosen per part (the panel is enlarged even when the map is zoomed out).
             let (gw, gh) = (vp.game_w as f32, vp.game_h as f32);
             for (s, d) in vp.quads() {
+                let (qx, qy) = (d[2] / s[2].max(1.0), d[3] / s[3].max(1.0));
+                let prog = self.use_filter(filter, qx, qy, ai.is_some(), vp);
                 let r = clip_rect(d[0], d[1], d[2], d[3], ww, wh);
                 glUniform4f(prog.u_rect, r[0], r[1], r[2], r[3]);
                 glUniform4f(prog.u_uv, s[0] / gw, s[1] / gh, (s[0] + s[2]) / gw, (s[1] + s[3]) / gh);
                 if prog.u_size >= 0 {
-                    glUniform2f(prog.u_scale, (d[2] / s[2].max(1.0)).max(1.0), (d[3] / s[3].max(1.0)).max(1.0));
+                    glUniform2f(prog.u_scale, qx.max(1.0), qy.max(1.0));
                 }
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             }
             return;
         };
+        let prog = self.use_filter(filter, sx, sy, ai.is_some(), vp);
         // Full-screen menu layout (s3_mods::menu_layout): background, then one quad per piece.
         let (gw, gh) = (vp.game_w as f32, vp.game_h as f32);
         let uv = |x: u16, y: u16, w: u16, h: u16| [x as f32 / gw, y as f32 / gh, (x + w) as f32 / gw, (y + h) as f32 / gh];
