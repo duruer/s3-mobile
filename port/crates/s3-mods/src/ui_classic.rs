@@ -211,6 +211,8 @@ enum FloatBtn {
     UnitPaths,
     /// Shown while the menu is open: group buttons 1..6 on / off.
     Groups,
+    /// Shown while the menu is open: vibration all / touch / messages / off.
+    Vibration,
 }
 
 /// The mode A mod.
@@ -377,7 +379,7 @@ impl ClassicTouch {
             let hw = self.q(150.0);
             let mut y = menu.1;
             let mut x = right - hw - self.q(8.0);
-            let mut ks = vec![FloatBtn::GameMenu, FloatBtn::GameTime, FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut, FloatBtn::UnitPaths, FloatBtn::Groups];
+            let mut ks = vec![FloatBtn::GameMenu, FloatBtn::GameTime, FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut, FloatBtn::UnitPaths, FloatBtn::Groups, FloatBtn::Vibration];
             if self.speed.is_some() {
                 ks.insert(1, FloatBtn::SpeedChoice);
             }
@@ -543,7 +545,12 @@ impl ClassicTouch {
                     crate::display::DisplayMode::NativeWide => "Screen: Wide",
                 }),
                 FloatBtn::Speed if self.speed.as_ref().is_some_and(|s| s.1) => (GOLD.fade(0.55), ""),
-                FloatBtn::UnitPaths => (BG, if crate::settings(m).show_unit_paths { "Paths: all units" } else { "Paths: selected" }),
+                FloatBtn::UnitPaths => (BG, match crate::settings(m).unit_paths {
+                    crate::settings::PathMode::Selected => "Paths: selected",
+                    crate::settings::PathMode::Units => "Paths: units",
+                    crate::settings::PathMode::All => "Paths: all units",
+                }),
+                FloatBtn::Vibration => (BG, crate::settings::vibration_label(&crate::settings(m))),
                 FloatBtn::Groups => (BG, if crate::settings(m).group_shortcuts { "Groups: on" } else { "Groups: off" }),
                 FloatBtn::ZoomIn | FloatBtn::ZoomOut | FloatBtn::FpsLimit | FloatBtn::FpsPos | FloatBtn::Filter | FloatBtn::Speed | FloatBtn::SpeedChoice => (BG, ""),
             };
@@ -710,10 +717,12 @@ impl Mod for ClassicTouch {
                                     self.dirty = true;
                                     return ModEvent::Consumed;
                                 }
-                                FloatBtn::UnitPaths | FloatBtn::Groups => {
+                                FloatBtn::UnitPaths | FloatBtn::Groups | FloatBtn::Vibration => {
                                     let mut s = crate::settings(m);
                                     if k == FloatBtn::UnitPaths {
-                                        s.show_unit_paths = !s.show_unit_paths;
+                                        s.unit_paths = s.unit_paths.next();
+                                    } else if k == FloatBtn::Vibration {
+                                        crate::settings::cycle_vibration(&mut s);
                                     } else {
                                         s.group_shortcuts = !s.group_shortcuts;
                                     }

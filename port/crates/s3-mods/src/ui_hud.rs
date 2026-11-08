@@ -107,6 +107,8 @@ pub(crate) enum Action {
     ToggleUnitPaths,
     /// Settings: group buttons 1..6 on / off.
     ToggleGroups,
+    /// Settings: vibration all / touch / messages / off.
+    CycleVibration,
     Destroy,
     /// Open the building sheet (replaces the original panel's page 4).
     BuildingDetails,
@@ -143,7 +145,6 @@ pub(crate) enum Action {
     /// The full-screen map image (tap = jump there).
     MapPoint,
     MenuSettings,
-    SettingsBack,
     CycleDisplayMode,
     CycleFilter,
     CycleFps,
@@ -512,7 +513,12 @@ impl MobileHud {
             }
             Action::ToggleUnitPaths => {
                 let mut s = crate::settings(m);
-                s.show_unit_paths = !s.show_unit_paths;
+                s.unit_paths = s.unit_paths.next();
+                let _ = crate::set_settings(m, s);
+            }
+            Action::CycleVibration => {
+                let mut s = crate::settings(m);
+                crate::settings::cycle_vibration(&mut s);
                 let _ = crate::set_settings(m, s);
             }
             Action::ToggleGroups => {
@@ -605,7 +611,6 @@ impl MobileHud {
                 let _ = crate::set_settings(m, s);
             }
             Action::MenuSettings => self.sheet = Sheet::Settings,
-            Action::SettingsBack => self.sheet = Sheet::Menu,
             Action::CycleDisplayMode => {
                 let v = crate::display::cycle_mode(m);
                 self.set_toast(&format!("Screen: {}", v.label()));
@@ -949,11 +954,12 @@ impl MobileHud {
         let st = crate::settings(m);
         let mode_label = if st.ui_mode == UiMode::MobileHud { "UI: > Classic Touch" } else { "UI: > Mobile HUD" };
         self.button(c, Rect::new(inner.x, row(6), half, bh), mode_label, BTN_BG, Action::MenuToggleMode);
-        let up = if st.show_unit_paths { "Unit paths: all" } else { "Unit paths: selected" };
-        self.button(c, Rect::new(inner.x + half + gap, row(6), half, bh), up, BTN_BG, Action::ToggleUnitPaths);
+        let up = format!("Unit paths: {}", st.unit_paths.label());
+        self.button(c, Rect::new(inner.x + half + gap, row(6), half, bh), &up, BTN_BG, Action::ToggleUnitPaths);
         let gs = if st.group_shortcuts { "Group buttons: on" } else { "Group buttons: off" };
         self.button(c, Rect::new(inner.x, row(7), half, bh), gs, BTN_BG, Action::ToggleGroups);
-        self.button(c, Rect::new(inner.x + half + gap, row(7), half, bh), "< Back", BTN_ACTIVE, Action::SettingsBack);
+        self.button(c, Rect::new(inner.x + half + gap, row(7), half, bh), crate::settings::vibration_label(&st), BTN_BG, Action::CycleVibration);
+        // No "< Back" row: the dialog is full (cover screen); its X closes it.
     }
 
     /// Resource strip (top left; the FPS counter uses the top-right corner): building materials, food and population, with the game's own goods icons.

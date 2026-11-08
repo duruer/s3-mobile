@@ -404,6 +404,9 @@ impl Mod for ContextTouch {
                 ModEvent::Consumed
             }
             TouchEvent::LongPress { x, y } => {
+                if self.in_game {
+                    crate::haptics::touch(m);
+                }
                 // Hover only (tooltips); a long press is never a right click (the game ignores long right clicks).
                 // The press ring stays (full) while the finger rests: dragging now draws a selection box.
                 let p = pt(x, y);

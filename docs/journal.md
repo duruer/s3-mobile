@@ -3,6 +3,12 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-08 — Vibration, "Paths: units"
+
+- Vibration on long presses / group assign / game messages and background message notifications, switchable
+  ("Vibration: all / touch / messages / off"); path mode Selected / Units / All → [touch](porting/touch.md).
+  HUD settings dialog: the "< Back" row dropped (did not fit on the cover screen; X closes).
+
 ## 2026-11-08 — Start zoom also after campaign briefings
 
 - `zoom.rs` ZoomMod: a shown full-screen menu layout (briefing, loading screen, menus) now counts as "out of a game"

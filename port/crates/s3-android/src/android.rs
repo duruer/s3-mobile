@@ -327,6 +327,10 @@ fn android_main(app: AndroidApp) {
                 }
             }
         }
+        let buzz = std::mem::take(&mut *shared.haptic.lock().unwrap());
+        if let Some(&ms) = buzz.iter().max() {
+            bgservice::vibrate(&app, ms);
+        }
         if shared.keyboard_req.swap(false, Ordering::AcqRel) {
             log::info!("three-finger tap: toggle soft keyboard");
             if let Some(u) = &ui_thread {
@@ -370,7 +374,7 @@ fn android_main(app: AndroidApp) {
             b.push(lines);
             if let Some(l) = b.due(t) {
                 log::info!("background play: notify {l:?}");
-                bgservice::event(&app, &l);
+                bgservice::event(&app, &l, shared.vibrate_messages.load(Ordering::Acquire));
             }
             if shared.in_game.load(Ordering::Acquire) {
                 bg_out_of_game = None;

@@ -94,6 +94,10 @@ pub struct Shared {
     /// message lines in `bg_lines` (UI posts them as notifications).
     pub background: AtomicBool,
     pub bg_lines: Mutex<Vec<String>>,
+    /// Vibration requests (ms) from the mods (`s3_mods::haptics`), vibrated by the activity loop.
+    pub haptic: Mutex<Vec<u32>>,
+    /// Setting `vibrate_messages` (background event notifications vibrate or not).
+    pub vibrate_messages: AtomicBool,
 }
 
 impl Shared {
@@ -139,6 +143,8 @@ impl Shared {
             game_ms: AtomicU64::new(0),
             background: AtomicBool::new(false),
             bg_lines: Mutex::new(Vec::new()),
+            haptic: Mutex::new(Vec::new()),
+            vibrate_messages: AtomicBool::new(true),
         }
     }
 
@@ -553,9 +559,19 @@ fn sync_background(shared: &Shared, m: &mut s3_runtime::Machine) {
         shared.game_ms.store(m.mem.read_u32(GAME_TICKS) as u64 * 64, Ordering::Release);
     }
     let lines = s3_mods::messages::take_new_lines();
-    if !lines.is_empty() && shared.background.load(Ordering::Acquire) {
+    let bg = shared.background.load(Ordering::Acquire);
+    if !lines.is_empty() && bg {
         log::info!("background: game messages {lines:?}");
         shared.bg_lines.lock().unwrap().extend(lines);
+        (shared.wake)();
+    } else if !lines.is_empty() {
+        // In the foreground: a short buzz for a new game message (setting `vibrate_messages`).
+        s3_mods::haptics::message(m);
+    }
+    shared.vibrate_messages.store(s3_mods::settings(m).vibrate_messages, Ordering::Release);
+    let h = s3_mods::haptics::take();
+    if !h.is_empty() && !bg {
+        shared.haptic.lock().unwrap().extend(h);
         (shared.wake)();
     }
 }

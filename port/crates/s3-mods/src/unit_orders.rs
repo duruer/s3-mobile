@@ -222,6 +222,12 @@ pub struct Route {
 
 /// Waypoint slot value: empty.
 const WP_EMPTY: u16 = 0xffff;
+/// Settler types the player can select and order (soldiers of all levels, priest, geologist, thief, pioneer, war
+/// machines, ships; game-state-units.md "Settler types").
+pub fn selectable_type(t: u8) -> bool {
+    matches!(t, 0x05 | 0x08 | 0x0f | 0x1e..=0x24 | 0x16 | 0x17 | 0x28 | 0x29 | 0x2b | 0x2c)
+}
+
 /// Third waypoint slot = this marks a patrol (`0x536c01`).
 const WP_PATROL: u16 = 0xfffe;
 
@@ -309,7 +315,7 @@ pub struct UnitOrders {
     in_game: bool,
     now: u64,
     mode: UiMode,
-    show_paths: bool,
+    show_paths: crate::settings::PathMode,
     groups_on: bool,
     long_press_ms: u64,
     /// Units selected (page 5) right now.
@@ -439,7 +445,7 @@ impl UnitOrders {
             (s.frame_size, s.settings.clone())
         };
         self.mode = settings.ui_mode;
-        self.show_paths = settings.show_unit_paths;
+        self.show_paths = settings.unit_paths;
         self.groups_on = settings.group_shortcuts;
         self.long_press_ms = settings.touch.long_press_ms.max(150);
         let gd = game::gd(m);
@@ -469,7 +475,8 @@ impl UnitOrders {
                 }
             }
         }
-        if self.show_paths {
+        if self.show_paths != crate::settings::PathMode::Selected {
+            let units_only = self.show_paths == crate::settings::PathMode::Units;
             for id in 1..=max {
                 let a = gd + GD_SETTLERS + id * 0x40;
                 if m.mem.read_u8(a) != me || sel.contains(&(id as u16)) {
@@ -480,6 +487,9 @@ impl UnitOrders {
                 // patrol marker.
                 let (px, py, tx, ty) = (m.mem.read_u16(a + 4), m.mem.read_u16(a + 6), m.mem.read_u16(a + 0x24), m.mem.read_u16(a + 0x26));
                 let moving = (tx, ty) != (px, py) && (tx, ty) != (0, 0) && tx < world && ty < world;
+                if units_only && !selectable_type(m.mem.read_u8(a + 1)) {
+                    continue;
+                }
                 if !moving && m.mem.read_u16(a + 0x38) != WP_PATROL {
                     continue;
                 }
@@ -768,6 +778,7 @@ impl Mod for UnitOrders {
                 let sel = game::selection_count(m);
                 if self.units_selected && sel > 0 {
                     self.queue(m, GroupAction::Assign(n));
+                    crate::haptics::touch(m);
                     self.set_toast(format!("Group {n}: {sel} units assigned"));
                 } else {
                     self.set_toast("Select units first, then hold a group button".to_string());

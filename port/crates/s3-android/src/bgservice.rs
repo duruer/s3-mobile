@@ -78,16 +78,53 @@ pub fn update(app: &AndroidApp, game_ms: u64) {
 }
 
 /// One "Game events" notification with these lines.
-pub fn event(app: &AndroidApp, lines: &[String]) {
+pub fn event(app: &AndroidApp, lines: &[String], vibrate: bool) {
     let text = lines.join("\n");
     with_activity(app, "event", |env, act| {
         let it = intent(env, act, Some("EVENT"))?;
+        put_long(env, &it, "vibrate", vibrate as i64)?;
         let k = env.new_string("text")?;
         let v = env.new_string(&text)?;
         env.call_method(&it, jni_str!("putExtra"), jni_sig!("(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;"), &[JValue::Object(&k), JValue::Object(&v)])?;
         env.call_method(act, jni_str!("startService"), jni_sig!("(Landroid/content/Intent;)Landroid/content/ComponentName;"), &[JValue::Object(&it)])?;
         Ok(())
     });
+}
+
+/// Short vibration (touch feedback, game message), `ms` milliseconds (API 26+ `VibrationEffect`).
+pub fn vibrate(app: &AndroidApp, ms: u32) {
+    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr() as *mut _) };
+    let activity = app.activity_as_ptr() as usize;
+    let r = vm.attach_current_thread(|env: &mut Env| -> jni::errors::Result<()> {
+        let act = unsafe { JObject::from_raw(env, activity as jni::sys::jobject) };
+        let name = env.new_string("vibrator")?;
+        let r = env
+            .call_method(&act, jni_str!("getSystemService"), jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"), &[JValue::Object(&name)])
+            .and_then(|v| v.l())
+            .and_then(|v| {
+                if v.is_null() {
+                    return Ok(());
+                }
+                let eff = env
+                    .call_static_method(
+                        jni_str!("android/os/VibrationEffect"),
+                        jni_str!("createOneShot"),
+                        jni_sig!("(JI)Landroid/os/VibrationEffect;"),
+                        &[JValue::Long(ms as i64), JValue::Int(-1)],
+                    )?
+                    .l()?;
+                env.call_method(&v, jni_str!("vibrate"), jni_sig!("(Landroid/os/VibrationEffect;)V"), &[JValue::Object(&eff)])?;
+                Ok(())
+            });
+        if env.exception_check() {
+            env.exception_describe();
+            env.exception_clear();
+        }
+        r
+    });
+    if let Err(e) = r {
+        log::warn!("vibrate failed: {e:?}");
+    }
 }
 
 /// Stop the service (its notifications go with it).

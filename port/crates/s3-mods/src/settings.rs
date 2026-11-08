@@ -69,8 +69,14 @@ pub struct Settings {
     pub fast_speed: u32,
     /// Show the game time (`crate::game_time`); on by default.
     pub show_game_time: bool,
-    /// Draw the paths of all own units under a move order (selected units always show theirs; `crate::unit_orders`).
+    /// Old on/off form of [`Settings::unit_paths`] (true = all); migrated on load, then false.
     pub show_unit_paths: bool,
+    /// Whose paths are drawn besides the selected units' (`crate::unit_orders`).
+    pub unit_paths: PathMode,
+    /// Vibrate on long presses (box select start, group assign) (`crate::haptics`).
+    pub vibrate_touch: bool,
+    /// Vibrate on game messages and their notifications (`crate::haptics`, Android background notifications).
+    pub vibrate_messages: bool,
     /// Control-group buttons 1..6 (tap = select / centre, long press = assign; `crate::unit_orders`).
     pub group_shortcuts: bool,
 }
@@ -89,9 +95,60 @@ impl Default for Settings {
             fast_speed: crate::speed::DEFAULT_FAST,
             show_game_time: true,
             show_unit_paths: false,
+            unit_paths: PathMode::Selected,
+            vibrate_touch: true,
+            vibrate_messages: true,
             group_shortcuts: false,
         }
     }
+}
+
+/// Whose unit paths are drawn (selected units always show theirs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PathMode {
+    /// Only the selected units.
+    #[default]
+    Selected,
+    /// Also every own selectable unit on its way (soldiers, specialists, war machines, ships).
+    Units,
+    /// Also every own settler on its way (carriers and workers too).
+    All,
+}
+
+impl PathMode {
+    pub fn next(self) -> PathMode {
+        match self {
+            PathMode::Selected => PathMode::Units,
+            PathMode::Units => PathMode::All,
+            PathMode::All => PathMode::Selected,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            PathMode::Selected => "selected",
+            PathMode::Units => "units",
+            PathMode::All => "all",
+        }
+    }
+}
+
+/// Vibration menu label and cycle: (touch, messages) all -> touch -> messages -> off.
+pub fn vibration_label(s: &Settings) -> &'static str {
+    match (s.vibrate_touch, s.vibrate_messages) {
+        (true, true) => "Vibration: all",
+        (true, false) => "Vibration: touch",
+        (false, true) => "Vibration: messages",
+        (false, false) => "Vibration: off",
+    }
+}
+
+pub fn cycle_vibration(s: &mut Settings) {
+    (s.vibrate_touch, s.vibrate_messages) = match (s.vibrate_touch, s.vibrate_messages) {
+        (true, true) => (true, false),
+        (true, false) => (false, true),
+        (false, true) => (false, false),
+        (false, false) => (true, true),
+    };
 }
 
 /// Hold time before a touch becomes a long press (box select / drag start). Was 500 ms until 2026-11-08
@@ -111,6 +168,12 @@ impl Settings {
             Ok(b) => match serde_json::from_slice::<Settings>(&b) {
                 Ok(mut s) => {
                     // The old default was saved into every settings file: move it to the new one.
+                    if s.show_unit_paths {
+                        s.show_unit_paths = false;
+                        if s.unit_paths == PathMode::Selected {
+                            s.unit_paths = PathMode::All;
+                        }
+                    }
                     if s.touch.long_press_ms == OLD_LONG_PRESS_MS {
                         s.touch.long_press_ms = LONG_PRESS_MS;
                     }

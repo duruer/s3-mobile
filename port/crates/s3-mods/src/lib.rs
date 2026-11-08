@@ -24,6 +24,7 @@ pub mod fps; // FPS counter overlay
 pub mod game_time; // game time h:mm:ss overlay
 pub mod end_stats; // statistics over game time on the end-of-game statistics screen (docs/porting/menu-layout.md)
 pub mod stone; // generated stone texture behind menu layouts
+pub mod haptics; // vibration requests (Android frontend vibrates)
 pub mod fallback;
 pub mod fast; // native fast paths for hot guest loops (docs/porting/performance.md)
 pub mod fast_blit;

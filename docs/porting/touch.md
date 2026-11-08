@@ -168,3 +168,16 @@ A one-finger drag that starts on the minimap scrolls the map, also after a long 
 selection). The game jumps on a left-button press on the minimap but ignores moves with the button held, so
 `touch.rs` (`Drag::Minimap`) re-presses at the finger every 50 ms (`MINIMAP_REPRESS_MS`) and once more on release.
 Verified desktop 2316x904: the camera rectangle follows the finger for hold-drags and quick drags (2026-11-08).
+
+## Vibration and path modes (2026-11-08)
+
+- `s3-mods/src/haptics.rs` queues short buzzes: 25 ms on a long press in game (box select start, also the tap-then-drag
+  gesture) and on a group assign; 60 ms when a new game message appears in the foreground. The Android frontend
+  drains the queue (`Shared::haptic`) and calls `Vibrator.vibrate(VibrationEffect.createOneShot)` over JNI
+  (`bgservice::vibrate`, permission `VIBRATE`). Background message notifications use the channel `events_vibrate`
+  (vibration on) or `events_quiet`; the first channel `events` (no vibration, cannot be changed) is deleted.
+- Settings `vibrate_touch` / `vibrate_messages` (default on), one menu button cycling "Vibration: all / touch /
+  messages / off" (Classic menu column, HUD settings).
+- `Settings::unit_paths` = `PathMode` Selected / Units / All (old `show_unit_paths` migrated to All). Units = own
+  selectable types only (`unit_orders::selectable_type`: soldiers, priest, geologist, thief, pioneer, war machines,
+  ships).

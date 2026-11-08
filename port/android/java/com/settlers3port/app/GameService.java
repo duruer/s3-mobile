@@ -23,7 +23,12 @@ public class GameService extends Service {
     static final String ACTION_UPDATE = "com.settlers3port.app.UPDATE";
     static final String ACTION_EVENT = "com.settlers3port.app.EVENT";
     static final String CH_RUNNING = "running";
-    static final String CH_EVENTS = "events";
+    // "events" (first version) had no vibration; a channel's settings cannot change once created, so it is
+    // replaced by "events_vibrate" (deleted in channels()).
+    static final String CH_EVENTS_OLD = "events";
+    static final String CH_EVENTS = "events_vibrate";
+    // Same as CH_EVENTS without vibration (setting "Vibration" in the game menus).
+    static final String CH_EVENTS_QUIET = "events_quiet";
     static final String GROUP_EVENTS = "com.settlers3port.app.EVENTS";
     static final int ID_RUNNING = 1;
     static final int ID_EVENTS_FIRST = 100;
@@ -61,7 +66,7 @@ public class GameService extends Service {
         } else if (ACTION_EVENT.equals(action)) {
             String text = intent.getStringExtra("text");
             if (text != null && !text.isEmpty()) {
-                event(text);
+                event(text, intent.getLongExtra("vibrate", 1) != 0);
             }
         }
         return START_NOT_STICKY;
@@ -100,10 +105,21 @@ public class GameService extends Service {
             c.setShowBadge(false);
             nm.createNotificationChannel(c);
         }
+        if (nm.getNotificationChannel(CH_EVENTS_QUIET) == null) {
+            NotificationChannel c = new NotificationChannel(CH_EVENTS_QUIET, "Game events (no vibration)", NotificationManager.IMPORTANCE_DEFAULT);
+            c.setDescription("Game messages while in the background, when vibration is off in the game menu");
+            c.enableVibration(false);
+            c.setVibrationPattern(new long[] {0});
+            nm.createNotificationChannel(c);
+        }
         if (nm.getNotificationChannel(CH_EVENTS) == null) {
             NotificationChannel c = new NotificationChannel(CH_EVENTS, "Game events", NotificationManager.IMPORTANCE_DEFAULT);
             c.setDescription("Messages of the game (e.g. resources found) while it runs in the background");
+            c.enableVibration(true);
             nm.createNotificationChannel(c);
+        }
+        if (nm.getNotificationChannel(CH_EVENTS_OLD) != null) {
+            nm.deleteNotificationChannel(CH_EVENTS_OLD);
         }
     }
 
@@ -142,9 +158,9 @@ public class GameService extends Service {
             .build();
     }
 
-    private void event(String text) {
+    private void event(String text, boolean vibrate) {
         String[] lines = text.split("\n");
-        Notification.Builder b = new Notification.Builder(this, CH_EVENTS)
+        Notification.Builder b = new Notification.Builder(this, vibrate ? CH_EVENTS : CH_EVENTS_QUIET)
             .setSmallIcon(icon())
             .setContentTitle(lines.length == 1 ? "Settlers 3 Mobile" : "Settlers 3 Mobile — " + lines.length + " messages")
             .setContentText(lines[lines.length - 1])
