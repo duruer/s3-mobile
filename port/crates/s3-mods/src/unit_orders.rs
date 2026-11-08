@@ -450,7 +450,7 @@ impl UnitOrders {
             && game::selection_count(m) > 0;
     }
 
-    /// Routes to draw: selected units (always) plus all own ordered units with `show_paths`.
+    /// Routes to draw: selected units (always) plus every own unit walking to a target with `show_paths`.
     fn routes(&self, m: &Machine, gd: u32) -> Vec<(Route, bool)> {
         let world = m.mem.read_u32(gd + GD_WORLD).min(1024) as u16;
         let me = m.mem.read_u32(gd + GD_LOCAL_PLAYER) as u8;
@@ -475,11 +475,15 @@ impl UnitOrders {
                 if m.mem.read_u8(a) != me || sel.contains(&(id as u16)) {
                     continue;
                 }
-                // Cheap pre-check before copying the entry: ordered walk or a patrol marker.
-                if m.mem.read_u16(a + 0x0e) != JOB_ORDERED_WALK && m.mem.read_u16(a + 0x38) != WP_PATROL {
+                // Every own unit on its way somewhere (carriers and workers too, not only player orders; user report
+                // 2026-11-08). Cheap pre-check before copying the entry: a target other than the position, or a
+                // patrol marker.
+                let (px, py, tx, ty) = (m.mem.read_u16(a + 4), m.mem.read_u16(a + 6), m.mem.read_u16(a + 0x24), m.mem.read_u16(a + 0x26));
+                let moving = (tx, ty) != (px, py) && (tx, ty) != (0, 0) && tx < world && ty < world;
+                if !moving && m.mem.read_u16(a + 0x38) != WP_PATROL {
                     continue;
                 }
-                if let Some(r) = route_from_entry(&entry(id), world, false) {
+                if let Some(r) = route_from_entry(&entry(id), world, true) {
                     out.push((r, false));
                 }
                 if out.len() > 400 {
