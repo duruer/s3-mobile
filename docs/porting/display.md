@@ -67,10 +67,24 @@ both fixed and verified on the phone (screen recording of injected pinches, 1045
 **Panel art past the panel width (2026-11-08).** The 640x480 panel's minimap frame has a diagonal right edge (up
 to x 207 at the top) and leaves that reach a few px past `w = 136`; they lie in the map part and scaled with the
 zoom ("the diagonal edge still moves"). `PanelSplit::overhang` lists them as 4-row bands (`y0, y1, x_end`, measured
-from a frame with a black map behind; numbers only); `quads()` adds one panel-scale quad per band on top of the
+from a frame with a black map behind; numbers only; runs of rows with the same `x_end`, since 4-row bands also
+carried map pixels that moved during zoom); `quads()` adds one panel-scale quad per band on top of the
 map part, and `window_to_game` / `game_to_window` use the panel scale there (`PanelSplit::art_right`). Classic
 never goes below the art's height (480), so the map part is never larger than the panel scale and no copy of the
 edge shows next to it. The Classic context chip starts right of the overhang.
+
+**Zoom below the panel art (2026-11-08).** The 640x480 panel needs 480 frame rows, so UI mode A could not zoom in
+past 480 while the Mobile HUD goes to 200. Now heights below 480 keep a 480 high frame and show only `crop_h`
+rows of the map part (centred, matching width) over the whole map area (`zoom::classic_crop` ->
+`PanelSplit::crop_h`, `Viewport::map_src`). Those are exactly the pixels a smaller render would show, at the same
+scale; it costs a 480 high render and the crop is centred (pinching inside the crop zooms about the screen centre,
+and the outer rows of the 480 view cannot be shown at the map's edges). Verified desktop + phone (200 high, 60 fps).
+
+**Cursor in the window layer (2026-11-08).** `s3_runtime::cursor` drew the game's Windows cursor into the presented
+frame, so it grew, shrank and moved with the zoom. With a window layer, `cursor_layer::CursorMod` sets
+`CursorState::disabled` and blits the same image (RGBA copy per HCURSOR, XOR pixels as their colour) at
+`game_to_window(mouse)` minus the hot spot, at `Layer::ui` scale (its size in a 600 px high frame), last (on top).
+Without a window layer (old frontends) the frame cursor stays.
 
 `window_to_game` / `game_to_window` / `scale()` (= map part) / `quads()` (source -> destination rectangles: one, or
 panel + map) handle it, so touch mapping, the GPU presenter (one quad per part, sharp-bilinear scale per part), the

@@ -86,8 +86,11 @@ fn classic_split_window(m: &mut Machine) -> Option<(u32, u32)> {
     crate::display::window_size(m).filter(|&(w, h)| w > 0 && h > 0)
 }
 
-/// Size for height `h` with the current aspect (and the Classic panel split's width rule).
+/// Size for height `h` with the current aspect (and the Classic panel split's width rule). With the split, heights
+/// below the panel art (480) render at 480 and the map part is cropped instead ([`classic_crop`]).
 fn size_now(m: &mut Machine, h: u32, a: f32) -> (u32, u32) {
+    let split = classic_split_window(m);
+    let h = if split.is_some() { h.max(res::CLASSIC_VARIANT.h) } else { h };
     let (w, h) = size_for_height(h, a);
     match classic_split_window(m) {
         Some((ww, wh)) => (classic_width(h, ww, wh).min(w.max(res::MIN_W)), h),
@@ -136,7 +139,20 @@ fn env_size(name: &str) -> Option<(u32, u32)> {
 
 fn min_level(m: &mut Machine) -> u32 {
     let mode = m.state::<crate::ModsState>().borrow_mut().settings.ui_mode;
-    if mode == UiMode::MobileHud { 0 } else { CLASSIC_MIN_LEVEL }
+    // UI mode A with the panel split zooms below the panel art by cropping ([`classic_crop`]).
+    if mode == UiMode::MobileHud || classic_split_window(m).is_some() { 0 } else { CLASSIC_MIN_LEVEL }
+}
+
+/// UI mode A with the panel split, wanted height below the 480 px panel art: the frame stays 480 high and only
+/// this many rows of the map part are shown (centred, the width to match), scaled to the window. A smaller
+/// render size would show exactly the same map pixels, but the panel art needs 480 rows of the frame. Pure
+/// presentation (no render-size switch), so it is also instant. `None` = no crop.
+pub fn classic_crop(m: &mut Machine) -> Option<u32> {
+    if !enabled(m) || classic_split_window(m).is_none() || env_size("S3_RES").is_some() {
+        return None;
+    }
+    let h = wanted_height(m);
+    (h < res::CLASSIC_VARIANT.h).then_some(h.max(res::MIN_H))
 }
 
 /// Number of zoom levels.
@@ -212,22 +228,27 @@ pub fn target_size(m: &mut Machine) -> Option<(u32, u32)> {
         return Some(res::clamp_size(w, h));
     }
     let a = aspect(m);
+    let h = wanted_height(m);
+    Some(size_now(m, h, a))
+}
+
+/// The zoom height wanted now (pinch in progress, saved pinch height or level), before [`size_now`].
+fn wanted_height(m: &mut Machine) -> u32 {
+    let a = aspect(m);
     // The Mobile HUD reads its building icons from the game's panel once: that needs >= 480 px for a moment.
     if m.state::<crate::ui_hud_game::HudShared>().borrow_mut().harvesting {
-        let h = m.state::<PinchState>().borrow_mut().height.unwrap_or(0).max(crate::ui_hud_game::HARVEST_MIN_H);
-        return Some(size_now(m, h, a));
+        return m.state::<PinchState>().borrow_mut().height.unwrap_or(0).max(crate::ui_hud_game::HARVEST_MIN_H);
     }
     if let Some(h) = m.state::<PinchState>().borrow_mut().height {
-        return Some(size_now(m, h, a));
+        return h;
     }
     let ml = min_level(m);
     let saved = m.state::<crate::ModsState>().borrow_mut().settings.res.zoom_height;
     if let Some(h) = saved {
         let (lo, hi) = (LEVEL_HEIGHTS[ml as usize], LEVEL_HEIGHTS[LEVEL_HEIGHTS.len() - 1]);
-        return Some(size_now(m, h.clamp(lo, hi), a));
+        return h.clamp(lo, hi);
     }
-    let (_, h) = size_for(level(m), a, ml);
-    Some(size_now(m, h, a))
+    size_for(level(m), a, ml).1
 }
 
 /// Render height a pinch in progress asks for (overrides the level until the pinch ends).
@@ -300,10 +321,14 @@ pub fn pinch(m: &mut Machine, p: &mut Pinch, phase: Phase, cx: f32, cy: f32, sca
     // Size of the frame on screen (the viewport the touches were mapped through at the gesture start).
     let (mapped_w, mapped_h) =
         crate::display::viewport(m).map(|v| (v.game_w, v.game_h)).filter(|&(w, h)| w > 0 && h > 0).unwrap_or((fw, fh));
+    // UI mode A crop below 480 rows: the effective zoom height is the shown map height.
+    let crop = crate::display::panel_split(m).and_then(|p| p.crop());
+    let start_h = crate::display::viewport(m).and_then(|v| v.panel).and_then(|p| p.crop()).unwrap_or(mapped_h);
+    let fh = crop.unwrap_or(fh);
     if phase == Phase::Begin || p.start_level.is_none() {
         p.start_level = Some(level(m));
         p.start_frame_w = mapped_w;
-        p.start_frame_h = mapped_h;
+        p.start_frame_h = start_h;
         p.start_split_pw = crate::display::panel_split(m).map(|s| s.w);
         p.dir = 0;
     }

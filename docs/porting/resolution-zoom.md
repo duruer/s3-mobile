@@ -27,7 +27,7 @@ pinch hook in `touch.rs`. RE details: [game-state-ui.md](../reverse-engineering/
 | Pinch | both UI modes, continuous: fingers apart = zoom in (one level per factor 1.12 of finger distance), the map point under the fingers stays in place. One switch at a time (the next one when the game finished the previous one, at least 120 ms apart); the final level is saved at the end of the pinch |
 | Menu | Classic Touch: Menu -> "Zoom in (n/12)" / "Zoom out (n/12)". Mobile HUD: API for the HUD menu (`zoom::zoom_in/zoom_out/label`), wiring is hud-polish's |
 | Persisted | `mods-settings.json` `"res": {"enabled": true, "zoom_level": 6}`; `enabled: false` = the game's own sizes (F1-F3 work again) |
-| Mode A minimum | 480 high (the original panel art needs it); levels 0-2 are skipped in Classic Touch |
+| Mode A minimum | 200 with the panel split (`NativeWide`): below 480 the frame stays 480 high (the panel art needs it) and the map part is cropped, `zoom::classic_crop` / `PanelSplit::crop_h` (2026-11-08; same map pixels as a smaller render, and instant). Without the split (Fit etc.) 480, levels 0-6 skipped |
 
 Panel at custom sizes: the panel art, minimap and panel button grid of the largest original layout whose height
 fits ("variant": < 600 -> 640x480 art, < 768 -> 800x600 art, else 1024x768 art); the map view takes the rest of the

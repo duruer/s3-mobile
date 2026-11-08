@@ -153,26 +153,41 @@ impl Default for DisplaySettings {
 pub struct PanelSplit {
     pub w: u32,
     pub h: u32,
+    /// UI mode A zoomed in below the panel art (`zoom::classic_crop`): only this many rows of the map part are
+    /// shown (centred, with the matching width); 0 = the whole map part.
+    pub crop_h: u32,
 }
 
 /// Parts of the 640x480 panel art (`res::CLASSIC_VARIANT`) that reach past the panel width into the map view:
-/// the minimap frame's diagonal edge and leaves (`y0, y1, x_end` in game px; 4-row bands, `x_end` = the
-/// rightmost art pixel + 1 in the band, measured from a game frame with a black map behind, 2026-11-08). With a
+/// the minimap frame's diagonal edge and leaves (`y0, y1, x_end` in game px; runs of rows with the same `x_end` =
+/// the rightmost art pixel + 1, measured from a game frame with a black map behind, 2026-11-08). Exact per row:
+/// 4-row bands also carried map pixels right of the art, which then moved during zoom (phone report). With a
 /// [`PanelSplit`] they are drawn at the panel's scale on top of the map part, else they scaled with the zoom
 /// like the map (user report: "the diagonal edge still moves"). Numbers only, no game art.
-const OVERHANG_136X480: [(u16, u16, u16); 53] = [
-    (0, 8, 207), (8, 12, 205), (12, 16, 203), (16, 20, 200), (20, 24, 198), (24, 28, 197), (28, 32, 195),
-    (32, 36, 192), (36, 40, 191), (40, 44, 189), (44, 48, 186), (48, 52, 185), (52, 56, 183), (56, 60, 180),
-    (60, 64, 179), (64, 68, 177), (68, 72, 174), (72, 76, 173), (76, 84, 171), (84, 96, 175), (96, 100, 161),
-    (100, 104, 158), (104, 108, 157), (108, 116, 160), (116, 120, 158), (120, 124, 155), (124, 128, 153),
-    (128, 132, 150), (132, 136, 147), (136, 140, 144), (140, 144, 142), (144, 148, 141), (148, 152, 139),
-    (152, 156, 137), (196, 200, 137), (200, 204, 140), (204, 208, 139), (208, 212, 138), (212, 216, 140),
-    (216, 220, 142), (220, 224, 143), (224, 228, 142), (304, 308, 143), (308, 312, 140), (324, 328, 141),
-    (328, 332, 140), (380, 384, 138), (384, 388, 141), (388, 392, 140), (392, 396, 138), (460, 464, 141),
-    (464, 476, 144), (476, 480, 142),
+const OVERHANG_136X480: [(u16, u16, u16); 119] = [
+    (0, 6, 207), (6, 8, 206), (8, 10, 205), (10, 12, 204), (12, 14, 203), (14, 16, 202), (16, 18, 201), (18, 19, 199),
+    (19, 20, 200), (20, 22, 199), (22, 24, 198), (24, 25, 196), (25, 26, 197), (26, 28, 196), (28, 30, 195), (30, 31, 193),
+    (31, 32, 194), (32, 34, 193), (34, 36, 192), (36, 38, 191), (38, 40, 190), (40, 42, 189), (42, 44, 188), (44, 46, 187),
+    (46, 48, 186), (48, 50, 185), (50, 52, 184), (52, 54, 183), (54, 56, 182), (56, 58, 181), (58, 60, 180), (60, 62, 179),
+    (62, 64, 178), (64, 66, 177), (66, 68, 176), (68, 70, 175), (70, 72, 174), (72, 74, 173), (74, 76, 172), (76, 81, 171),
+    (81, 82, 170), (82, 83, 169), (83, 84, 168), (84, 85, 167), (85, 86, 174), (86, 88, 175), (88, 89, 174), (89, 93, 175),
+    (93, 94, 163), (94, 96, 162), (96, 98, 161), (98, 100, 160), (100, 102, 159), (102, 104, 158), (104, 106, 157), (106, 107, 156),
+    (107, 108, 157), (108, 109, 158), (109, 110, 159), (110, 113, 160), (113, 114, 157), (114, 118, 158), (118, 119, 151), (119, 120, 152),
+    (120, 121, 154), (121, 124, 155), (124, 125, 153), (125, 126, 151), (126, 127, 148), (127, 128, 149), (128, 130, 150), (130, 131, 149),
+    (131, 132, 148), (132, 134, 147), (134, 135, 146), (135, 136, 145), (136, 138, 144), (138, 140, 143), (140, 143, 142), (143, 145, 141),
+    (145, 148, 140), (148, 151, 139), (151, 152, 138), (152, 155, 137), (199, 200, 137), (200, 201, 138), (201, 204, 140), (204, 207, 139),
+    (207, 208, 138), (208, 209, 137), (211, 212, 138), (212, 214, 139), (214, 217, 140), (217, 218, 141), (218, 220, 142), (220, 224, 143),
+    (224, 225, 142), (225, 227, 137), (304, 306, 143), (306, 307, 142), (307, 308, 141), (308, 309, 140), (324, 325, 139), (325, 326, 140),
+    (326, 327, 141), (327, 330, 140), (330, 331, 139), (381, 386, 138), (386, 387, 141), (387, 390, 140), (390, 391, 139), (391, 393, 138),
+    (393, 394, 137), (460, 461, 139), (461, 463, 140), (463, 467, 141), (467, 475, 144), (475, 476, 143), (476, 480, 142),
 ];
 
 impl PanelSplit {
+    /// The crop height, if any.
+    pub fn crop(&self) -> Option<u32> {
+        (self.crop_h > 0).then_some(self.crop_h)
+    }
+
     /// Bands of the panel art past `w` (see `OVERHANG_136X480`; none for the other variants).
     pub fn overhang(&self) -> &'static [(u16, u16, u16)] {
         if (self.w, self.h) == (136, 480) {
@@ -277,6 +292,19 @@ impl Viewport {
         Some((p, (p.w as f32 * ps).round(), ps))
     }
 
+    /// With a panel split: the source rectangle of the map part (game px: x, y, w, h); a centred crop when
+    /// [`PanelSplit::crop_h`] is set.
+    fn map_src(&self, p: PanelSplit) -> (f32, f32, f32, f32) {
+        let (mw, gh) = ((self.game_w - p.w.min(self.game_w)) as f32, self.game_h as f32);
+        match p.crop().filter(|&c| c < self.game_h) {
+            Some(c) => {
+                let (ch, cw) = (c as f32, mw * c as f32 / gh);
+                (p.w as f32 + (mw - cw) / 2.0, (gh - ch) / 2.0, cw, ch)
+            }
+            None => (p.w as f32, 0.0, mw, gh),
+        }
+    }
+
     /// Source rectangles (game px: x, y, w, h) and where they are drawn (window px: x, y, w, h) for a frame without
     /// a menu layout: the whole frame, or the panel and the map part with a [`PanelSplit`].
     pub fn quads(&self) -> Vec<([f32; 4], [f32; 4])> {
@@ -285,7 +313,10 @@ impl Viewport {
             Some((p, pww, ps)) => {
                 let mut q = vec![
                     ([0.0, 0.0, p.w as f32, p.h as f32], [0.0, 0.0, pww, p.h as f32 * ps]),
-                    ([p.w as f32, 0.0, gw - p.w as f32, gh], [pww, 0.0, self.win_w as f32 - pww, self.win_h as f32]),
+                    ({
+                        let (x, y, w, h) = self.map_src(p);
+                        [x, y, w, h]
+                    }, [pww, 0.0, self.win_w as f32 - pww, self.win_h as f32]),
                 ];
                 // Panel art past the panel width, at the panel's scale on top of the map part.
                 for &(y0, y1, xe) in p.overhang() {
@@ -329,7 +360,8 @@ impl Viewport {
                 return (x / ps, y / ps);
             }
             let mw = (self.win_w as f32 - pww).max(1.0);
-            return (p.w as f32 + (x - pww) * (self.game_w - p.w) as f32 / mw, y * self.game_h as f32 / self.win_h as f32);
+            let (sx, sy, sw, sh) = self.map_src(p);
+            return (sx + (x - pww) * sw / mw, sy + y * sh / self.win_h as f32);
         }
         if let Some(l) = self.layout {
             let (sx, sy) = self.scale();
@@ -348,7 +380,8 @@ impl Viewport {
                 return (gx * ps, gy * ps);
             }
             let mw = self.win_w as f32 - pww;
-            return (pww + (gx - p.w as f32) * mw / (self.game_w - p.w).max(1) as f32, gy * self.win_h as f32 / self.game_h as f32);
+            let (sx, sy, sw, sh) = self.map_src(p);
+            return (pww + (gx - sx) * mw / sw.max(1.0), (gy - sy) * self.win_h as f32 / sh.max(1.0));
         }
         if let Some(l) = self.layout {
             // Game pixels not shown by any piece go far off screen.
@@ -362,7 +395,8 @@ impl Viewport {
     /// Window pixels per game pixel (x, y); with a panel split: of the map part.
     pub fn scale(&self) -> (f32, f32) {
         if let Some((p, pww, _)) = self.split() {
-            return ((self.win_w as f32 - pww) / (self.game_w - p.w).max(1) as f32, self.win_h as f32 / self.game_h as f32);
+            let (_, _, sw, sh) = self.map_src(p);
+            return ((self.win_w as f32 - pww) / sw.max(1.0), self.win_h as f32 / sh.max(1.0));
         }
         (self.dst_w / self.game_w as f32, self.dst_h / self.game_h as f32)
     }
@@ -599,7 +633,9 @@ pub fn panel_split(m: &mut Machine) -> Option<PanelSplit> {
     // The layout globals may already be for the next size while this frame has the old one (zoom in progress);
     // UI mode A uses one panel variant at every size (`res::CLASSIC_VARIANT`), so only the fit is checked.
     let v = crate::res::variant(m.mem.read_u32(crate::res::L_RES))?;
-    let r = (pw > 0 && pw == v.panel_w && pw < fw && v.h <= fh).then_some(PanelSplit { w: pw, h: v.h });
+    let r = (pw > 0 && pw == v.panel_w && pw < fw && v.h <= fh).then_some(PanelSplit { w: pw, h: v.h, crop_h: 0 });
+    let crop = crate::zoom::classic_crop(m).filter(|&c| c < fh).unwrap_or(0);
+    let r = r.map(|p| PanelSplit { crop_h: crop, ..p });
     if r.is_none() && std::env::var_os("S3_PANEL_TRACE").is_some() {
         eprintln!("panel_split: none: frame {fw}x{fh} pw {pw} variant {} ({}x{})", v.index, v.panel_w, v.h);
     }
@@ -615,8 +651,10 @@ pub fn panel_for_frame(scene_panel: Option<PanelSplit>, scene_frame: (u32, u32),
     if scene_frame == frame {
         return Some(p);
     }
-    // UI mode A uses one panel variant at every size (`res::CLASSIC_VARIANT`): the split carries over.
-    (p.w < frame.0 && p.h <= frame.1).then_some(p)
+    // UI mode A uses one panel variant at every size (`res::CLASSIC_VARIANT`): the split carries over (a crop
+    // only to a frame of the same height).
+    let crop_h = if scene_frame.1 == frame.1 && p.crop_h < frame.1 { p.crop_h } else { 0 };
+    (p.w < frame.0 && p.h <= frame.1).then_some(PanelSplit { crop_h, ..p })
 }
 
 /// Viewport of the last game frame as the frontend will show it: published window size, display mode, the panel
@@ -789,7 +827,7 @@ mod tests {
     #[test]
     fn panel_split_maps_both_parts() {
         // Fold4 cover 2316x904, Classic at 600 high: 800x600 art (panel 176), frame 1480x600.
-        let p = PanelSplit { w: 176, h: 600 };
+        let p = PanelSplit { w: 176, h: 600, crop_h: 0 };
         let v = Viewport::new_split(DisplayMode::NativeWide, 1480, 600, 2316, 904, Some(p));
         assert_eq!(v.panel, Some(p));
         assert_eq!(v.bars(), (0, 0, 0, 0));
@@ -804,15 +842,15 @@ mod tests {
         assert_eq!(v.window_to_game(wx + 0.01, wy + 0.01), (1000, 450));
         assert_eq!(v.window_to_game(2315.0, 903.0), (1479, 599));
         // A taller frame (780 high, 1024x768 art): the panel keeps (almost) the same on-screen width.
-        let v2 = Viewport::new_split(DisplayMode::NativeWide, 1880, 780, 2316, 904, Some(PanelSplit { w: 216, h: 768 }));
+        let v2 = Viewport::new_split(DisplayMode::NativeWide, 1880, 780, 2316, 904, Some(PanelSplit { w: 216, h: 768, crop_h: 0 }));
         let w1 = v.game_to_window(176.0, 0.0).0;
         let w2 = v2.game_to_window(216.0, 0.0).0;
         assert!((w1 - w2).abs() < 20.0, "{w1} {w2}");
         // Two quads (no overhang table for this variant); the CPU scaler fills the whole window.
         assert_eq!(v.quads().len(), 2);
         // The 640x480 panel: the minimap frame's diagonal edge stays at the panel scale.
-        let v3 = Viewport::new_split(DisplayMode::NativeWide, 1600, 640, 2316, 904, Some(PanelSplit { w: 136, h: 480 }));
-        assert_eq!(v3.quads().len(), 2 + 53);
+        let v3 = Viewport::new_split(DisplayMode::NativeWide, 1600, 640, 2316, 904, Some(PanelSplit { w: 136, h: 480, crop_h: 0 }));
+        assert_eq!(v3.quads().len(), 2 + 119);
         let ps3 = 904.0 / 480.0;
         let (wx, wy) = v3.game_to_window(200.0, 2.0);
         assert!((wx - 200.0 * ps3).abs() < 0.01 && (wy - 2.0 * ps3).abs() < 0.01);
@@ -820,6 +858,18 @@ mod tests {
         // Below the overhang: map scale.
         let (wx, _) = v3.game_to_window(200.0, 300.0);
         assert!((wx - 200.0 * ps3).abs() > 1.0);
+        // Crop (Classic zoomed below 480): 240 rows of a 480 high frame fill the window height.
+        let v4 = Viewport::new_split(DisplayMode::NativeWide, 1240, 480, 2316, 904, Some(PanelSplit { w: 136, h: 480, crop_h: 240 }));
+        let (sx, sy) = v4.scale();
+        assert!((sy - 904.0 / 240.0).abs() < 0.01 && (sx / sy - 1.0).abs() < 0.02, "{sx} {sy}");
+        // The map centre stays the window's map-part centre; round trip.
+        let mid = (136.0 + (1240.0 - 136.0) / 2.0, 240.0);
+        let (wx, wy) = v4.game_to_window(mid.0, mid.1);
+        let pww = (136.0f32 * 904.0 / 480.0).round();
+        assert!((wx - (pww + (2316.0 - pww) / 2.0)).abs() < 1.0 && (wy - 452.0).abs() < 1.0, "{wx} {wy}");
+        assert_eq!(v4.window_to_game(wx + 0.01, wy + 0.01), (mid.0 as i32, mid.1 as i32));
+        // The panel keeps its scale.
+        assert_eq!(v4.window_to_game(100.0 * ps3 + 0.5, 300.0 * ps3 + 0.5), (100, 300));
         let src: Vec<u16> = (0..1480 * 600).map(|i| if i % 1480 < 176 { 0xF800 } else { 0x001F }).collect();
         let mut dst = vec![0u32; 2316 * 904];
         scale_to_xrgb(&v, ScaleFilter::Nearest, &src, &mut dst);

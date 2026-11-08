@@ -2,6 +2,17 @@
 
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
+## 2026-11-08 — Cursor in the window layer, Classic zoom below 480, exact panel edge
+
+- The game's cursor was drawn into the frame and scaled/moved with the zoom: now drawn in the window layer
+  (`cursor_layer.rs`, constant size, at the mouse's window position) ([display.md](porting/display.md)).
+- UI mode A zooms in to 200 like the Mobile HUD: below 480 the frame stays 480 high and the map part is cropped
+  (`zoom::classic_crop`, `PanelSplit::crop_h`). Verified on the phone: 200 high, panel constant, 60 fps.
+- "An effect at the panel's right edge moves while zooming": the 4-row overhang bands also carried map pixels next
+  to the leaves at the panel scale. Now exact per row (119 runs).
+- Phone verification recipe: pinches injected as raw multi-touch `input_event`s (`/dev/input/event16`, su) while
+  `screenrecord --display-id` records; frames compared with PyAV.
+
 ## 2026-11-08 — Classic: minimap edge at panel scale, Deselect button
 
 - The minimap frame's diagonal edge (and some leaves) of the 640x480 panel reach past the panel width into the

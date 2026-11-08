@@ -16,6 +16,7 @@
 pub mod call;
 pub mod menu_layout;
 pub mod messages; // game message lines in the window layer (game-state-ui.md section 7) // full-screen layouts of the 800x600 menus (docs/porting/menu-layout.md)
+pub mod cursor_layer; // the game's cursor in the window layer (docs/porting/display.md)
 pub mod display; // display modes + shared screen<->game transform (docs/porting/display.md)
 pub mod fps; // FPS counter overlay
 pub mod fallback;
@@ -241,6 +242,7 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
         messages::install(m);
     }
     add_mod(m, Box::new(fps::FpsMod::default())); // FPS counter, drawn on top of the UI modes
+    cursor_layer::install(m); // the game's mouse cursor at a constant size, on top of everything
     hooks::commit(m);
     fast::install(m, &sha); // after commit: regions containing hooks are skipped
     let n = m.hook_addrs().map(|h| h.len()).unwrap_or(0);
