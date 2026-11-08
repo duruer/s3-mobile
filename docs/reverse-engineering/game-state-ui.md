@@ -488,6 +488,13 @@ once (`scratch/re-messages/r3`). The text still goes into the DIB through `0x4d8
 clean for the other composites (tooltip, clock) and saves the GDI work. The logic side (ring, timers, tutorial) is not
 affected.
 
+### Implemented (2026-11-08): `s3-mods/src/messages.rs`
+
+Hooks `0x4d82b0` (skip) and `0x4d8400` (read the 5 entries + chat line from the snapshot, skip); the `messages` mod
+draws them in the window layer (14 px at a 600 px high window, bottom-left right of the HUD minimap / Classic panel,
+slot positions kept), info icon as a blue "i", the tutorial arrow as a "Next >" button that writes
+`[gd+0x2d304] = 1` (VERIFIED: tutorial step 1 -> 2 in s3run). Same on-screen size at 1536x600 and 616x240.
+
 ### Hook plan for the constant-size overlay
 
 1. Mods hook at `0x4d82b0` entry: `return_from_function(0, 1)` (render thread; no DrawText into the DIB).

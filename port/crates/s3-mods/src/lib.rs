@@ -14,7 +14,8 @@
 //! exe patch sets, `S3_MODS_DEBUG=1` turns on the touch debug overlay.
 
 pub mod call;
-pub mod menu_layout; // full-screen layouts of the 800x600 menus (docs/porting/menu-layout.md)
+pub mod menu_layout;
+pub mod messages; // game message lines in the window layer (game-state-ui.md section 7) // full-screen layouts of the 800x600 menus (docs/porting/menu-layout.md)
 pub mod display; // display modes + shared screen<->game transform (docs/porting/display.md)
 pub mod fps; // FPS counter overlay
 pub mod fallback;
@@ -235,6 +236,10 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     }
     ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
     ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
+    // Game message lines at a constant size in the window layer (above the UI modes for the tutorial Next tap).
+    if applied == Some("gog-base") {
+        messages::install(m);
+    }
     add_mod(m, Box::new(fps::FpsMod::default())); // FPS counter, drawn on top of the UI modes
     hooks::commit(m);
     fast::install(m, &sha); // after commit: regions containing hooks are skipped
