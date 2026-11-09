@@ -20,6 +20,7 @@ export S3_VERSION="$VERSION"
 export CARGO_TARGET_DIR="$PORT/target"
 export IPHONEOS_DEPLOYMENT_TARGET=17.0
 export CARGO_PROFILE_RELEASE_DEBUG=0
+export CARGO_TERM_COLOR=never  # the native-static-libs line is parsed below
 (cd "$PORT" && cargo rustc -p s3-ios --target aarch64-apple-ios --release --crate-type staticlib \
   -- --print native-static-libs) 2> "$B/cargo.log" || { cat "$B/cargo.log"; exit 1; }
 NATIVE="$(sed -n 's/.*native-static-libs: //p' "$B/cargo.log" | tail -1)"
