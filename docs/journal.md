@@ -3,6 +3,14 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-09 (c) — automatic releases (semantic-release), iOS .ipa in CI, no JIT on iOS
+
+- `.github/workflows/release.yml`: tests on every push/PR; on `main` semantic-release -> version from Conventional
+  Commits, signed APK (key from secrets), GitHub release; then `ios.yml` adds an unsigned `.ipa` -> [releases](porting/releases.md).
+- aapt2 ignores `--version-name/--version-code` when the manifest has them, unless `--replace-version` (v0.1.1 shipped as 0.1.0/1).
+- `s3-ios` is empty off iOS (workspace tests on the desktop). JIT: `cfg(s3_jit)` from `s3-cpu/build.rs`, never on iOS.
+- Found on Windows ARM64: golden FPU vectors fail, VFS test path separator -> [tech-debt](progress/tech-debt.md).
+
 ## 2026-11-09 (b) — README, first release v0.1.0
 
 - `README.md` for end users (logo `docs/assets/logo.png` = our own icon, rounded; install, copy game files, controls,

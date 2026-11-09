@@ -26,7 +26,8 @@
       "@semantic-release/exec",
       {
         "generateNotesCmd": "bash .github/release/notes.sh ${nextRelease.version}",
-        "prepareCmd": "bash .github/release/build.sh ${nextRelease.version}"
+        "prepareCmd": "bash .github/release/build.sh ${nextRelease.version}",
+        "successCmd": "echo version=${nextRelease.version} >> \"$GITHUB_OUTPUT\""
       }
     ],
     [

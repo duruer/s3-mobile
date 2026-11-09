@@ -9,7 +9,7 @@ cat <<EOF
 ### Download
 
 - **Android 8.0+ (64-bit phones):** \`s3-mobile-$V-android-arm64.apk\` below. Open it on your phone and allow the install.
-- **iPhone (iOS 17+):** no ready-made download. iPhone apps must be signed with your own Apple ID, see [the iOS guide](https://github.com/duruer/s3-mobile/blob/main/docs/porting/ios.md).
+- **iPhone / iPad (iOS 17+):** \`s3-mobile-$V-ios-unsigned.ipa\` below (added a few minutes after the release). Install it from a computer with a sideloading tool such as Sideloadly or AltStore and your own Apple ID: [how](https://github.com/duruer/s3-mobile#iphone).
 
 **You need your own copy of The Settlers III** (GOG "Ultimate Collection", version 1.60). The app contains no game files. After installing, open **Game files** in the app and copy your game folder to the phone: [step by step](https://github.com/duruer/s3-mobile#get-started-on-android).
 

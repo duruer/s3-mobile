@@ -172,8 +172,8 @@ installed on this PC; valgrind/callgrind is.
 
 ## JIT (optional, AArch64; perf-jit 2026-11-07)
 
-**Switch.** Cargo feature `jit` (default on; compiled only for `target_arch = "aarch64"`; iOS builds must use
-`--no-default-features`, Apple forbids JIT). At run time it is **off by default**: env `S3_JIT=1` or
+**Switch.** Cargo feature `jit` (default on; compiled only when `cfg(s3_jit)`, set by `crates/s3-cpu/build.rs`
+for aarch64 targets except iOS, since Apple forbids JIT; 2026-11-09). At run time it is **off by default**: env `S3_JIT=1` or
 `s3_cpu::set_jit_enabled(true)` (global), `Cpu::set_jit(Some(bool))` (per CPU, tests). `s3_cpu::jit_available()`,
 `jit_enabled()`, `jit_stats()` (counters; `s3det` prints them when the JIT is on). Android: `<data dir>/jit.txt`
 containing `1` ([android.md](android.md)). Debug: `S3_JIT_DUMP=1` appends

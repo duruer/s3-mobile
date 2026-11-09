@@ -1,7 +1,8 @@
 # CI + automatic releases (docs/porting/releases.md).
 # Every push / pull request: unit tests. Push to main: semantic-release reads the Conventional Commits since the
 # last tag (feat -> minor, fix/perf -> patch, "!" or BREAKING CHANGE -> major; docs/chore/refactor/test -> no
-# release), builds the Android APK with that version, signs it with the release key and publishes a GitHub release.
+# release), builds the Android APK with that version, signs it with the release key and publishes a GitHub release;
+# then ios.yml adds the unsigned iOS .ipa to it.
 # SPDX-License-Identifier: GPL-3.0-or-later
 name: release
 
@@ -44,6 +45,8 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+    outputs:
+      version: ${{ steps.sr.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,6 +84,7 @@ jobs:
           echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
           echo "S3_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
       - name: semantic-release
+        id: sr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           S3_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
@@ -91,3 +95,13 @@ jobs:
       - name: Remove release key
         if: always()
         run: rm -f "$RUNNER_TEMP/release.keystore"
+
+  # After a new release: the unsigned iOS .ipa from a macOS runner, uploaded to the same release.
+  ios:
+    needs: release
+    if: needs.release.outputs.version != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/ios.yml
+    with:
+      version: ${{ needs.release.outputs.version }}

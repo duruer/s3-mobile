@@ -34,7 +34,7 @@ layout that fits a wide phone screen, and an easy way to copy your game onto the
   The app never downloads or contains any part of the game.
 - A computer (Windows, macOS or Linux) with the game installed, to copy the game folder from.
 - **Android:** a phone with Android 8.0 or newer (64-bit). A recent phone gives the smoothest play.
-- **iPhone:** iOS 17 or newer. See [iPhone](#iphone) below, it takes a few more steps.
+- **iPhone / iPad:** iOS 17 or newer, plus a computer to install the app from. See [iPhone](#iphone) below.
 
 ## Get started on Android
 
@@ -56,12 +56,18 @@ layout that fits a wide phone screen, and an easy way to copy your game onto the
 
 ## iPhone
 
-There is no App Store version. An iPhone only runs apps from the App Store or apps that you sign yourself, so
-the iPhone version has to be installed from a computer with your own (free) Apple ID. Apps signed with a free
-Apple ID stop opening after 7 days and must be installed again; your game files and save games stay on the
-phone.
+There is no App Store version. An iPhone only runs apps from the App Store or apps signed with your own Apple ID,
+so the iPhone version is installed from a computer:
 
-How to build and install it, step by step: [docs/porting/ios.md](docs/porting/ios.md).
+1. Download the latest **`.ipa`** file from the [Releases page](https://github.com/duruer/s3-mobile/releases/latest)
+   to your computer.
+2. Install it with a sideloading tool such as [Sideloadly](https://sideloadly.io/) or
+   [AltStore](https://altstore.io/): connect the iPhone, drop the `.ipa` in, sign in with your own Apple ID.
+3. On the iPhone, allow the app under *Settings > General > VPN & Device Management*, and turn on
+   *Settings > Privacy & Security > Developer Mode* if iOS asks for it.
+
+With a free Apple ID the app stops opening after 7 days and must be installed again the same way. Your game
+files and save games stay on the phone. Developers can also build it themselves: [docs/porting/ios.md](docs/porting/ios.md).
 
 Copying the game works like on Android: **Game files > Start upload server**, or put the folder into the Files
 app under *On My iPhone > S3 Mobile > Settlers3*, or pick a folder you already have in the Files app.

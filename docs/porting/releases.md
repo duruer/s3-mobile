@@ -34,7 +34,20 @@ notice). Write `feat`/`fix` subjects so a player understands them.
 
 Nothing is committed back to `main` (no version bump commits); the tag is the source of truth.
 
-No iOS asset: an xtool build is signed with a personal Apple ID profile (Team ID + device UDID inside).
+**iOS asset** (since 2026-11-09): after a new release the `ios` job calls [`ios.yml`](../../.github/workflows/ios.yml)
+(macOS runner, `macos-15`), which runs [`.github/release/build-ipa.sh`](../../.github/release/build-ipa.sh) on the
+release tag and uploads `s3-mobile-<version>-ios-unsigned.ipa`:
+
+- no xtool and no Apple account: `cargo rustc -p s3-ios --crate-type staticlib -- --print native-static-libs`
+  (`CARGO_TERM_COLOR=never`, the line is parsed), `swiftc -parse-as-library` over `port/ios/Sources/S3Mobile/*.swift`
+  with a generated `module.modulemap` for `CS3iOS`, bundle = our `Info.plist` + the keys `xtool dev build` adds
+  (checked against an xtool bundle) + `AppIcon.png`, ad-hoc `codesign -s -`, zip `Payload/`.
+- No provisioning profile, Team ID or UDID inside (an xtool build has them, so never publish that one). Users
+  re-sign with Sideloadly / AltStore and their own Apple ID.
+- Version: semantic-release `successCmd` writes `version=` to `$GITHUB_OUTPUT`; job output of `release`.
+- Manual test build: Actions -> ios -> Run workflow (`version` e.g. `0.0.0-test`, `upload` off) -> artifact `ipa`.
+- macOS arm64 runners can be short: one run waited 15 min and was cancelled ("not acquired by Runner"); rerun it.
+- First CI build 2026-11-09: 4 MB `.ipa`; NOT yet installed on a phone through Sideloadly/AltStore.
 
 ## Signing key
 
