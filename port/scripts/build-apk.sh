@@ -58,6 +58,13 @@ targs=()
 for a in "${ABIS[@]}"; do targs+=(-t "$a"); done
 cargo_flags=(-p s3-android -j "$JOBS" ${FEATURES[@]+"${FEATURES[@]}"})
 [ "$PROFILE" = release ] && cargo_flags+=(--release)
+# Keep the builder's home folder (user name) out of the panic/debug paths in the published .so.
+CHOME="${CARGO_HOME:-$HOME/.cargo}"
+remap=("--remap-path-prefix=$CHOME=~/.cargo" "--remap-path-prefix=$PORT=port")
+if command -v cygpath >/dev/null; then
+  remap+=("--remap-path-prefix=$(cygpath -w "$CHOME")=~/.cargo" "--remap-path-prefix=$(cygpath -w "$PORT")=port")
+fi
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }${remap[*]}"
 echo "== cargo ndk ${ABIS[*]} ($PROFILE)"
 (cd "$PORT" && cargo ndk "${targs[@]}" --platform 26 build "${cargo_flags[@]}")
 

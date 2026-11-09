@@ -3,6 +3,14 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-09 (b) — README, first release v0.1.0
+
+- `README.md` for end users (logo `docs/assets/logo.png` = our own icon, rounded; install, copy game files, controls,
+  legal notice). No game screenshots (copyrighted art); old launcher shots showed the old name and a real LAN IP.
+- `build-apk.sh`: `--remap-path-prefix` so the release `.so` has no local user paths (checked: 0 hits) -> [android](porting/android.md).
+- Release `v0.1.0`: Android arm64 APK only. No iOS `.ipa`: an xtool build is signed with the developer's free
+  Apple ID profile (Team ID + device UDID inside), so iPhone users build it themselves ([ios](porting/ios.md)).
+
 ## 2026-11-09 — History cleaned for publishing (repo s3-mobile)
 
 - Full-history scan (every blob): no game files, no decompiled code (only Ghidra `FUN_xxxxxxxx` address labels and

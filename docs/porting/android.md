@@ -82,6 +82,12 @@ Steps in the script: `cargo ndk -t arm64-v8a -t x86_64 --platform 26 build --rel
 `apksigner sign` + `verify`. Runs on Linux and on Windows Git Bash (2026-11-07: SDK `%LOCALAPPDATA%\Android\Sdk`, NDK prebuilt `windows-x86_64`, `.exe`/`.bat` tool suffixes, `python` instead of `python3`, libs added with Python `zipfile` stored since there is no `zip`). Tools: build-tools 36.0.0, NDK 27.2.12479018, cargo-ndk 4.1 in `~/.cargo/bin`.
 The script refuses to build with less than 2 GB free disk.
 
+Release builds (2026-11-09): `build-apk.sh` passes `--remap-path-prefix` (cargo home -> `~/.cargo`, `port/` -> `port`)
+so panic/debug paths in the published `.so` do not contain the builder's user name. Published APKs are signed with the
+same key as personal installs (`port/target/debug.keystore`, gitignored); keep a backup of it outside `port/target`
+(`cargo clean` deletes it, and a new key means users must uninstall = lose their game files). Release asset name:
+`s3-mobile-<version>-android-arm64.apk`.
+
 Host unit tests (letterbox math, MotionEvent -> pointer events, audio ring/resampler, key map + chars, status and first-run screens, Host impl):
 `CARGO_TARGET_DIR=port/target cargo test -p s3-android -j 4` (on Windows add `--lib`: the cdylib cannot link the GLES/EGL symbols for the host).
 
