@@ -90,8 +90,8 @@ fi
 VERSION_FLAGS=()
 if [ -n "${S3_VERSION:-}" ]; then
   IFS=. read -r vmaj vmin vpat <<<"${S3_VERSION%%-*}"
-  VERSION_FLAGS=(--version-name "$S3_VERSION" --version-code $((vmaj * 10000 + vmin * 100 + vpat)))
-  echo "== version $S3_VERSION (versionCode ${VERSION_FLAGS[3]})"
+  VERSION_FLAGS=(--replace-version --version-name "$S3_VERSION" --version-code $((vmaj * 10000 + vmin * 100 + vpat)))
+  echo "== version $S3_VERSION (versionCode ${VERSION_FLAGS[4]})"
 fi
 "$BT/aapt2$EXE" link -o "$OUT/unsigned.apk" -I "$PLATFORM_JAR" \
   --manifest "$PORT/android/AndroidManifest.xml" ${VERSION_FLAGS[@]+"${VERSION_FLAGS[@]}"} \

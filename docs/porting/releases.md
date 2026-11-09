@@ -29,7 +29,7 @@ notice). Write `feat`/`fix` subjects so a player understands them.
 - launcher shows `v<version>` (`s3_frontend::VERSION`, `option_env!("S3_VERSION")`; local builds show the workspace
   version from `port/Cargo.toml`),
 - APK `versionName` = version, `versionCode` = `major*10000 + minor*100 + patch` (aapt2 `--version-name/--version-code`;
-  the manifest's `versionCode="1"` is only for local builds),
+  needs `--replace-version`, without it aapt2 keeps the manifest's `versionCode="1"`/`0.1.0`; v0.1.1 shipped like that),
 - asset `dist/s3-mobile-<version>-android-arm64.apk`, attached to the GitHub release `v<version>`.
 
 Nothing is committed back to `main` (no version bump commits); the tag is the source of truth.
@@ -56,3 +56,11 @@ and `gh secret set ANDROID_KEYSTORE_PASS --repo duruer/s3-mobile`.
 ## Manual release
 
 `v0.1.0` was made by hand (`gh release create`). To re-run a release: Actions -> release -> Run workflow.
+
+## Local builds after a release
+
+A local `build-apk.sh` without `S3_VERSION` has `versionCode` 1, lower than any release, so `adb install -r` over an
+installed release fails (downgrade). Build with `S3_VERSION=<release version or higher>` or install with
+`adb install -r -d`. Never uninstall instead (deletes the game files).
+
+The key password secret is the word `android`, so GitHub masks that word as `***` in the job logs (cosmetic).
