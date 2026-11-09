@@ -347,9 +347,15 @@ plain key events, which arrive through the normal input queue. Verified on the e
 "Name of the Game" field: 4x soft Backspace deleted "game", soft `h` `i` typed, `adb shell input text "Bob1"`
 (Shift meta for the capital) gave "Player's hiBob1" (`scratch/android-shots/ux-ime-s.png`, `ux-typed-s.png`).
 The game window is not resized for the IME (it covers the lower half; the field in Game Setup stays visible).
-The serial number field (y 276..300 of the 800x600 menu) can end up under the keyboard on a landscape phone:
-typing and Enter still work, the digits are visible once the keyboard closes. Next step: shrink the game area to
-the space above the IME (`WindowInsets` ime bottom -> a smaller window height for the `Viewport`).
+**Keyboard pan** (2026-11-09): the serial number field (y 276..300 of the 800x600 menu; the menu layout shows the
+popup centred and enlarged, rows ~500..563 of 904 on a 2316x904 phone) was under a landscape keyboard. Like
+`adjustPan`, the presenter now moves the whole picture (frame + window layer) up while the keyboard is open for a
+game text field: `s3_mods::text_input::focused_field` -> `Shared::text_field` (engine sync), keyboard height
+`getRootWindowInsets().getInsets(WindowInsets.Type.ime()).bottom` -> `Shared::ime_h` (UI thread; API < 30: half
+the view height; polled every 100 ms for 2 s after a request, then once a second), `s3_frontend::ime::keyboard_pan`
+(field bottom + margin above the keyboard, field top kept in the window) -> `glViewport(0, pan_y, ..)` and
+`Shared::pan_y`, which the touch mapping adds to the finger's window y. The CPU fallback path does not move.
+Unit-tested (`ime::tests`), not seen on a phone yet.
 Note: with the emulator's `hw.keyboard=yes` the soft keyboard still showed.
 
 **Back / Esc in the game itself** (same on desktop s3run, so game behaviour, not Android): in the **main menu**

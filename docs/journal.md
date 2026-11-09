@@ -16,8 +16,11 @@ Newest first. One entry per session: what was done, what was learned, links to d
   -> hide; any exe of the 1.60 build (byte check). `KeyboardRequest` Show/Hide/Toggle through `Shared::keyboard_req`
   (`AtomicU8`) to Android / iOS -> [android](porting/android.md) "Soft keyboard". Tests added; desktop flows verified
   by log; APK builds; not yet seen on a phone (no emulator on the ARM64 machine).
-- Open: IME can cover the serial field; GOG exe without `regs.cmd` stores the typed serial encrypted (HYPOTHESIS:
-  asks again next start) -> [progress](progress/serial-keyboard.md).
+- Keyboard pan: the serial popup is centred + enlarged by the menu layout (rows ~500..563 of 904 on a wide
+  phone), under a landscape keyboard. The presenter now moves frame + layer up (`glViewport` origin) while the
+  keyboard is open for a game field; touch adds the same `pan_y` (`s3-frontend/src/ime.rs`, android.md).
+- Open: GOG exe without `regs.cmd` stores the typed serial encrypted (HYPOTHESIS: asks again next start); iOS
+  keyboard pan -> [progress](progress/serial-keyboard.md).
 
 ## 2026-11-09 (c) — automatic releases (semantic-release), iOS .ipa in CI, no JIT on iOS
 

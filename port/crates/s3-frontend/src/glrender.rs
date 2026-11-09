@@ -228,10 +228,13 @@ impl GlRenderer {
         p
     }
 
-    pub unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter, insets: &[([f32; 4], [f32; 4])]) {
+    /// Draw the frame for `vp`, the whole picture moved up by `pan_y` window pixels (soft keyboard, `crate::ime`;
+    /// the layer drawn next uses the same GL viewport, so it moves with it).
+    pub unsafe fn draw(&mut self, vp: &Viewport, filter: ScaleFilter, insets: &[([f32; 4], [f32; 4])], pan_y: i32) {
         let ai = self.ai_frame(vp, filter);
         let (ww, wh) = (vp.win_w as f32, vp.win_h as f32);
-        glViewport(0, 0, vp.win_w as i32, vp.win_h as i32);
+        // GL window y grows upwards: a viewport origin `pan_y` above the bottom moves the picture up.
+        glViewport(0, pan_y, vp.win_w as i32, vp.win_h as i32);
         match vp.layout.map(|l| l.background) {
             Some(Background::Color([r, g, b])) => glClearColor(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0),
             _ => glClearColor(0.0, 0.0, 0.0, 1.0),
@@ -495,7 +498,14 @@ impl Composer {
         }
         r.upload(fb);
         let insets = if layer_fits { p.scene.list.insets() } else { Vec::new() };
-        r.draw(&vp, if p.game_frame { display.filter } else { ScaleFilter::Linear }, &insets);
+        // Keep the game text field the soft keyboard is open for above the keyboard.
+        let field = *shared.text_field.lock().unwrap();
+        let pan = match field {
+            Some(f) if p.game_frame => crate::ime::keyboard_pan(&vp, f, shared.ime_h.load(Ordering::Acquire)),
+            _ => 0,
+        };
+        shared.pan_y.store(pan, Ordering::Release);
+        r.draw(&vp, if p.game_frame { display.filter } else { ScaleFilter::Linear }, &insets, pan);
         if layer_fits {
             r.upload_layer(&self.raster, self.layer_dirty.take());
             if !self.raster.is_empty() {

@@ -15,6 +15,8 @@ use jni::objects::{JObject, JValue};
 use jni::{jni_sig, jni_str, Env, JavaVM};
 use ndk::looper::FdEvent;
 
+use crate::frontend::Shared;
+
 type Job = Box<dyn for<'a> FnOnce(&mut Env<'a>, &JObject<'a>) -> jni::errors::Result<()> + Send>;
 
 #[derive(Clone)]
@@ -105,21 +107,28 @@ impl UiThread {
         }));
     }
 
-    /// Update `state` with the real IME visibility (the user can close the keyboard with Back or its own button).
-    pub fn refresh_keyboard(&self, state: Arc<Mutex<bool>>) {
+    /// Update `state` with the real IME visibility (the user can close the keyboard with Back or its own button)
+    /// and `shared.ime_h` with its height (the presenter keeps the game's text field above it, `s3_frontend::ime`).
+    pub fn refresh_keyboard(&self, state: Arc<Mutex<bool>>, shared: Arc<Shared>) {
         self.run("keyboard state", Box::new(move |env, act| {
             let win = env.call_method(act, jni_str!("getWindow"), jni_sig!("()Landroid/view/Window;"), &[])?.l()?;
             let decor = env.call_method(&win, jni_str!("getDecorView"), jni_sig!("()Landroid/view/View;"), &[])?.l()?;
             if let Some(v) = ime_visible(env, &decor) {
                 *state.lock().unwrap() = v;
             }
+            let visible = *state.lock().unwrap();
+            let h = if visible { ime_height(env, &decor) } else { 0 };
+            if shared.ime_h.load(std::sync::atomic::Ordering::Acquire) != h {
+                log::info!("soft keyboard: {} px high", h);
+            }
+            shared.set_ime_height(h);
             Ok(())
         }));
     }
 
     /// Show (`Some(true)`), hide (`Some(false)`) or toggle (`None`) the soft keyboard. Uses the focused view (the
     /// NativeActivity content view), like `ANativeActivity_showSoftInput`.
-    pub fn soft_keyboard(&self, want: Option<bool>, state: Arc<Mutex<bool>>) {
+    pub fn soft_keyboard(&self, want: Option<bool>, state: Arc<Mutex<bool>>, shared: Arc<Shared>) {
         self.run("soft keyboard", Box::new(move |env, act| {
             let win = env.call_method(act, jni_str!("getWindow"), jni_sig!("()Landroid/view/Window;"), &[])?.l()?;
             let decor = env.call_method(&win, jni_str!("getDecorView"), jni_sig!("()Landroid/view/View;"), &[])?.l()?;
@@ -152,6 +161,7 @@ impl UiThread {
                     )?
                     .z()?;
                 log::info!("soft keyboard: hide -> {ok}");
+                shared.set_ime_height(0);
             }
             *state.lock().unwrap() = show;
             Ok(())
@@ -219,6 +229,29 @@ impl UiThread {
             env.call_method(&win, jni_str!("setAttributes"), jni_sig!("(Landroid/view/WindowManager$LayoutParams;)V"), &[JValue::Object(&lp)])?;
             Ok(())
         }));
+    }
+}
+
+/// Soft keyboard height in window pixels: `getRootWindowInsets().getInsets(WindowInsets.Type.ime()).bottom`
+/// (API 30+). Older Android: half the view height (an estimate; the keyboard is believed open).
+fn ime_height<'a>(env: &mut Env<'a>, view: &JObject<'a>) -> u32 {
+    let q = (|| -> jni::errors::Result<i32> {
+        let ins = env.call_method(view, jni_str!("getRootWindowInsets"), jni_sig!("()Landroid/view/WindowInsets;"), &[])?.l()?;
+        if ins.is_null() {
+            return Err(jni::errors::Error::NullPtr("insets"));
+        }
+        let ime = env.call_static_method(jni_str!("android/view/WindowInsets$Type"), jni_str!("ime"), jni_sig!("()I"), &[])?.i()?;
+        let i = env.call_method(&ins, jni_str!("getInsets"), jni_sig!("(I)Landroid/graphics/Insets;"), &[JValue::Int(ime)])?.l()?;
+        env.get_field(&i, jni_str!("bottom"), jni_sig!("I"))?.i()
+    })();
+    match q {
+        Ok(h) => h.max(0) as u32,
+        Err(_) => {
+            env.exception_clear();
+            let h = env.call_method(view, jni_str!("getHeight"), jni_sig!("()I"), &[]).and_then(|v| v.i()).unwrap_or(0);
+            env.exception_clear();
+            (h.max(0) / 2) as u32
+        }
     }
 }
 

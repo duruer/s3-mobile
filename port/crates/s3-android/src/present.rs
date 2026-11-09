@@ -385,6 +385,7 @@ fn render_thread(ctl: Arc<Ctl>, shared: Arc<Shared>) {
                 Err(e) => log::error!("ANativeWindow_lock: {e}"),
             }
             *shared.letterbox.lock().unwrap() = Some(lb);
+            shared.pan_y.store(0, Ordering::Release); // the CPU path does not move the picture for the keyboard
             shared.set_viewport(if picked.game_frame { Some(Viewport::new(DisplayMode::Fit, fb.width, fb.height, win_size.0, win_size.1)) } else { None });
         }
         // 3. Display rate.

@@ -30,7 +30,11 @@ No emulator on the ARM64 dev machine and no phone attached: not seen on Android 
 Next:
 1. Build APK (`port/scripts/build-apk.sh`), check on our AVD with a game dir without `regs.cmd`
    (`game-dir.txt` override in the data dir) that the keyboard appears by itself.
-2. Known gap: the IME covers the lower half; the serial field (y 276..300 of 600) may be under it on a landscape
-   phone. Typing + Enter still works. Fix later: shrink the game area above the IME (Viewport with win_h - ime_h).
+2. DONE in code (2026-11-09, second commit): keyboard pan. `s3-frontend/src/ime.rs` `keyboard_pan(vp, field,
+   ime_h)`; `Shared::{ime_h, text_field, pan_y}`; `GlRenderer::draw(.., pan_y)` -> `glViewport(0, pan_y, ..)`
+   (frame + layer move up); Android touch adds `pan_y` to the window y; `UiThread::refresh_keyboard` reads
+   `getInsets(ime()).bottom` (API < 30: half the view height), polled every 100 ms for 2 s after a request.
+   Tests `ime::tests::*` (incl. the real `main-menu+msg-box` layout at 2316x904). Not seen on a phone.
+   iOS: shared draw path, but nothing sets `ime_h` yet (no move).
 3. GOG exe without regs.cmd: the typed serial is stored encrypted and the GOG exe (decoder NOPed) cannot read it
    back -> HYPOTHESIS: asks again every start. Possible fix: decode the write (XOR, `imul 0FED42531h`, HKCR Seed).

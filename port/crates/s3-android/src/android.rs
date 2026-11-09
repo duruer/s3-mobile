@@ -140,6 +140,8 @@ fn android_main(app: AndroidApp) {
     // Refresh rate asked from the window manager (preferredDisplayModeId / preferredRefreshRate), per setting.
     let mut prefs_hz: Option<u32> = None;
     let mut kb_checked = 0u64;
+    // Until then the keyboard state + height is checked every 100 ms (the keyboard slides in after a request).
+    let mut kb_fast_until = 0u64;
     let mut finishing = false;
     // Fingers -> raw pointer events; gestures are recognized by s3-mods on the engine thread.
     let mut pointers = PointerFilter::default();
@@ -160,7 +162,7 @@ fn android_main(app: AndroidApp) {
     while !quit {
         let mut wait = 250;
         if *kb_visible.lock().unwrap() {
-            wait = wait.min(1000);
+            wait = wait.min(if now_ms(t0) < kb_fast_until { 100 } else { 1000 });
         }
         app.poll_events(Some(Duration::from_millis(wait)), |event| match event {
             PollEvent::Main(main) => match main {
@@ -308,7 +310,9 @@ fn android_main(app: AndroidApp) {
                         };
                         let idx = me.pointer_index();
                         let p = me.pointer_at_index(idx);
-                        let win = (p.x(), p.y());
+                        // The picture is moved up by `pan_y` while the keyboard is open for a game text field.
+                        let pan = shared.pan_y.load(Ordering::Acquire) as f32;
+                        let win = (p.x(), p.y() + pan);
                         let game = to_game(win.0, win.1);
                         // Game + window position (window-layer UI hit-tests in window pixels).
                         let pos = |x: f32, y: f32| {
@@ -348,7 +352,7 @@ fn android_main(app: AndroidApp) {
                             log::info!("touch down at window ({:.0},{:.0}) -> game {:?}", win.0, win.1, game);
                         }
                         let all: Vec<(i32, crate::touch::Pos)> =
-                            me.pointers().map(|q| (q.pointer_id(), pos(q.x(), q.y()))).collect();
+                            me.pointers().map(|q| (q.pointer_id(), pos(q.x(), q.y() + pan))).collect();
                         for ev in pointer_events(action, (p.pointer_id(), pos(win.0, win.1)), &all) {
                             if pointers.keep(&ev) {
                                 shared.push_event(ev);
@@ -410,16 +414,19 @@ fn android_main(app: AndroidApp) {
             };
             log::info!("soft keyboard request {kb} ({want:?}; None = toggle)");
             if let Some(u) = &ui_thread {
-                u.soft_keyboard(want, kb_visible.clone());
+                u.soft_keyboard(want, kb_visible.clone(), shared.clone());
             }
+            kb_fast_until = now_ms(t0) + 2000;
         }
         {
             let t = now_ms(t0);
-            // While the keyboard is believed open, check once a second whether the user closed it.
-            if *kb_visible.lock().unwrap() && t >= kb_checked + 1000 {
+            // While the keyboard is believed open, check once a second whether the user closed it (and its
+            // height; every 100 ms for 2 s after a request, while it slides in).
+            let every = if t < kb_fast_until { 100 } else { 1000 };
+            if *kb_visible.lock().unwrap() && t >= kb_checked + every {
                 kb_checked = t;
                 if let Some(u) = &ui_thread {
-                    u.refresh_keyboard(kb_visible.clone());
+                    u.refresh_keyboard(kb_visible.clone(), shared.clone());
                 }
             }
             // Display cutout + high refresh display mode (window manager side; the presenter also asks the surface).
@@ -518,7 +525,7 @@ fn android_main(app: AndroidApp) {
                         shared.set_status(crate::frontend::Phase::Starting, "Starting", "Loading the game ...");
                         if *kb_visible.lock().unwrap() {
                             if let Some(u) = &ui_thread {
-                                u.soft_keyboard(Some(false), kb_visible.clone());
+                                u.soft_keyboard(Some(false), kb_visible.clone(), shared.clone());
                             }
                         }
                         let sh = shared.clone();
@@ -544,7 +551,7 @@ fn android_main(app: AndroidApp) {
                     Request::Play => {}
                     Request::Keyboard(show) => {
                         if let Some(u) = &ui_thread {
-                            u.soft_keyboard(Some(show), kb_visible.clone());
+                            u.soft_keyboard(Some(show), kb_visible.clone(), shared.clone());
                         }
                     }
                     // iOS only (folder picker).

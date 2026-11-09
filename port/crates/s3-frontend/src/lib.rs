@@ -16,6 +16,7 @@ pub const VERSION: &str = match option_env!("S3_VERSION") {
 pub mod audio;
 pub mod background;
 pub mod frontend;
+pub mod ime;
 pub mod keys;
 pub mod launcher;
 pub mod layout;

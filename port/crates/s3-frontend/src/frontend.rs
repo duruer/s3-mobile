@@ -7,7 +7,7 @@
 //! - engine thread: [`run_engine`] — waits for S3.EXE, builds the [`Engine`], runs it in slices while not paused.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -77,6 +77,14 @@ pub struct Shared {
     pub display_seq: AtomicU64,
     /// Presenter -> UI (touch mapping) and engine (mods): viewport of the shown frame, `viewport_seq` on change.
     pub viewport: Mutex<Option<Viewport>>,
+    /// UI thread -> presenter: soft keyboard height in window pixels (0 = hidden or unknown).
+    pub ime_h: AtomicU32,
+    /// Engine (`s3_mods::text_input`) -> presenter: game rect (left, top, right, bottom) of the text field the
+    /// keyboard was opened for.
+    pub text_field: Mutex<Option<[i32; 4]>>,
+    /// Presenter -> touch mapping: window pixels the picture is moved up to keep that field above the keyboard
+    /// (`crate::ime`); finger window y + `pan_y` = y in the unmoved picture.
+    pub pan_y: AtomicI32,
     pub viewport_seq: AtomicU64,
     /// Presenter -> UI: CPU fallback letterbox (only when EGL failed; touch mapping uses it).
     pub letterbox: Mutex<Option<crate::layout::Letterbox>>,
@@ -150,6 +158,9 @@ impl Shared {
             display: Mutex::new(DisplaySettings::default()),
             display_seq: AtomicU64::new(0),
             viewport: Mutex::new(None),
+            ime_h: AtomicU32::new(0),
+            text_field: Mutex::new(None),
+            pan_y: AtomicI32::new(0),
             viewport_seq: AtomicU64::new(0),
             letterbox: Mutex::new(None),
             host_fps: AtomicU32::new(0),
@@ -199,6 +210,26 @@ impl Shared {
     }
 
     /// Presenter side: publish the viewport of the shown frame.
+    /// UI thread: soft keyboard height (window pixels, 0 = hidden); a change redraws (the picture moves).
+    pub fn set_ime_height(&self, h: u32) {
+        if self.ime_h.swap(h, Ordering::AcqRel) != h {
+            self.display_seq.fetch_add(1, Ordering::AcqRel);
+            self.notify_render();
+        }
+    }
+
+    /// Engine side: the game text field the keyboard is for (`None` = none); a change redraws.
+    pub fn set_text_field(&self, r: Option<[i32; 4]>) {
+        let changed = {
+            let mut cur = self.text_field.lock().unwrap();
+            std::mem::replace(&mut *cur, r) != r
+        };
+        if changed {
+            self.display_seq.fetch_add(1, Ordering::AcqRel);
+            self.notify_render();
+        }
+    }
+
     pub fn set_viewport(&self, vp: Option<Viewport>) {
         let mut cur = self.viewport.lock().unwrap();
         if *cur != vp {
@@ -626,9 +657,11 @@ pub fn background_fps(cap: Option<u32>) {
 #[cfg(not(feature = "engine"))]
 pub fn background_fps(_cap: Option<u32>) {}
 
-/// Pass the mod layer's soft keyboard request (text field, three-finger tap) to the UI thread.
+/// Pass the mod layer's soft keyboard request (text field, three-finger tap) to the UI thread, and the field the
+/// keyboard is for to the presenter (kept above the keyboard).
 #[cfg(feature = "engine")]
 fn sync_touch_flags(shared: &Shared, m: &mut s3_runtime::Machine) {
+    shared.set_text_field(s3_mods::text_input::focused_field(m));
     if let Some(r) = s3_mods::take_keyboard_request(m) {
         shared.keyboard_req.store(r as u8, Ordering::Release);
         (shared.wake)();

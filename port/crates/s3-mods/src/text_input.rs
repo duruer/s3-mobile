@@ -61,10 +61,21 @@ fn editable(m: &mut Machine, obj: u32) -> bool {
 }
 
 fn show_for(m: &mut Machine, obj: u32, why: &str) {
-    let r: [i32; 4] = std::array::from_fn(|i| m.mem.read_u32(obj + OFF_RECT + 4 * i as u32) as i32);
+    let r = rect(m, obj);
     m.log(LogLevel::Info, &format!("text input: {why} (edit {obj:#x}, rect {r:?}) -> show keyboard"));
     m.state::<TextInputState>().borrow_mut().owner = Some(obj);
     crate::request_keyboard(m, KeyboardRequest::Show);
+}
+
+/// Screen rect (left, top, right, bottom; menu frame pixels) of the field the keyboard was shown for, while it
+/// owns the keyboard. The frontend keeps it above the keyboard (`s3_frontend::ime`).
+pub fn focused_field(m: &mut Machine) -> Option<[i32; 4]> {
+    let obj = m.state::<TextInputState>().borrow_mut().owner?;
+    Some(rect(m, obj))
+}
+
+fn rect(m: &mut Machine, obj: u32) -> [i32; 4] {
+    std::array::from_fn(|i| m.mem.read_u32(obj + OFF_RECT + 4 * i as u32) as i32)
 }
 
 /// Hide the keyboard if it was shown for `obj`.
