@@ -17,12 +17,12 @@ pub mod fpu;
 mod exec;
 mod fast;
 mod flags;
-#[cfg(all(feature = "jit", target_arch = "aarch64"))]
+#[cfg(s3_jit)]
 mod jit;
 
 #[cfg(all(test, target_arch = "x86_64"))]
 mod diff_tests;
-#[cfg(all(test, feature = "jit", target_arch = "aarch64"))]
+#[cfg(all(test, s3_jit))]
 mod jit_tests;
 #[cfg(test)]
 mod tests;
@@ -236,7 +236,7 @@ pub struct DecodeCache {
     /// Native fast paths (looked up when a block is decoded).
     natives: Option<std::sync::Arc<NativeBlocks>>,
     /// JIT state (code arena, links), created on the first compile.
-    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    #[cfg(s3_jit)]
     jit: Option<Box<jit::Jit>>,
     /// Per-CPU JIT switch: 0 = global setting (`S3_JIT` / [`set_jit_enabled`]), 1 = off, 2 = on.
     jit_mode: u8,
@@ -259,7 +259,7 @@ impl DecodeCache {
         self.blocks.clear();
         self.map.clear();
         self.l1.clear();
-        #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+        #[cfg(s3_jit)]
         if let Some(j) = &mut self.jit {
             j.reset();
         }
@@ -280,7 +280,7 @@ impl DecodeCache {
             self.l1.clear();
             // JIT: compiled blocks branch to each other directly, so drop all JIT code (rare: S3.EXE has no
             // self-modifying code).
-            #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+            #[cfg(s3_jit)]
             if let Some(j) = &mut self.jit {
                 for b in self.blocks.iter_mut() {
                     b.jit = 0;
@@ -505,7 +505,7 @@ fn decode_block(eip: u32, mem: &GuestMemory, generic_only: bool, hooks: Option<&
 ///
 /// # Safety
 /// `bp` must be a block of `cache`.
-#[cfg(all(feature = "jit", target_arch = "aarch64"))]
+#[cfg(s3_jit)]
 #[cold]
 #[inline(never)]
 unsafe fn jit_compile(cache: &mut DecodeCache, bp: *mut Block) -> usize {
@@ -543,9 +543,9 @@ unsafe fn jit_compile(cache: &mut DecodeCache, bp: *mut Block) -> usize {
 /// Switch the JIT on or off for all CPUs (overrides env `S3_JIT`; takes effect at the next `Cpu::run`). Does
 /// nothing in builds without JIT ([`jit_available`]).
 pub fn set_jit_enabled(on: bool) {
-    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    #[cfg(s3_jit)]
     jit::set_enabled(on);
-    #[cfg(not(all(feature = "jit", target_arch = "aarch64")))]
+    #[cfg(not(s3_jit))]
     let _ = on;
 }
 
@@ -564,22 +564,22 @@ pub fn cpu_run_seconds() -> f64 {
 
 /// JIT counters of this process (one line of text; empty without JIT).
 pub fn jit_stats() -> String {
-    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    #[cfg(s3_jit)]
     return jit::stats();
-    #[cfg(not(all(feature = "jit", target_arch = "aarch64")))]
+    #[cfg(not(s3_jit))]
     String::new()
 }
 
 /// Whether this build has the JIT (cargo feature `jit` on aarch64).
 pub fn jit_available() -> bool {
-    cfg!(all(feature = "jit", target_arch = "aarch64"))
+    cfg!(s3_jit)
 }
 
 /// Whether the JIT is currently switched on (env `S3_JIT=1` or [`set_jit_enabled`]).
 pub fn jit_enabled() -> bool {
-    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    #[cfg(s3_jit)]
     return jit::enabled();
-    #[cfg(not(all(feature = "jit", target_arch = "aarch64")))]
+    #[cfg(not(s3_jit))]
     false
 }
 
@@ -762,13 +762,13 @@ impl Cpu {
         let mut left = max_instructions;
         // Previous block (for chaining), null = none.
         let mut prev: *mut Block = std::ptr::null_mut();
-        #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+        #[cfg(s3_jit)]
         let jit_on = match cache.jit_mode {
             2 => true,
             1 => false,
             _ => jit::enabled(),
         } && !cache.generic_only;
-        #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+        #[cfg(s3_jit)]
         let jit_thr = cache.jit_thr.unwrap_or(jit::THRESHOLD);
         let exit = 'run: loop {
             let eip = self.eip;
@@ -830,7 +830,7 @@ impl Cpu {
             }
             let n = blk.n as u64;
             if n <= left {
-                #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+                #[cfg(s3_jit)]
                 if jit_on && blk.jit != 1 && !blk.hooked {
                     let code = if blk.jit != 0 {
                         blk.jit
@@ -878,7 +878,7 @@ impl Cpu {
 
     /// Enter JIT code at `code` (a compiled block whose instruction count fits `left`) and run until it exits.
     /// `None` = continue the run loop at `self.eip`; `Some(exit)` = a failing instruction ended the run.
-    #[cfg(all(feature = "jit", target_arch = "aarch64"))]
+    #[cfg(s3_jit)]
     #[inline(never)]
     fn run_jit(
         &mut self,

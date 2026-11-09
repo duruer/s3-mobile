@@ -8,8 +8,8 @@ publish.workspace = true
 
 [features]
 default = ["jit"]
-# Optional AArch64 JIT (src/jit/, compiled only on aarch64; switched on at run time with S3_JIT=1). Leave it out
-# for iOS (no JIT allowed): `--no-default-features`.
+# Optional AArch64 JIT (src/jit/, compiled only on aarch64 and never on iOS, see build.rs: cfg(s3_jit);
+# switched on at run time with S3_JIT=1).
 jit = []
 
 [dependencies]
