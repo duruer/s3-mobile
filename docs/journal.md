@@ -3,6 +3,13 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-09 — App renamed to "S3 Mobile"
+
+- User request: the app name no longer uses the "Settlers" trademark. Android label, notifications, iOS display name,
+  launcher title, upload page, status screen, DirectPlay provider names ("Internet (S3 Mobile)", "Local network /
+  Wi-Fi (S3 Mobile)"), log lines. Package / bundle id (`com.settlers3port.app`) unchanged so installs update in
+  place and keep their game files.
+
 ## 2026-11-09 — iOS: first install on the iPhone (ios)
 
 - `xtool auth login` (free Apple ID; xtool asks for SMS only when the account has no trusted devices, so the user

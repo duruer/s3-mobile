@@ -1,4 +1,4 @@
-# Settlers 3 Mobile — umbrella (start here)
+# S3 Mobile — umbrella (start here)
 
 Goal: play **The Settlers III** (GOG "Ultimate Collection") on **Android first, iOS later**, running the
 **original game code and data** that the user supplies — not a rewrite (unlike JSettlers). Same idea as

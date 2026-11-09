@@ -22,7 +22,7 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
-        android:label="Settlers 3 Mobile"
+        android:label="S3 Mobile"
         android:icon="@drawable/ic_launcher"
         android:hasCode="true"
         android:extractNativeLibs="false"
@@ -32,7 +32,7 @@
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
         <activity
             android:name="android.app.NativeActivity"
-            android:label="Settlers 3 Mobile"
+            android:label="S3 Mobile"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
             android:resizeableActivity="true"

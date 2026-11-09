@@ -34,7 +34,7 @@ AI filter falls back to sharp bilinear on iOS.
 - Audio: `AVAudioSourceNode` pulls interleaved i16 stereo 44100 Hz (`s3ios_audio_pull`) and converts to float.
 - Background: scene phase not active -> `s3ios_set_background(1)`: the game pauses (no background play on iOS yet:
   iOS stops apps without a background mode), audio engine paused.
-- Files: `Documents/Settlers3/` = game dir (Files app "On My iPhone > Settlers 3 Mobile", `UIFileSharingEnabled`,
+- Files: `Documents/Settlers3/` = game dir (Files app "On My iPhone > S3 Mobile", `UIFileSharingEnabled`,
   or the launcher's upload server), `Documents/Data/` = settings + `log.txt` of the last run. Both are deleted with
   the app (re-signing after 7 days keeps them).
 - Game folder outside the app: launcher > Game files > "Choose game folder..." opens `UIDocumentPickerViewController`

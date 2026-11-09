@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>Settlers 3 Mobile</string>
+    <string>S3 Mobile</string>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationLandscapeLeft</string>
@@ -30,6 +30,6 @@
     <true/>
     <!-- LAN games (relay + UDP discovery) and the upload server. -->
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Settlers 3 Mobile finds and joins LAN games and receives your game files from a browser on this network.</string>
+    <string>S3 Mobile finds and joins LAN games and receives your game files from a browser on this network.</string>
 </dict>
 </plist>

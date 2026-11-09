@@ -550,7 +550,7 @@ impl Launcher {
             tx = r.x + r.w + d(14.0);
         }
         let title = match self.page {
-            Page::Home => "Settlers 3 Mobile",
+            Page::Home => "S3 Mobile",
             Page::Settings => "Settings",
             Page::Files => "Game files",
         };
@@ -782,7 +782,7 @@ impl Launcher {
             let t = if external {
                 format!("Game folder (picked): {}", self.game_dir.display())
             } else {
-                "Game folder: the app's own folder (Files app: On My iPhone > Settlers 3 Mobile > Settlers3). It is \
+                "Game folder: the app's own folder (Files app: On My iPhone > S3 Mobile > Settlers3). It is \
                  deleted with the app; choose a folder of your own to keep the files."
                     .to_string()
             };

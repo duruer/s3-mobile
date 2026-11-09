@@ -146,7 +146,7 @@ public class GameService extends Service {
         }
         return b
             .setSmallIcon(icon())
-            .setContentTitle("Settlers 3 Mobile — running")
+            .setContentTitle("S3 Mobile — running")
             .setContentText("Tap to return")
             .setUsesChronometer(true)
             .setShowWhen(true)
@@ -162,7 +162,7 @@ public class GameService extends Service {
         String[] lines = text.split("\n");
         Notification.Builder b = new Notification.Builder(this, vibrate ? CH_EVENTS : CH_EVENTS_QUIET)
             .setSmallIcon(icon())
-            .setContentTitle(lines.length == 1 ? "Settlers 3 Mobile" : "Settlers 3 Mobile — " + lines.length + " messages")
+            .setContentTitle(lines.length == 1 ? "S3 Mobile" : "S3 Mobile — " + lines.length + " messages")
             .setContentText(lines[lines.length - 1])
             .setAutoCancel(true)
             .setGroup(GROUP_EVENTS)

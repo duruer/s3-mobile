@@ -1,4 +1,4 @@
-// Settlers 3 Mobile, iOS shell entry point (docs/porting/ios.md).
+// S3 Mobile, iOS shell entry point (docs/porting/ios.md).
 // The Rust core (libs3ios.a) does the launcher, the game and the drawing; this shell hosts it in UIKit.
 
 import SwiftUI

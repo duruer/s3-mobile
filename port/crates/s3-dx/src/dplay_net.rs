@@ -1,7 +1,7 @@
 //! DirectPlay 6 HLE on top of our relay (`s3-net`): the IDirectPlay4A methods S3.EXE uses, backed by one
 //! [`NetClient`] per machine. Design and RE: docs/porting/multiplayer.md (sections 1 and 3).
 //!
-//! * `EnumConnections` reports one connection, "Internet (Settlers 3 Mobile)" (`SP_GUID_S3PORT`).
+//! * `EnumConnections` reports one connection, "Internet (S3 Mobile)" (`SP_GUID_S3PORT`).
 //! * `InitializeConnection` connects to the relay (URL from [`NetConfig`], default env `S3_RELAY_URL` or
 //!   `ws://127.0.0.1:7777/`).
 //! * Sessions / players map 1:1 to relay sessions / players; `Receive` hands out data messages and `DPSYS_*`
@@ -23,9 +23,9 @@ use s3_runtime::{KernelObject, LogLevel, Machine, ThunkResult};
 use crate::{put_u32, ret};
 
 /// Name shown in the game's "Type of Network" list.
-pub const CONNECTION_NAME: &str = "Internet (Settlers 3 Mobile)";
+pub const CONNECTION_NAME: &str = "Internet (S3 Mobile)";
 /// Same entry in LAN mode (embedded relay + discovery, no relay URL configured).
-pub const LAN_CONNECTION_NAME: &str = "Local network / Wi-Fi (Settlers 3 Mobile)";
+pub const LAN_CONNECTION_NAME: &str = "Local network / Wi-Fi (S3 Mobile)";
 /// Opaque connection blob handed to the game (it copies it and passes it back to InitializeConnection).
 const BLOB_MAGIC: &[u8; 8] = b"S3PORTv1";
 

@@ -1,5 +1,5 @@
 // swift-tools-version: 6.0
-// Settlers 3 Mobile, iOS shell (docs/porting/ios.md). Built with xtool (`xtool dev`) after
+// S3 Mobile, iOS shell (docs/porting/ios.md). Built with xtool (`xtool dev`) after
 // `port/scripts/build-ios.sh` has built the Rust core `libs3ios.a`.
 
 import Foundation

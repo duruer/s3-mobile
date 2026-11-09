@@ -131,7 +131,7 @@ impl App {
         let shared = Shared::new(Box::new(move || w2.store(true, Ordering::Release)));
         let game_dir = s3_frontend::launcher::game_dir_override(&data_dir, game_dir);
         let _ = std::fs::create_dir_all(&game_dir);
-        log::info!("Settlers 3 Mobile {} (iOS) starting; game dir {}, data dir {}", env!("CARGO_PKG_VERSION"), game_dir.display(), data_dir.display());
+        log::info!("S3 Mobile {} (iOS) starting; game dir {}, data dir {}", env!("CARGO_PKG_VERSION"), game_dir.display(), data_dir.display());
         // The audio unit pulls from the ring from the start (silence until the engine plays something).
         shared.audio.running.store(true, Ordering::Release);
         let mut launcher = Launcher::new(game_dir, data_dir.clone());

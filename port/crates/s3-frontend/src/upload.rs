@@ -320,7 +320,7 @@ fn handle(c: &Ctx, stream: TcpStream) -> std::io::Result<()> {
         return respond(&mut w, 404, "text/plain", b"");
     }
     if req.q("k") != Some(c.token.as_str()) {
-        let msg = "<!doctype html><meta charset=utf-8><title>Settlers 3 Mobile</title><body style=\"font:18px sans-serif\">\
+        let msg = "<!doctype html><meta charset=utf-8><title>S3 Mobile</title><body style=\"font:18px sans-serif\">\
                    Please open the full address shown on the phone (it ends with <b>?k=...</b>).</body>";
         return respond(&mut w, 403, "text/html; charset=utf-8", msg.as_bytes());
     }
@@ -424,7 +424,7 @@ fn receive(c: &Ctx, r: &mut impl Read, parts: &[String], rel: &str, len: u64) ->
 /// The upload page. Plain HTML/JS, no external resources.
 const PAGE: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Settlers 3 Mobile - game files</title>
+<title>S3 Mobile - game files</title>
 <style>
 body{font:16px system-ui,sans-serif;background:#0e1422;color:#e8ecf4;margin:0;padding:24px;max-width:860px}
 h1{font-size:24px;margin:0 0 4px}.dim{color:#a8b3c8}.card{background:#1a2440;border-radius:10px;padding:16px;margin:16px 0}
@@ -433,7 +433,7 @@ button,label.btn{background:#2e6cd0;color:#fff;border:0;border-radius:8px;paddin
 button:disabled{background:#4a5266;cursor:default}.ok{color:#6fdc8c}.bad{color:#ff8080}
 progress{width:100%;height:18px}#log{white-space:pre-wrap;font:13px monospace;max-height:220px;overflow:auto}
 </style></head><body>
-<h1>Settlers 3 Mobile</h1><div class="dim">Copy your own Settlers III installation to the phone. No game files come with the app.</div>
+<h1>S3 Mobile</h1><div class="dim">Copy your own Settlers III installation to the phone. No game files come with the app.</div>
 <div class="card"><b>On the phone:</b> <span id="st">checking ...</span></div>
 <div class="card">
 <p>Choose the Settlers III folder (the folder that contains <b>S3.EXE</b>, <b>GFX</b>, <b>SND</b>, <b>Map</b> ...,
