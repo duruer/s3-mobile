@@ -1,0 +1,54 @@
+# Unsigned iOS .ipa on a macOS runner (.github/release/build-ipa.sh, docs/porting/releases.md).
+# Called by release.yml after a new release (uploads the .ipa to it); can also be run by hand to test the build.
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: ios
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      upload:
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: version to put into the app (e.g. 0.0.0-test)
+        type: string
+        default: 0.0.0-test
+      upload:
+        description: upload to the GitHub release v<version>
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.upload && format('v{0}', inputs.version) || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: port
+          key: ios
+      - name: Build .ipa
+        run: bash .github/release/build-ipa.sh "${{ inputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipa
+          path: dist/*.ipa
+          retention-days: 7
+      - name: Upload to release
+        if: inputs.upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "v${{ inputs.version }}" dist/*.ipa --clobber --repo "${{ github.repository }}"
