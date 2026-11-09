@@ -3,6 +3,16 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-09 — History cleaned for publishing (repo s3-mobile)
+
+- Full-history scan (every blob): no game files, no decompiled code (only Ghidra `FUN_xxxxxxxx` address labels and
+  a few one-line instruction examples), no keys/tokens; only binaries are our icon and the Liberation fonts (+ license).
+- Rewrote `main` (git filter-branch, backup bundle outside the repo first): every commit now by
+  `Ahmet Enes Duruer <ahmet@duruer.dev>`; home-network addresses replaced by generic ones (192.168.1.x, 10.0.0.50,
+  172.16.0.1; `10.0.2.2` emulator alias kept); local user names in paths replaced (`~/`, `<user>`). Old agent
+  worktrees/branches and `refs/wip/autosave` deleted (all work was in main), objects pruned.
+- `s3-pe` real-exe test finds `game-files/` relative to the crate instead of an absolute home path.
+
 ## 2026-11-09 — App renamed to "S3 Mobile"
 
 - User request: the app name no longer uses the "Settlers" trademark. Android label, notifications, iOS display name,

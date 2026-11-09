@@ -88,7 +88,8 @@ fn parse_and_load_tiny() {
     assert!(parse(b"MZ").is_err());
 }
 
-const S3_EXE: &str = "~/Projects/settlers-3/game-files/gog-s3-ultimate/S3.EXE";
+/// The local copy in the repo's (gitignored) `game-files/` folder; env `S3_EXE` overrides it.
+const S3_EXE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../game-files/gog-s3-ultimate/S3.EXE");
 
 /// Loads the user's local S3.EXE if present (never committed). Skips otherwise.
 #[test]
