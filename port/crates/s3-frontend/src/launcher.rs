@@ -557,10 +557,10 @@ impl Launcher {
         let tpx = 22.0 * k;
         let th = measure_text(tpx, Weight::Bold, title).1;
         c.text(tx, (bar - th) / 2, tpx, Weight::Bold, if back { TEXT } else { GOLD }, title);
-        let ver = concat!("v", env!("CARGO_PKG_VERSION"));
+        let ver = format!("v{}", crate::VERSION);
         let vpx = 13.0 * k;
-        let (vw, vh) = measure_text(vpx, Weight::Regular, ver);
-        c.text(w - vw - d(16.0), (bar - vh) / 2, vpx, Weight::Regular, DIM, ver);
+        let (vw, vh) = measure_text(vpx, Weight::Regular, &ver);
+        c.text(w - vw - d(16.0), (bar - vh) / 2, vpx, Weight::Regular, DIM, &ver);
         // Scrolled content below the bar.
         let top = bar + d(10.0);
         c.set_clip(0, bar, w, h - bar);

@@ -92,6 +92,11 @@ Implementation: [x87-fpu.md](x87-fpu.md); this section is the determinism contra
   adb push port/target/aarch64-linux-android/debug/deps/s3_cpu-<hash> /data/local/tmp/s3cpu
   adb shell /data/local/tmp/s3cpu golden
   ```
+- **2026-11-09: FAILS on Windows 11 ARM64 (aarch64-pc-windows-msvc, release)**: `golden_pure_functions` (got
+  `12164982464898292835`, want `9010750638259130314`) and `golden_x87_vectors` differ; the other x87 unit tests pass.
+  First run of the golden vectors on any aarch64 host. HYPOTHESIS: a host-dependent operation in the numeric layer
+  (MSVC/aarch64 libm or float codegen) - would desync multiplayer between arm64 phones and x86_64 PCs. Not yet
+  investigated; CI (ubuntu x86_64) still checks the x86_64 hashes.
 - **If a hash changes**: on a new host only → real determinism bug, do not update the constant. After an
   intended change in fpu*.rs or a `libm` bump → update the constants in the same change and note it here: it
   breaks multiplayer compatibility between app versions (the lobby must compare a "sim version").

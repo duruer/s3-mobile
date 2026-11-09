@@ -6,6 +6,13 @@
 //! Everything here builds and is unit-tested on the desktop. It is a plain rlib so the iOS static library does not
 //! pull in the Android `cdylib`. See docs/porting/android.md and docs/porting/ios.md.
 
+/// App version shown in the launcher. Release builds (CI, semantic-release) set `S3_VERSION` at compile time;
+/// local builds fall back to the workspace version.
+pub const VERSION: &str = match option_env!("S3_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub mod audio;
 pub mod background;
 pub mod frontend;

@@ -83,7 +83,7 @@ fn android_main(app: AndroidApp) {
     std::panic::set_hook(Box::new(|info| {
         log::error!("PANIC: {info}");
     }));
-    log::info!("S3 Mobile {} starting", env!("CARGO_PKG_VERSION"));
+    log::info!("S3 Mobile {} starting", s3_frontend::VERSION);
     app.set_window_flags(WindowManagerFlags::FULLSCREEN | WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
     crate::wifilock::install(&app);
     let ui_thread = UiThread::new(&app);

@@ -10,6 +10,8 @@
 #   --game-icon: PERSONAL builds only: launcher icon from your own S3.EXE (game artwork, never publish such an APK).
 #                Default: our own adaptive icon (res/drawable/ic_launcher*.xml).
 # Output: port/target/apk/settlers3port.apk
+# Env (release CI): S3_VERSION=1.2.3 sets the app version (launcher, versionName, versionCode = 1*10000+2*100+3);
+#   S3_KEYSTORE=<file> + S3_KEYSTORE_PASS signs with that key, and the build fails instead of generating a new key.
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 
@@ -85,8 +87,14 @@ if [ "$GAME_ICON" = 1 ]; then
   "$BT/aapt2$EXE" compile --dir "$OUT/icon-res" -o "$OUT/icon-res.zip"
   ICON_FLAGS=(-R "$OUT/icon-res.zip")
 fi
+VERSION_FLAGS=()
+if [ -n "${S3_VERSION:-}" ]; then
+  IFS=. read -r vmaj vmin vpat <<<"${S3_VERSION%%-*}"
+  VERSION_FLAGS=(--version-name "$S3_VERSION" --version-code $((vmaj * 10000 + vmin * 100 + vpat)))
+  echo "== version $S3_VERSION (versionCode ${VERSION_FLAGS[3]})"
+fi
 "$BT/aapt2$EXE" link -o "$OUT/unsigned.apk" -I "$PLATFORM_JAR" \
-  --manifest "$PORT/android/AndroidManifest.xml" \
+  --manifest "$PORT/android/AndroidManifest.xml" ${VERSION_FLAGS[@]+"${VERSION_FLAGS[@]}"} \
   --min-sdk-version 26 --target-sdk-version 35 \
   "$OUT/res.zip" ${ICON_FLAGS[@]+"${ICON_FLAGS[@]}"}
 
@@ -124,13 +132,18 @@ with zipfile.ZipFile(sys.argv[1], "a", zipfile.ZIP_STORED) as z:
 
 # 5. Align + sign.
 "$BT/zipalign$EXE" -f -P 16 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
-KS="$PORT/target/debug.keystore"
+KS="${S3_KEYSTORE:-$PORT/target/debug.keystore}"
+KSPASS="${S3_KEYSTORE_PASS:-android}"
+if [ -n "${S3_KEYSTORE:-}" ] && [ ! -s "$KS" ]; then
+  echo "error: S3_KEYSTORE=$KS missing; refusing to sign with a new key" >&2
+  exit 1
+fi
 if [ ! -f "$KS" ]; then
   echo "== generating debug keystore $KS"
   keytool -genkeypair -keystore "$KS" -storepass android -keypass android -alias androiddebugkey \
     -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Settlers3Port Debug,O=Debug,C=US" >/dev/null 2>&1
 fi
-"$BT/apksigner$BAT" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android \
+"$BT/apksigner$BAT" sign --ks "$KS" --ks-pass "pass:$KSPASS" --key-pass "pass:$KSPASS" \
   --out "$OUT/settlers3port.apk" "$OUT/aligned.apk"
 rm -rf "$OUT/classes"
 rm -f "$OUT/unsigned.apk" "$OUT/aligned.apk" "$OUT/res.zip" "$OUT/icon-res.zip" "$OUT/settlers3port.apk.idsig"

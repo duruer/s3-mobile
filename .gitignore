@@ -10,3 +10,4 @@
 
 # Claude Code agent worktrees
 /.claude/worktrees/
+/dist/
