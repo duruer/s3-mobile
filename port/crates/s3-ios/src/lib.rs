@@ -8,6 +8,9 @@
 //!
 //! Threads: every `s3ios_*` call except [`s3ios_audio_pull`] comes from the main thread. The engine runs on its own
 //! thread (started by Play); the audio unit's render thread only reads the [`AudioRing`].
+//!
+//! Empty on other targets, so `cargo test --workspace` works on the desktop (the GLES renderer is mobile-only).
+#![cfg(target_os = "ios")]
 
 use std::ffi::{c_char, CStr};
 use std::io::Write;
@@ -131,7 +134,7 @@ impl App {
         let shared = Shared::new(Box::new(move || w2.store(true, Ordering::Release)));
         let game_dir = s3_frontend::launcher::game_dir_override(&data_dir, game_dir);
         let _ = std::fs::create_dir_all(&game_dir);
-        log::info!("S3 Mobile {} (iOS) starting; game dir {}, data dir {}", env!("CARGO_PKG_VERSION"), game_dir.display(), data_dir.display());
+        log::info!("S3 Mobile {} (iOS) starting; game dir {}, data dir {}", s3_frontend::VERSION, game_dir.display(), data_dir.display());
         // The audio unit pulls from the ring from the start (silence until the engine plays something).
         shared.audio.running.store(true, Ordering::Release);
         let mut launcher = Launcher::new(game_dir, data_dir.clone());
