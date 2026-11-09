@@ -242,8 +242,10 @@ impl App {
                 }
             }
         }
-        if self.shared.keyboard_req.swap(false, Ordering::AcqRel) {
-            self.keyboard = 3;
+        // Same codes as `S3Out::keyboard` (1 show, 2 hide, 3 toggle).
+        let kb = self.shared.keyboard_req.swap(0, Ordering::AcqRel);
+        if kb != 0 {
+            self.keyboard = kb;
         }
         let buzz = std::mem::take(&mut *self.shared.haptic.lock().unwrap());
         out.haptic_ms = buzz.iter().copied().max().unwrap_or(0);

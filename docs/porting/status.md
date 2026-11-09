@@ -22,7 +22,7 @@ The **unmodified GOG `S3.EXE` + the user's data** runs in our own host: iced-x86
 | Pause / resume (Home, reopen) | n/a | yes, guest clock stops while paused |
 | Mouse cursor (game's own `.rsrc` cursors: arrow, hourglass) | yes | yes, follows taps (verify1) |
 | Save (in-game computer menu, slot 1) -> Quit -> Game Statistics -> main menu -> Load Game -> game continues | yes (inject) | yes (taps, verify1) |
-| Text input (Game Setup "Name of the Game") | hardware keys / `text` inject | soft keyboard via letterbox `ABC` button + adb text (verify1) |
+| Text input (Game Setup "Name of the Game", serial number prompt without `regs.cmd`) | hardware keys / `text` inject; keyboard requests logged (`text input: ...`) | soft keyboard via letterbox `ABC` button + adb text (verify1); since 2026-11-09 it opens by itself on the game's text fields (serial-keyboard) |
 | Back / Esc | Esc in game: no effect (game behaviour) | Back hides the IME; in game harmless; in main menu = Exit Game, app closes |
 | Real arm64 phone (Galaxy Z Fold4 cover screen, 2026-11-05 verify-fps1) | n/a | **works**: GLES presenter 2316x904 full width @120 Hz, in game Classic 1536x600 **60 fps** (cap), HUD 48-60 fps, full-screen map, FPS counter (details below) |
 
@@ -90,7 +90,7 @@ Full steps: [android.md](android.md#install-for-users-phone). Short version:
 4. Reopen the app. In menus a tap is a left click. In game the touch mods are active (UI mode A by default, see
    [ui-modes.md](ui-modes.md)): tap = select / move / place, drag = pan, long press then drag = box select,
    two-finger tap = cancel/deselect, pinch = resolution; Save / Quit via the floating **Menu** button (A) or the HUD
-   menu (B). Back = Esc, three-finger tap = soft keyboard (the ESC/ABC/RMB letterbox buttons were removed 2026-11-07).
+   menu (B). Back = Esc, soft keyboard by itself on game text fields or three-finger tap (the ESC/ABC/RMB letterbox buttons were removed 2026-11-07).
    Multiplayer on the same Wi-Fi: "Multi-player Game: LAN" -> "Local network / Wi-Fi" -> New Game on one device, Search for games + Join Game on the others (embedded relay + UDP discovery, multiplayer.md section 8). Internet: put a relay URL (e.g. `ws://host:7788/`) in `<data dir>/relay-url.txt`.
 
 ## Known issues
@@ -100,7 +100,8 @@ Full steps: [android.md](android.md#install-for-users-phone). Short version:
 | Intro/mission videos skipped | MCI AVI faked (Indeo 5 decoding not implemented) |
 | Esc / Back does not open an in-game menu | Esc does nothing in game on desktop either; use the panel's computer icon (Save / Quit) |
 | Loading time varies on desktop | one verify1 run needed ~77 s from players OK to in game (usually 9-10 s; load average was low). HYPOTHESIS: host contention or map variance; not reproduced in 2 later runs |
-| Three-finger tap (keyboard toggle) untested on a device | adb has no multi-touch; the `ABC` button works |
+| Three-finger tap (keyboard toggle) untested on a device | adb has no multi-touch. HYPOTHESIS: Motorola's three-finger screenshot gesture eats it (user report 2026-11-09). The keyboard now opens by itself on game text fields |
+| Soft keyboard can cover a text field | landscape IME over the lower half; the serial field (y 276..300 of 600) may be hidden. Typing + Enter work. Next: game area above the IME |
 | Multiplayer: LAN menu entry, no lobby UI | **LAN play out of the box (2026-11-08): phone host <-> Windows PC join over Wi-Fi verified, no desync** (embedded relay + UDP discovery, multiplayer.md section 8). DirectPlay HLE over our relay works (2 desktop peers, lockstep, no simulation desync in runs of up to ~6 min, [multiplayer.md](multiplayer.md)); Android joins a desktop host (ux-verify1). Relay URL: env `S3_RELAY_URL` (desktop) or one line in `<data dir>/relay-url.txt` (Android, read at engine start); no in-app setting yet. "Multi-player Game: Internet" (Blue Byte lobby, wsock32) stays unavailable; no x86_64 <-> arm64 peer tested; no desync hash on Android |
 | HUD (mode B) after an in-game switch from mode A | covers the panel ("cover mode") until the next game start, then full screen (by design, [ui-hud.md](ui-hud.md)). After B -> A the minimap showed map pixels for a few seconds, then cleared (Android, cosmetic) |
 | Box select needs a long press then drag | not testable with adb (no hold-then-move); verified on desktop. Two-finger gestures and pinch: desktop inject + unit tests only |

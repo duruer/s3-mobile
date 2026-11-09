@@ -37,7 +37,7 @@ layer at a constant on-screen size; selection rings follow the map scale. Raw po
 | Tap panel / minimap | left click (panel buttons, minimap jump; choosing another building or tab also ends placement) | left click |
 | Double tap own soldier | Ctrl + left click = select the same type nearby (game rule, `0x533f21`) HYPOTHESIS: Ctrl reaches the game through our WM_KEYDOWN; not verified at runtime | – |
 | Two-finger tap | placement: cancel; building selected: quick right click (deselect); units selected: clear the selection; else nothing | right click (fallback) |
-| Three-finger tap | soft keyboard request (fallback) | same |
+| Three-finger tap | soft keyboard toggle (fallback; the keyboard also opens by itself on game text fields, `text_input.rs`) | same |
 | One-finger drag on the map | **camera follows the finger** (direct camera write), inertia after a fling | left drag (fallback) |
 | One-finger drag on panel / minimap | left drag | – |
 | Two-finger drag | camera follows the centroid, inertia | – |

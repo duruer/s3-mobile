@@ -29,7 +29,8 @@ AI filter falls back to sharp bilinear on iOS.
   `redraw` when frame/status/layer/display changed) -> `GLKView.display()` -> `s3ios_draw(drawableW, drawableH)`.
 - Touches: UITouch -> ids in touch order; actions down / pointer down / move / pointer up / up / cancel, same as
   Android MotionEvents (`s3_frontend::touch::pointer_events`), window pixels = points * `contentScaleFactor`.
-- Keyboard: three-finger tap / launcher text field -> `keyboard` in `S3Out` -> `becomeFirstResponder` (UIKeyInput).
+- Keyboard: game text field tapped / serial dialog (show), field lost the focus (hide), three-finger tap (toggle),
+  launcher text field -> `keyboard` in `S3Out` (1 show, 2 hide, 3 toggle) -> `becomeFirstResponder` (UIKeyInput).
   Hardware keyboard: `pressesBegan` -> HID usage -> VK (`s3ios_key`) + typed chars (`s3ios_char`).
 - Audio: `AVAudioSourceNode` pulls interleaved i16 stereo 44100 Hz (`s3ios_audio_pull`) and converts to float.
 - Background: scene phase not active -> `s3ios_set_background(1)`: the game pauses (no background play on iOS yet:

@@ -625,3 +625,64 @@ the carrier / digger / builder limits (`0x80067..0x80069`).
   listed by the reader.
 - Multiplayer (`0x52e438`): refuses within 0x3a9 time units of the last save (message `0x8012d`), checks
   `0x435aa0`, then sound 0x30, command 0xfa `{player}`, `0x542630()`, sub-page 5. STATIC (the HUD sends the same).
+
+## 9. Menu text fields: `CEditControl` (serial-keyboard, 2026-11-09)
+
+Goal: open the phone's soft keyboard when the game wants text (user report: the serial number prompt of a copy
+without `regs.cmd` could not be typed into). VERIFIED = seen in s3run on 2026-11-09 (`xpeek` / `scan`, a temporary
+hook on every vtable slot), STATIC = read from code only. GOG 1.60 addresses; the hooks check the bytes, so any exe
+of that build works.
+
+### Menu element classes (RTTI)
+
+`CScreenElement` is a **virtual base** of every menu control (`CControl`, `CEditControl`, `CButton`, ...). A
+`CEditControl` object: `+0x00` own vfptr `0x655dbc` (one slot `0x418810` = SetEnabled(bool): `[obj+0xc] = !arg`),
+`+0x04` vbptr (`0x655dc0`: `{-4, 0x6c}`), `+0x3c` `CControl` part (tooltip timer: mouse time `+0x24`, x `+0x28`,
+y `+0x2c`), `+0x70` the `CScreenElement` base with vfptr `0x655d38` (COL `0x65f6f8`, offset 0x70). Its overrides
+are thunks `sub ecx, [ecx-4]` (vtordisp) + jump; most `CControl` ones also `sub ecx, 0x34`. Constructor writes the
+vtables at `0x4188dd`; destructor body `0x421f50` (`this` = `+0x70`; frees the text, then `0x4180a0`).
+
+`CScreenElement` vtable (32 slots, base `0x655a68`; slot: base / `CEditControl` target):
+
+| Slot | Meaning | Evidence |
+| --- | --- | --- |
+| 1 | attach to parent (arg = parent, 0 = detach) | VERIFIED: on dialog open / close |
+| 2 `0x415850` | HandleEvent(event by value, 20 B): `[elem+0x1c] = 1`, slot 8 accepts? -> slot 9 | STATIC |
+| 8 `0x415890` | accepts event: types 1, 2, 3, 0x20, 0x30, 0x40 always; others hit-test x `+8`, y `+0xa` (`0x415800`) | STATIC |
+| 9 `0x4158d0` | dispatch by event type (byte 0): 1 -> 17, 2 -> 18, 3 -> 19, 0x10 -> 12, 0x12 -> 13, 0x13 -> 14, 0x15 -> 15, 0x16 -> 16, 0x20 -> 20, 0x30 -> 21, 0x40 -> 22 | STATIC, VERIFIED order |
+| 10 / 11 | draw (edit: `0x419b80`) | VERIFIED (only when the menu redraws; ~10 presents in a quiet menu) |
+| 12 | event 0x10 = left button down on the control (edit: `0x419b30`; read-only -> base, else `0x418380`) | VERIFIED: tap on the field |
+| 13 | event 0x12 = left button up | VERIFIED |
+| 16 | event 0x16 = mouse move (`CControl` `0x418430`: stores time / x / y, hides the tooltip after > 50 px) | STATIC |
+| 17 | event 1 = key down (edit `0x418fe0`: switch on VK 0x23..0x2e: End, Home, arrows, Delete; cursor `+0x60`) | VERIFIED |
+| 19 | event 3 = char (edit `0x419280`: filters `_isctype(c, 0x157)`, rejects controls; `+0x45` digits only) | VERIFIED |
+| 21 | event 0x30 = tick (`CControl` `0x4183c0`: tooltip after 600 ms hover) | STATIC |
+| 25 | **focus(bool)** (base `0x415c90` returns false; edit `0x419b10`: redraw (slot 7), return true) | VERIFIED: 1 when the dialog opens / the field is tapped, 0 when another control is tapped, Enter, dialog closes |
+| 26 `0x415ca0` | activate(bool): arg 1 -> slot 30 (can activate?) -> slot 27(result); arg 0 -> slot 27(0) | STATIC + VERIFIED calls |
+| 27 | activated(bool) (base `ret 4`; `CControl` `0x418520` hides the tooltip on 0) | VERIFIED: 1 on open, 0 on close |
+
+Events are 20-byte structs passed by value (type in byte 0; key events: type 1/3 with the VK / char in the next
+bytes, e.g. `0x01200001`).
+
+### `CEditControl` fields (object offsets)
+
+| Offset | Meaning | Evidence |
+| --- | --- | --- |
+| `+0x0c` (u8) | read-only / disabled (Game Setup shows Map, Map Type, Goods, ... in disabled edits; only "Name of the Game" has 0) | VERIFIED |
+| `+0x44` (u8) | 1 for every edit seen; required for cursor keys | VERIFIED value, STATIC meaning |
+| `+0x45` (u8) | number field: OnChar passes digits only (other chars go to `0x41a570`). Set for the serial number field, which still accepts the key typed with dashes | VERIFIED |
+| `+0x46` (u8) | any printable char (else alphanumerics, unless `[0x7a5808] == 1`) | STATIC |
+| `+0x4c` | text string object: `+0x50` pointer, `+0x54` length, `+0x58` capacity | VERIFIED (typed "12" -> length 2) |
+| `+0x60` | cursor position | VERIFIED |
+| `+0x78..+0x84` | screen rect left, top, right, bottom (`CScreenElement +8..+0x14`) | VERIFIED: serial field `220,276,580,300`, Game Setup name `380,80,608,104` |
+
+The serial dialog's edit object stays alive after the dialog closes (same address on the next screen); a new one is
+made when the dialog opens again (after "You entered an invalid serial number!" + OK). So "destroyed" is not a
+"closed" signal; focus 0 is.
+
+### Implemented: `s3-mods/src/text_input.rs`
+
+Hooks `0x419b30` (tap on an editable field -> show keyboard), `0x419b10` (focus 1 on an editable number field ->
+show; focus 0 on the field the keyboard was shown for -> hide) and `0x421f50` (that field destroyed -> hide);
+requests go to the frontend as `s3_mods::KeyboardRequest` (see [android.md](../porting/android.md) "Soft keyboard").
+Installed when the first 12 bytes of the three functions and vtable slots 12 / 25 match.

@@ -3,6 +3,22 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-09 (d) — soft keyboard opens by itself on the game's text fields (serial-keyboard)
+
+- User report (Reddit, Motorola phone): menu works, then the serial number prompt, but no keyboard. Cause: the
+  game dir had no `regs.cmd`, and the only way to open the keyboard was a three-finger tap (unknown to users,
+  never tested on a device; HYPOTHESIS: Motorola's three-finger screenshot gesture eats it).
+- RE: menu controls share the virtual base `CScreenElement`; `CEditControl` vtable, event types, focus slot 25,
+  read-only `+0x0c`, number field `+0x45` -> [game-state-ui](reverse-engineering/game-state-ui.md) section 9.
+  Serial dialog reproduced in s3run with a link copy of the game dir without `regs.cmd`; Enter = OK; the key is
+  accepted with dashes; the edit object outlives the dialog (focus 0 is the "closed" signal).
+- `s3-mods/src/text_input.rs`: tap on a field -> show, serial field focused -> show, owner unfocused / destroyed
+  -> hide; any exe of the 1.60 build (byte check). `KeyboardRequest` Show/Hide/Toggle through `Shared::keyboard_req`
+  (`AtomicU8`) to Android / iOS -> [android](porting/android.md) "Soft keyboard". Tests added; desktop flows verified
+  by log; APK builds; not yet seen on a phone (no emulator on the ARM64 machine).
+- Open: IME can cover the serial field; GOG exe without `regs.cmd` stores the typed serial encrypted (HYPOTHESIS:
+  asks again next start) -> [progress](progress/serial-keyboard.md).
+
 ## 2026-11-09 (c) — automatic releases (semantic-release), iOS .ipa in CI, no JIT on iOS
 
 - `.github/workflows/release.yml`: tests on every push/PR; on `main` semantic-release -> version from Conventional

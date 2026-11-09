@@ -304,7 +304,8 @@ PointerUp/Up -> Up, Cancel -> Cancel for all; game pixels via the letterbox). Ge
 does run in `s3-mods` on the engine thread, identical to the desktop `s3run --inject` touch commands:
 **see [touch.md](touch.md)** (in game: tap = select / move / attack / place, ✕ or two-finger tap = cancel, drag = camera
 with inertia, long-press-drag = box select, pinch = resolution zoom; no long-press right click). Menus: tap = left
-click, drag = left drag, two-finger tap = right click, three-finger tap = soft keyboard. Not yet tried on the
+click, drag = left drag, two-finger tap = right click, three-finger tap = soft keyboard (it also opens by itself
+for the game's text fields, see Soft keyboard below). Not yet tried on the
 emulator/phone (multi-touch needs a real device or emulator console gestures): unit-tested + desktop-verified.
 
 Former mapping (`TouchMapper`, removed): tap = left click, long press = right click, map drag = mirrored right drag.
@@ -314,8 +315,8 @@ The 60 ms gap between button down and up is there because the game also polls th
 directly: move, left/right/middle buttons.
 
 **Letterbox buttons: removed 2026-11-07** (user request). There used to be ESC / ABC / RMB buttons in the black bars
-(`overlay.rs`, android-ux). Their functions are covered without them: Back = Esc, three-finger tap = soft keyboard
-(`Shared::keyboard_req`), two-finger tap = cancel; menus via the UI modes (Classic: floating Menu, HUD: menu sheet).
+(`overlay.rs`, android-ux). Their functions are covered without them: Back = Esc, soft keyboard = by itself on the game's text fields or
+three-finger tap (`Shared::keyboard_req`), two-finger tap = cancel; menus via the UI modes (Classic: floating Menu, HUD: menu sheet).
 `s3_mods::set_right_next` ("next tap = right click") still exists in s3-mods but nothing on Android arms it now.
 
 Keys (`keys.rs`): Back -> `VK_ESCAPE` (the IME takes Back first while it is open), hardware
@@ -329,7 +330,16 @@ TranslateMessage. Once the host sends any Char, USER32 stops synthesizing WM_CHA
 chars come from the host. Keys with a character but no VK mapping get a plausible VK (`keys::vk_for_char`) or
 only the Char.
 
-**Soft keyboard**: `ABC` button or three-finger tap. On the UI thread: `InputMethodManager.showSoftInput(
+**Soft keyboard** (since 2026-11-09, serial-keyboard): opens **by itself** when the game wants text, closes when
+the text field loses the focus. A tap on an editable game text field (Game Setup "Name of the Game", ...) shows
+it; the serial number dialog (asked when the game dir has no `regs.cmd`) shows it as soon as the dialog opens;
+tapping another control, Enter (= OK in the serial dialog) or closing the dialog hides it. The game's text fields
+are found by hooks on its `CEditControl` class (`s3-mods/src/text_input.rs`,
+[game-state-ui.md](../reverse-engineering/game-state-ui.md) section 9; any exe of the 1.60 build, not only GOG).
+Three-finger tap still toggles it (HYPOTHESIS: phones with a three-finger screenshot gesture, e.g. Motorola,
+never deliver it; the user report that started this was from a Motorola phone). Requests travel as
+`s3_mods::KeyboardRequest` (Show 1 / Hide 2 / Toggle 3) -> `Shared::keyboard_req` (`AtomicU8`, the same codes as
+iOS `S3Out::keyboard`) -> `UiThread::soft_keyboard(Some(true) / Some(false) / None)`. On the UI thread: `InputMethodManager.showSoftInput(
 activity.getCurrentFocus(), 0)` (the NativeActivity content view, like `ANativeActivity_showSoftInput`) /
 `hideSoftInputFromWindow`; visibility from `getRootWindowInsets().isVisible(WindowInsets.Type.ime())`. The IME
 has no real InputConnection (NativeContentView), so Android's fallback connection turns typed characters into
@@ -337,6 +347,9 @@ plain key events, which arrive through the normal input queue. Verified on the e
 "Name of the Game" field: 4x soft Backspace deleted "game", soft `h` `i` typed, `adb shell input text "Bob1"`
 (Shift meta for the capital) gave "Player's hiBob1" (`scratch/android-shots/ux-ime-s.png`, `ux-typed-s.png`).
 The game window is not resized for the IME (it covers the lower half; the field in Game Setup stays visible).
+The serial number field (y 276..300 of the 800x600 menu) can end up under the keyboard on a landscape phone:
+typing and Enter still work, the digits are visible once the keyboard closes. Next step: shrink the game area to
+the space above the IME (`WindowInsets` ime bottom -> a smaller window height for the `Viewport`).
 Note: with the emulator's `hw.keyboard=yes` the soft keyboard still showed.
 
 **Back / Esc in the game itself** (same on desktop s3run, so game behaviour, not Android): in the **main menu**

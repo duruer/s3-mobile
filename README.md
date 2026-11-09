@@ -49,6 +49,8 @@ layout that fits a wide phone screen, and an easy way to copy your game onto the
      The game is about 1.7 GB, so this takes a few minutes. Keep the page open until it says it is done.
 
    You can also copy the folder with a USB cable into `Android/data/com.settlers3port.app/files/game/`.
+   Copy the whole folder, including `regs.cmd` (GOG): it holds your serial number. Without it the game asks for
+   the serial number when you start a game.
 5. When the app says **Ready**, go back and tap **Play**.
 
 > **Updating:** install a newer `.apk` over the old one. **Do not uninstall the app first:** uninstalling
@@ -77,6 +79,9 @@ app under *On My iPhone > S3 Mobile > Settlers3*, or pick a folder you already h
 - **Tap** to select a settler or a building, tap the ground to send units there.
 - **Drag with one finger** to move the map. **Pinch** to zoom in and out.
 - **Long press and drag** to select several units at once. **Tap with two fingers** to cancel.
+- **Typing**: tap a text field of the game (for example the game name) and the phone's keyboard opens. When the
+  game asks for your serial number, the keyboard opens by itself; type the number with its dashes and press Enter.
+  A tap with three fingers also opens or closes the keyboard.
 - Two control styles, switchable in the game menu:
   - **Classic Touch**: the original side panel, made bigger and easier to hit with a finger.
   - **Mobile HUD**: the map fills the screen, with a bottom bar and build menus made for phones.

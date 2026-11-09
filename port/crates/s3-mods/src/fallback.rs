@@ -2,7 +2,7 @@
 //! (`s3-frontend/src/touch.rs`) so behaviour stays the same until W3's context-aware input replaces it:
 //! - Tap: left click (right click when "right-click next" is armed);
 //! - LongPress: right click (if `long_press_right_click`), TwoFingerTap: right click;
-//! - ThreeFingerTap: keyboard request flag for the frontend;
+//! - ThreeFingerTap: keyboard toggle request for the frontend;
 //! - one-finger Pan: drag with the left button, or in game on the map with the right button (S3 scrolls
 //!   the map with a right drag; mirrored and halved so the map follows the finger);
 //! - long-press drags, two-finger pans and pinches: nothing (yet).
@@ -36,7 +36,7 @@ pub struct TouchMouse {
     /// Key (VK) held around the armed right click: a modifier order (Shift waypoint / Alt patrol / Ctrl no fight,
     /// `crate::unit_orders`). 0 = a plain right click.
     pub right_next_vk: u32,
-    pub keyboard_request: bool,
+    pub keyboard_request: Option<crate::KeyboardRequest>,
     pub long_press_right_click: bool,
     /// Game speed (`Machine::time_scale`, set by the scheduler service): button-ups are scheduled on the wall
     /// clock, but the game measures click length on its (faster) guest clock and ignores long right clicks, so
@@ -91,7 +91,7 @@ impl TouchMouse {
             }
             TouchEvent::LongPress { x, y } if self.long_press_right_click => self.click(now, pt(x, y), MouseButton::Right),
             TouchEvent::TwoFingerTap { x, y } => self.click(now, pt(x, y), MouseButton::Right),
-            TouchEvent::ThreeFingerTap { .. } => self.keyboard_request = true,
+            TouchEvent::ThreeFingerTap { .. } => self.keyboard_request = Some(crate::KeyboardRequest::Toggle),
             TouchEvent::Pan { phase, fingers: 1, x, y, start_x, start_y, after_long_press: false, .. } => match phase {
                 Phase::Begin => {
                     let o = pt(start_x, start_y);

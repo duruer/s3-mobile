@@ -400,10 +400,17 @@ fn android_main(app: AndroidApp) {
         if let Some(&ms) = buzz.iter().max() {
             bgservice::vibrate(&app, ms);
         }
-        if shared.keyboard_req.swap(false, Ordering::AcqRel) {
-            log::info!("three-finger tap: toggle soft keyboard");
+        // Soft keyboard request from the game (1 = a text field wants input, 2 = it closed, 3 = three-finger tap).
+        let kb = shared.keyboard_req.swap(0, Ordering::AcqRel);
+        if kb != 0 {
+            let want = match kb {
+                1 => Some(true),
+                2 => Some(false),
+                _ => None,
+            };
+            log::info!("soft keyboard request {kb} ({want:?}; None = toggle)");
             if let Some(u) = &ui_thread {
-                u.soft_keyboard(None, kb_visible.clone());
+                u.soft_keyboard(want, kb_visible.clone());
             }
         }
         {

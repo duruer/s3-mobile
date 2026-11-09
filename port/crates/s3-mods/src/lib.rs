@@ -26,6 +26,7 @@ pub mod end_stats; // statistics over game time on the end-of-game statistics sc
 pub mod stone; // generated stone texture behind menu layouts
 pub mod haptics; // vibration requests (Android frontend vibrates)
 pub mod lan_autoselect; // LAN screen: pick the only network provider
+pub mod text_input; // soft keyboard for the game's text fields (CEditControl hooks)
 pub mod menu_scroll; // finger scrolling of menu lists
 pub mod fallback;
 pub mod fast; // native fast paths for hot guest loops (docs/porting/performance.md)
@@ -255,6 +256,9 @@ pub fn install(m: &mut Machine, exe_bytes: &[u8]) -> InstallReport {
     unit_orders::install(m, applied == Some("gog-base"));
     ui_classic::install(m, applied.is_some()); // UI mode A (docs/porting/ui-classic.md)
     ui_hud::install(m, applied.is_some()); // UI mode B (docs/porting/ui-hud.md)
+    if settings.patches_enabled {
+        text_input::install(m); // any exe with the 1.60 code (a non-GOG copy is the one asking for the serial)
+    }
     add_mod(m, Box::new(lan_autoselect::LanAutoSelect::default()));
     add_mod(m, Box::new(menu_scroll::MenuScroll::default())); // drag a menu list = its arrow buttons // LAN screen: provider selected for the player
     add_mod(m, Box::new(end_stats::EndStatsMod::default())); // charts on the end-of-game statistics screen
@@ -348,9 +352,25 @@ pub fn right_next(m: &mut Machine) -> bool {
     m.state::<ModsState>().borrow_mut().fallback.right_next
 }
 
-/// True once after a three-finger tap (frontend shows the soft keyboard).
-pub fn take_keyboard_request(m: &mut Machine) -> bool {
-    std::mem::take(&mut m.state::<ModsState>().borrow_mut().fallback.keyboard_request)
+/// What the frontend should do with the soft keyboard. The codes are the iOS `S3Out::keyboard` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardRequest {
+    /// A game text field wants input ([`text_input`]).
+    Show = 1,
+    /// The text field the keyboard was shown for is gone.
+    Hide = 2,
+    /// Three-finger tap.
+    Toggle = 3,
+}
+
+/// Ask the frontend to show / hide / toggle the soft keyboard (the newest request wins).
+pub fn request_keyboard(m: &mut Machine, r: KeyboardRequest) {
+    m.state::<ModsState>().borrow_mut().fallback.keyboard_request = Some(r);
+}
+
+/// The pending soft keyboard request, once (three-finger tap, game text fields).
+pub fn take_keyboard_request(m: &mut Machine) -> Option<KeyboardRequest> {
+    m.state::<ModsState>().borrow_mut().fallback.keyboard_request.take()
 }
 
 /// Frontend: register the mailbox the window layer ([`Scene`]s) is published to.

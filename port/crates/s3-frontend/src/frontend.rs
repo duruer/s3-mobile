@@ -7,7 +7,7 @@
 //! - engine thread: [`run_engine`] — waits for S3.EXE, builds the [`Engine`], runs it in slices while not paused.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -67,8 +67,9 @@ pub struct Shared {
     pub delivered: AtomicU64,
     /// The game ended itself (ExitProcess, e.g. "Exit Game" or Esc in the main menu): the app should close.
     pub guest_exited: AtomicBool,
-    /// Engine -> UI: a three-finger tap asked for the soft keyboard.
-    pub keyboard_req: AtomicBool,
+    /// Engine -> UI: soft keyboard request, 0 = none, else `s3_mods::KeyboardRequest` (1 show, 2 hide, 3 toggle):
+    /// a game text field was tapped / closed, or a three-finger tap.
+    pub keyboard_req: AtomicU8,
     /// Signalled (with `frame` locked) on every new frame / status / display change: the render thread waits here.
     pub frame_cv: Condvar,
     /// Engine -> presenter: display settings (`s3_mods::display`), bumped `display_seq` on change.
@@ -144,7 +145,7 @@ impl Shared {
             paused_since: AtomicU64::new(0),
             delivered: AtomicU64::new(0),
             guest_exited: AtomicBool::new(false),
-            keyboard_req: AtomicBool::new(false),
+            keyboard_req: AtomicU8::new(0),
             frame_cv: Condvar::new(),
             display: Mutex::new(DisplaySettings::default()),
             display_seq: AtomicU64::new(0),
@@ -625,11 +626,11 @@ pub fn background_fps(cap: Option<u32>) {
 #[cfg(not(feature = "engine"))]
 pub fn background_fps(_cap: Option<u32>) {}
 
-/// Pass the mod layer's three-finger keyboard request to the UI thread.
+/// Pass the mod layer's soft keyboard request (text field, three-finger tap) to the UI thread.
 #[cfg(feature = "engine")]
 fn sync_touch_flags(shared: &Shared, m: &mut s3_runtime::Machine) {
-    if s3_mods::take_keyboard_request(m) {
-        shared.keyboard_req.store(true, Ordering::Release);
+    if let Some(r) = s3_mods::take_keyboard_request(m) {
+        shared.keyboard_req.store(r as u8, Ordering::Release);
         (shared.wake)();
     }
 }

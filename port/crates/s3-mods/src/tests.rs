@@ -287,3 +287,55 @@ fn touch_pipeline_fallback_and_capture() {
     f(&mut m, HostEvent::Key { vk: 0x1B, down: true }, &mut out);
     assert_eq!(out, vec![HostEvent::Key { vk: 0x1B, down: true }]);
 }
+
+#[test]
+fn text_field_hooks_request_the_soft_keyboard() {
+    let (mut m, _) = machine("textinput");
+    m.mem.alloc_region(Some(0x0065_0000), 0x1_0000, s3_mem::RegionKind::Image, (0, 0)).unwrap();
+    assert!(take_keyboard_request(&mut m).is_none());
+    let [(down, down_n), (focus, focus_n), (dtor, dtor_n)] = text_input::write_test_signatures(&mut m);
+    assert!(text_input::install(&mut m), "signatures match");
+    // The real handler bodies are game code: return right after the text-input hooks ran.
+    for (a, n) in [(down, down_n), (focus, focus_n), (dtor, dtor_n)] {
+        add_hook(&mut m, a, "stub", move |c| c.return_from_function(1, n));
+    }
+    // Edit control object (CScreenElement base at +0x70): editable (+0x0c = 0), number field (+0x45 = 1).
+    const EDIT: u32 = OBJ + 0x100;
+    let this = EDIT + 0x70;
+    m.mem.write_u8(EDIT + 0x0c, 0);
+    m.mem.write_u8(EDIT + 0x45, 1);
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let g2 = got.clone();
+    let at = mov_esi_addr(&m);
+    add_hook(&mut m, at, "drive", move |c| {
+        let step = |m: &mut Machine, f: u32, args: &[u32]| {
+            call::call_thiscall(m, f, this, args);
+            let r = take_keyboard_request(m);
+            g2.lock().unwrap().push(r);
+        };
+        let m = &mut *c.m;
+        step(m, focus, &[1]); // serial field gets the focus: show
+        step(m, focus, &[0]); // loses it (Enter / OK): hide
+        step(m, focus, &[0]); // not the owner any more: nothing
+        m.mem.write_u8(EDIT + 0x45, 0);
+        step(m, focus, &[1]); // plain text field getting the focus: no automatic keyboard
+        step(m, down, &[0x10, 0, 0, 0, 0]); // tapped: show
+        step(m, dtor, &[]); // destroyed while owning the keyboard: hide
+        m.mem.write_u8(EDIT + 0x0c, 1);
+        step(m, down, &[0x10, 0, 0, 0, 0]); // read-only field tapped: nothing
+        HookFlow::Continue
+    });
+    hooks::commit(&mut m);
+    run(&mut m);
+    use KeyboardRequest::*;
+    assert_eq!(*got.lock().unwrap(), vec![Some(Show), Some(Hide), None, None, Some(Show), Some(Hide), None]);
+    let r = m.threads[0].cpu.regs;
+    assert_eq!((r[EBX], r[ESI], r[EDI]), (12, 6, 1010), "guest results unchanged");
+}
+
+#[test]
+fn text_field_hooks_need_the_160_code() {
+    let (mut m, _) = machine("textinput-other");
+    assert!(!text_input::install(&mut m), "zeroed code is not the 1.60 build");
+    assert!(m.hook_addrs().is_none());
+}
