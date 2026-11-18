@@ -3,6 +3,18 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-18 — game text code page (issue #1, Polish text garbled)
+
+- Issue #1 (screenshot from a Polish install): `pocz¹tku`, `g³ówna`, `¿o³nierze` = Windows-1250 bytes decoded
+  as 1252. Every text path (GDI font, panel overlay, HUD/Classic names, kernel32 conversions, WM_CHAR) assumed
+  1252.
+- RE: GOG S3.EXE maps registry `Language` 7/9/12/15 -> text slot 0/1/3/4, else -1 (`0x40f2ab`, jump table
+  `0x40f478`; slot in `[strtab+0xc40]`, setter `0x5faa60`) -> [registry](reverse-engineering/registry.md). So
+  `Language` cannot tell a Polish text table from a German one.
+- New `s3-runtime/src/codepage.rs`: detects the code page from the text the game draws (1250 / 1251 / 1252), registry
+  LANGID as a hint, `S3_CODEPAGE` override; all decoders use it -> [user32-gdi32](porting/user32-gdi32.md#text-code-page),
+  [kernel32](porting/kernel32.md). Unit tests only; no Polish install here to verify on.
+
 ## 2026-11-09 (d) — soft keyboard opens by itself on the game's text fields (serial-keyboard)
 
 - User report (Reddit, Motorola phone): menu works, then the serial number prompt, but no keyboard. Cause: the

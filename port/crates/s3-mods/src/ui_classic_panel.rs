@@ -273,19 +273,11 @@ pub fn center(l: &Layout, btn: &Button) -> (i32, i32) {
     (x + w / 2, y + h / 2)
 }
 
-/// Decode game text bytes (Windows-1252 for the Western versions; HYPOTHESIS for other languages).
-pub fn decode_cp1252(bytes: &[u8]) -> String {
-    const HI: [char; 32] = [
-        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}', '\u{90}', '‘', '’', '“',
-        '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
-    ];
-    bytes
-        .iter()
-        .map(|&c| match c {
-            0x80..=0x9f => HI[(c - 0x80) as usize],
-            c => c as char,
-        })
-        .collect()
+/// Decode game text bytes in the game's code page (`s3_runtime::codepage`: 1252, or 1250/1251/... for localised
+/// versions) and feed them to its detection.
+pub fn decode_game_text(bytes: &[u8]) -> String {
+    s3_runtime::codepage::observe(bytes);
+    s3_runtime::codepage::decode(bytes)
 }
 
 /// Resolve a text id like `0x5faaa0` does, by reading the string table at `strtab` (`[gfx+0x5f6b8]`).
@@ -313,7 +305,7 @@ pub fn read_text(mem: &GuestMemory, strtab: u32, id: u32) -> Option<String> {
         return None;
     }
     let len = mem.strlen(a, 160);
-    let s = decode_cp1252(&mem.read_bytes(a, len));
+    let s = decode_game_text(&mem.read_bytes(a, len));
     let s = s.trim().to_string();
     (!s.is_empty() && s.chars().all(|c| !c.is_control())).then_some(s)
 }
@@ -384,6 +376,6 @@ mod tests {
 
     #[test]
     fn cp1252() {
-        assert_eq!(decode_cp1252(b"Caf\xe9 \x80"), "Café €");
+        assert_eq!(decode_game_text(b"Caf\xe9 \x80"), "Café €");
     }
 }

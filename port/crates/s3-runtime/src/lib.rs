@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod com;
+pub mod codepage;
 pub mod cursor;
 pub mod ext;
 pub mod gdi;

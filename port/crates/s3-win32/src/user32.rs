@@ -1229,7 +1229,8 @@ pub fn pump_input(m: &mut Machine) {
             }
             s3_runtime::HostEvent::Char(c) => {
                 s.host_chars = true;
-                let ch = if c < 0x100 { c } else { b'?' as u32 };
+                // Unicode from the host -> a byte in the game's code page (e.g. 'ł' -> 0xB3 in 1250).
+                let ch = if c < 0x80 { c } else { char::from_u32(c).and_then(s3_runtime::codepage::encode_char).unwrap_or(b'?') as u32 };
                 out.push(Msg { hwnd: s.focus.max(target), message: WM_CHAR, wparam: ch, lparam: 1, time: now, pt: pos });
             }
             _ => {}

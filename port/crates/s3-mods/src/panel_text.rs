@@ -155,7 +155,7 @@ pub fn install(m: &mut Machine) {
             let lines: Vec<Line> = lay
                 .lines
                 .iter()
-                .map(|l| Line { text: l.text.iter().map(|&b| s3_win32::font::cp1252(b)).collect(), x: l.x, y: l.y, w: l.w })
+                .map(|l| Line { text: l.text.iter().map(|&b| s3_win32::font::ansi_char(b)).collect(), x: l.x, y: l.y, w: l.w })
                 .filter(|l| !l.text.trim().is_empty())
                 .collect();
             if !lines.is_empty() {

@@ -1,17 +1,17 @@
 //! kernel32: code pages, locale and string functions (MultiByteToWideChar, GetLocaleInfo, LCMapString,
 //! GetStringType, CompareString, lstr*).
 //!
-//! The guest runs in locale 0x0409 (English, US) with ANSI code page 1252 and OEM code page 437
-//! (HYPOTHESIS: the game picks its text language from the registry value `Language`, not from the locale).
-//! All ANSI<->UTF-16 conversions use Windows-1252 regardless of the code page argument (UTF-8 = 65001 is
-//! honoured); every byte is a single character (no DBCS lead bytes).
+//! The guest runs in locale 0x0409 (English, US) with OEM code page 437. The ANSI code page is the game's own
+//! (`s3_runtime::codepage`: 1252, or 1250/1251/... for localised versions, detected from the text it draws); the
+//! game picks its text language from the registry value `Language`, not from the locale (registry.md).
+//! ANSI<->UTF-16 conversions use that code page for CP_ACP and the given one for 1250..1254 (UTF-8 = 65001 is
+//! honoured, other code pages fall back to 1252); every byte is a single character (no DBCS lead bytes).
 
-use s3_runtime::{Machine, Registry, ThunkResult};
+use s3_runtime::{codepage, Machine, Registry, ThunkResult};
 
 use super::DLL;
 
 pub const LCID_DEFAULT: u32 = 0x0409;
-pub const ACP: u32 = 1252;
 pub const OEMCP: u32 = 437;
 const CP_UTF8: u32 = 65001;
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
@@ -19,7 +19,7 @@ const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_INVALID_FLAGS: u32 = 1004;
 
 pub(crate) fn register(reg: &mut Registry) {
-    reg.register(DLL, "GetACP", |_m| ThunkResult::stdcall(ACP, 0));
+    reg.register(DLL, "GetACP", |_m| ThunkResult::stdcall(codepage::active(), 0));
     reg.register(DLL, "GetOEMCP", |_m| ThunkResult::stdcall(OEMCP, 0));
     reg.register(DLL, "GetCPInfo", get_cp_info);
     reg.register(DLL, "IsValidCodePage", is_valid_code_page);
@@ -51,35 +51,32 @@ pub(crate) fn register(reg: &mut Registry) {
 
 // ---------------------------------------------------------------------------------------------- cp1252
 
-/// Windows-1252 bytes 0x80..0x9F (0 = undefined, mapped to the C1 control of the same value like Windows).
-const CP1252_80: [u16; 32] = [
-    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D,
-    0x017D, 0x008F, 0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A,
-    0x0153, 0x009D, 0x017E, 0x0178,
-];
-
-/// One cp1252 byte -> UTF-16 unit.
+/// One byte in the code page the guest's "ANSI" means right now -> UTF-16 unit.
 pub fn cp1252_to_u16(b: u8) -> u16 {
-    if (0x80..0xA0).contains(&b) {
-        CP1252_80[(b - 0x80) as usize]
-    } else {
-        b as u16
-    }
+    codepage::byte_to_u16_in(codepage::active(), b)
 }
 
-/// One UTF-16 unit -> cp1252 byte (`None` if not representable).
+/// One UTF-16 unit -> byte in the guest's ANSI code page (`None` if not representable).
 pub fn u16_to_cp1252(u: u16) -> Option<u8> {
-    if u < 0x80 || (0xA0..=0xFF).contains(&u) {
-        return Some(u as u8);
+    codepage::u16_to_byte_in(codepage::active(), u)
+}
+
+/// Table code page for a code page argument: CP_ACP / CP_THREAD_ACP = the game's code page, explicit Windows
+/// code pages with a table as given, everything else (OEM, Mac, Latin-1, ASCII) as 1252.
+fn table_cp(cp: u32) -> u32 {
+    match cp {
+        0 | 3 => codepage::active(),
+        c if codepage::SUPPORTED.contains(&c) => c,
+        _ => 1252,
     }
-    CP1252_80.iter().position(|&c| c == u).map(|i| 0x80 + i as u8)
 }
 
 fn decode(cp: u32, bytes: &[u8]) -> Vec<u16> {
     if cp == CP_UTF8 {
         String::from_utf8_lossy(bytes).encode_utf16().collect()
     } else {
-        bytes.iter().map(|&b| cp1252_to_u16(b)).collect()
+        let t = table_cp(cp);
+        bytes.iter().map(|&b| codepage::byte_to_u16_in(t, b)).collect()
     }
 }
 
@@ -88,11 +85,12 @@ fn encode(cp: u32, units: &[u16], default: u8) -> (Vec<u8>, bool) {
     if cp == CP_UTF8 {
         return (String::from_utf16_lossy(units).into_bytes(), false);
     }
+    let t = table_cp(cp);
     let mut used = false;
     let v = units
         .iter()
         .map(|&u| {
-            u16_to_cp1252(u).unwrap_or_else(|| {
+            codepage::u16_to_byte_in(t, u).unwrap_or_else(|| {
                 used = true;
                 default
             })
@@ -157,7 +155,7 @@ fn get_cp_info(m: &mut Machine) -> ThunkResult {
 }
 
 fn valid_cp(cp: u32) -> bool {
-    matches!(cp, 0 | 1 | 2 | 3 | 437 | 850 | 1252 | 28591 | 20127 | CP_UTF8)
+    matches!(cp, 0 | 1 | 2 | 3 | 437 | 850 | 1250 | 1251 | 1252 | 1253 | 1254 | 28591 | 20127 | CP_UTF8)
 }
 
 fn is_valid_code_page(m: &mut Machine) -> ThunkResult {
@@ -517,9 +515,9 @@ fn lcmap(flags: u32, units: &[u16]) -> Result<Vec<u16>, Vec<u8>> {
 fn lc_map_string_a(m: &mut Machine) -> ThunkResult {
     let (_lcid, flags, src, cch, dst, cdst) =
         (m.arg_u32(0), m.arg_u32(1), m.arg_u32(2), m.arg_i32(3), m.arg_u32(4), m.arg_i32(5));
-    let units = decode(ACP, &read_a(m, src, cch));
+    let units = decode(0, &read_a(m, src, cch));
     let out: Vec<u8> = match lcmap(flags, &units) {
-        Ok(u) => encode(ACP, &u, b'?').0,
+        Ok(u) => encode(0, &u, b'?').0,
         Err(key) => key,
     };
     finish_bytes(m, dst, cdst, &out, 6)
@@ -576,8 +574,8 @@ fn compare(flags: u32, a: &[u16], b: &[u16]) -> u32 {
 fn compare_string_a(m: &mut Machine) -> ThunkResult {
     let (_l, flags, s1, c1, s2, c2) =
         (m.arg_u32(0), m.arg_u32(1), m.arg_u32(2), m.arg_i32(3), m.arg_u32(4), m.arg_i32(5));
-    let a = decode(ACP, &read_a(m, s1, c1));
-    let b = decode(ACP, &read_a(m, s2, c2));
+    let a = decode(0, &read_a(m, s1, c1));
+    let b = decode(0, &read_a(m, s2, c2));
     ThunkResult::stdcall(compare(flags, &a, &b), 6)
 }
 
@@ -637,8 +635,8 @@ fn lstrcat_a(m: &mut Machine) -> ThunkResult {
 
 fn lstrcmp_impl(m: &mut Machine, flags: u32) -> ThunkResult {
     let (s1, s2) = (m.arg_u32(0), m.arg_u32(1));
-    let a = if s1 == 0 { vec![] } else { decode(ACP, &m.mem.read_cstr_bytes(s1)) };
-    let b = if s2 == 0 { vec![] } else { decode(ACP, &m.mem.read_cstr_bytes(s2)) };
+    let a = if s1 == 0 { vec![] } else { decode(0, &m.mem.read_cstr_bytes(s1)) };
+    let b = if s2 == 0 { vec![] } else { decode(0, &m.mem.read_cstr_bytes(s2)) };
     let r = compare(flags, &a, &b) as i32 - 2;
     ThunkResult::stdcall(r as u32, 2)
 }

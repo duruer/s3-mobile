@@ -18,7 +18,7 @@ Source: GOG `regs.cmd` (writes 32-bit view, HKLM). Our port must provide a fake 
 | VideoFormat | DWORD | 1 | |
 | MessageLevel | DWORD | 9 | |
 | Intro | DWORD | 1 | |
-| Language | DWORD | 9 | 9 = English (LANGID primary) |
+| Language | DWORD | 9 | LANGID primary. GOG S3.EXE `0x40f2ab` maps it to the text slot: 7 -> 0 (German), 9 -> 1 (English), 12 -> 3 (French), 15 -> 4, anything else -> -1 (VERIFIED statically, jump table `0x40f478`). The slot is then `[strtab+0xc40]` (setter `0x5faa60`, callers `0x42e994`, `0x49814e`). A localised install (Polish, Czech, ...) may put its text into one of these slots, so this value does not tell the text code page |
 | Tips&Tricks, Plus, Gold, Mission, BuildHelp, FirstLogon | DWORD | 1 | expansions enabled |
 | ClanFlag, Newbie, BannerId, BannerSubId | DWORD | 0 | |
 | Font / FontSize | SZ / DWORD | "MS Sans Serif" / 15 | GDI font → we need a font substitute |

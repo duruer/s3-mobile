@@ -693,7 +693,7 @@ pub fn text(m: &mut Machine, id: u32) -> Option<String> {
     if !readable(m, a, 1) {
         return None;
     }
-    let mut out = String::new();
+    let mut out = Vec::new();
     for i in 0..200 {
         if !readable(m, a + i, 1) {
             break;
@@ -702,26 +702,21 @@ pub fn text(m: &mut Machine, id: u32) -> Option<String> {
         if b == 0 {
             break;
         }
-        out.push(cp1252(b));
+        out.push(b);
     }
-    Some(out)
+    s3_runtime::codepage::observe(&out);
+    Some(out.into_iter().map(cp1252).collect())
 }
 
+/// Game text byte -> char in the game's code page (`s3_runtime::codepage`); typographic quotes and dashes
+/// become ASCII, undefined bytes `?`.
 fn cp1252(b: u8) -> char {
-    match b {
-        0x80 => '€',
-        0x8a => 'Š',
-        0x8c => 'Œ',
-        0x8e => 'Ž',
-        0x9a => 'š',
-        0x9c => 'œ',
-        0x9e => 'ž',
-        0x9f => 'Ÿ',
-        0x91 | 0x92 => '\'',
-        0x93 | 0x94 => '"',
-        0x96 | 0x97 => '-',
-        b if (0x80..=0x9f).contains(&b) => '?',
-        _ => b as char,
+    match s3_runtime::codepage::decode_byte(b) {
+        '\u{2018}' | '\u{2019}' => '\'',
+        '\u{201C}' | '\u{201D}' => '"',
+        '\u{2013}' | '\u{2014}' => '-',
+        c if ('\u{80}'..='\u{9f}').contains(&c) => '?',
+        c => c,
     }
 }
 

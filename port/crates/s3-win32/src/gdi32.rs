@@ -516,7 +516,7 @@ pub fn char_advances(m: &mut Machine, hdc: u32, text: &[u8]) -> Option<(Vec<i32>
     let st = gdi(m);
     let mut g = st.borrow_mut();
     let mt = g.dc_metrics(hdc)?;
-    let v = text.iter().map(|&b| g.fonts.advance(&mt, font::cp1252(b))).collect();
+    let v = text.iter().map(|&b| g.fonts.advance(&mt, font::ansi_char(b))).collect();
     Some((v, mt.height))
 }
 

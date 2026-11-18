@@ -12,7 +12,7 @@ GetProcAddress targets have handlers; S3.EXE reaches the main menu and Game Setu
 | OS version | Windows 98: `GetVersion` = `0xC0000A04`, `GetVersionExA` = 4.10 build 1998, platform 1 (`" A"`) | game targets Win9x; consistent with the foundation choice |
 | CPU / system | 1 × Pentium (586, level 5), 4 KiB pages, 64 KiB granularity, user range 0x10000-0x7FFEFFFF | `GetSystemInfo` |
 | Memory | 256 MiB RAM, 192 MiB free (`GlobalMemoryStatus`; all values < 2 GiB for 32-bit math) | |
-| Locale | LCID 0x0409, ANSI cp 1252, OEM cp 437; `GetLocaleInfoA/W` table for en-US (incl. `LOCALE_RETURN_NUMBER`) | game language comes from registry `Language` (registry.md), not the locale — HYPOTHESIS |
+| Locale | LCID 0x0409, OEM cp 437; ANSI cp = the game's text code page (`s3_runtime::codepage`, see [user32-gdi32](user32-gdi32.md#text-code-page)), `GetACP` returns it; `GetLocaleInfoA/W` table for en-US (incl. `LOCALE_RETURN_NUMBER`) | game language comes from registry `Language` (registry.md), not the locale — VERIFIED statically (`0x40f2ab`) |
 | Install dir | `C:\S3`, exe `C:\S3\S3.EXE`, command line `S3.EXE` (+ env `S3_EXE_ARGS` if set, debug only, e.g. `-netmon`), cwd `C:\S3` | VFS (architecture.md) |
 | Drives | `GetDriveTypeA` = DRIVE_FIXED for every path, `GetLogicalDrives` = C: only, volume label `S3`, FAT32, 1 GiB free | wine-trace: fixed drive is accepted; no CD check |
 | Temp dir | `C:\S3\TEMP\` (overlay) | |
@@ -122,7 +122,7 @@ address of the `IMAGE_RESOURCE_DATA_ENTRY`), `load_string`, `ResId`, `rt`. kerne
 
 ## Strings and code pages
 
-cp1252 tables both ways (0x80-0x9F mapped like Windows; CP_UTF8 honoured); `MultiByteToWideChar`/`WideCharToMultiByte`
+code page tables both ways (CP_ACP = the game's code page; explicit 1250..1254 honoured; others as 1252) (0x80-0x9F mapped like Windows; CP_UTF8 honoured); `MultiByteToWideChar`/`WideCharToMultiByte`
 with the usual size-query and `ERROR_INSUFFICIENT_BUFFER` semantics, default char + used-default flag;
 `GetStringTypeA/W` (CT_CTYPE1 via Unicode classes, CT_CTYPE2 approximate); `LCMapStringA/W` (upper/lower, a simple
 sort key: 2 bytes per unit, upper-cased with NORM_IGNORECASE); `CompareStringA/W` (ordinal, optional ignore-case —

@@ -85,18 +85,10 @@ pub struct FontCache {
     glyphs: HashMap<(u32, bool, char), Glyph>,
 }
 
-/// Windows-1252 byte to char.
-pub fn cp1252(b: u8) -> char {
-    const HI: [u16; 32] = [
-        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D,
-        0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A,
-        0x0153, 0x9D, 0x017E, 0x0178,
-    ];
-    if (0x80..0xA0).contains(&b) {
-        char::from_u32(HI[(b - 0x80) as usize] as u32).unwrap_or('?')
-    } else {
-        b as char
-    }
+/// Game text byte to char, in the game's code page (`s3_runtime::codepage`: 1252, or 1250/1251/... for
+/// localised versions).
+pub fn ansi_char(b: u8) -> char {
+    s3_runtime::codepage::decode_byte(b)
 }
 
 /// Resolve a logical font to metrics.
@@ -159,9 +151,9 @@ impl FontCache {
         self.glyph(mt, c).advance
     }
 
-    /// Width of a string (cp1252 bytes).
+    /// Width of a string (game code page bytes).
     pub fn text_width(&mut self, mt: &Metrics, text: &[u8]) -> i32 {
-        text.iter().map(|&b| self.advance(mt, cp1252(b))).sum()
+        text.iter().map(|&b| self.advance(mt, ansi_char(b))).sum()
     }
 
     /// Draw `text` with its top-left cell corner at (x, y); `plot(x, y, coverage)` is called for each covered
@@ -169,8 +161,9 @@ impl FontCache {
     pub fn draw(&mut self, mt: &Metrics, text: &[u8], x: i32, y: i32, mut plot: impl FnMut(i32, i32, u8)) -> i32 {
         let baseline = y + mt.ascent;
         let mut pen = x;
+        s3_runtime::codepage::observe(text);
         for &b in text {
-            let c = cp1252(b);
+            let c = ansi_char(b);
             if c == '\t' {
                 pen += self.advance(mt, c);
                 continue;
@@ -215,7 +208,7 @@ mod tests {
         assert!(maxy < mt.height);
         let neg = metrics(&FontSpec { height: -12, weight: 700, ..Default::default() });
         assert!(neg.bold && neg.px == 12.0);
-        assert_eq!(cp1252(0xFC), 'ü');
-        assert_eq!(cp1252(0x80), '€');
+        assert_eq!(ansi_char(0xFC), 'ü');
+        assert_eq!(ansi_char(0x80), '€');
     }
 }

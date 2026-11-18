@@ -69,7 +69,7 @@ Exposed for other crates: `user32::screen_size`, `set_screen_size`, `post_messag
 - **Text.** `TextOutA` and `ExtTextOutA` (`ETO_OPAQUE` fills the rect with the bk colour, `ETO_CLIPPED`) honour
   `SetTextAlign` (`TA_LEFT/RIGHT/CENTER`, `TA_TOP/BOTTOM/BASELINE`, `TA_UPDATECP`), `SetBkMode` (OPAQUE fills
   the text cell), `SetTextColor/SetBkColor` and the underline flag. Glyph coverage is alpha-blended into
-  RGB565/555/24/32-bit targets (8-bit: threshold). Strings are Windows-1252.
+  RGB565/555/24/32-bit targets (8-bit: threshold). Strings are in the game's text code page (see [Text code page](#text-code-page)).
 - **Metrics.** `GetTextMetricsA` (TEXTMETRICA 56 bytes), `GetTextExtentPoint32A`, `GetTextExtentExPointA`
   (fit count + partial extents), `GetTextFaceA`.
 - **Drawing.** `MoveToEx/LineTo/Polyline` (Bresenham, end point excluded, pen colour, `PS_NULL`), `Rectangle`,
@@ -254,3 +254,29 @@ Code: `port/crates/s3-runtime/src/cursor.rs` (decoder, built-in arrow, `CursorSt
 - Verified 2026-11-05 headless (`scratch/cursor/*.png`, local): menu cursor at an injected (300,300) while the
   menu is idle; in game at (320,240) the drawn pixels match `RT_CURSOR` 3 exactly; over the build-menu icon at
   (25,167).
+
+## Text code page
+
+GitHub issue #1: Polish text showed `pocz¹tku`, `g³ówna`, `¿o³nierze`. The game's bytes are Windows-1250, and we
+decoded everything as 1252 (`ą` 0xB9 = `¹`, `ł` 0xB3 = `³`, `ż` 0xBF = `¿`).
+
+`s3-runtime/src/codepage.rs` holds the game's code page for the whole process (tables 1250, 1251, 1252, 1253, 1254):
+- **Detection from the text the game draws**: `codepage::observe(bytes)` is called by `FontCache::draw` (all GDI
+  text) and by the mods' string-table reads (`ui_classic_panel::decode_game_text`, `ui_hud_game::text`). Each
+  distinct string counts once (FNV hash). Mostly bytes >= 0xC0 instead of ASCII letters -> 1251. At least 3 bytes
+  inside words that are letters in 1250 but symbols or rare letters in 1252 (`¹ ³ ¥ £ ¯ Ÿ ¾ ¼ ø õ`, 0x8D, 0x8F =
+  `ą ł Ą Ł Ż ź ľ Ľ ř ő Ť Ź`) -> 1250. Otherwise the hint.
+- **Hint**: registry `General\Language` read as a LANGID (`RegStore::set_value`), e.g. 0x15 -> 1250, 0x19 -> 1251.
+  The GOG values (7/9/12/15) give 1252. The registry alone is not enough (registry.md), hence the detection.
+- **Override**: `S3_CODEPAGE=1250` (desktop env var) skips detection.
+- **Users**: `font::ansi_char` (GDI draw/extent/advances), panel text overlay, HUD/Classic button names, kernel32
+  `MultiByteToWideChar`/`WideCharToMultiByte`/`GetStringTypeA`/`LCMapStringA`/`CompareStringA` for CP_ACP,
+  `GetACP`, and WM_CHAR from the host (a typed `ł` becomes 0xB3 in 1250; characters the code page cannot show
+  become `?`).
+- Not changed: DirectPlay names stay Latin-1 byte-for-byte (`dplay_net.rs`, `s3_net::to_ansi`), so the bytes
+  round-trip unchanged between peers. Peers with different code pages see each other's non-ASCII name letters
+  wrong (open).
+- Only verified with unit tests (Polish text from the issue, Czech, Hungarian, Russian, German/French/Spanish/
+  Italian stay 1252) and an English run without a switch. No Polish/Russian install is available here.
+  DBCS (Korean/Chinese/Japanese) is not supported.
+

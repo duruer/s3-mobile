@@ -179,8 +179,14 @@ impl RegStore {
         self.key(path)?.values.get(&name.to_ascii_lowercase())
     }
 
-    /// Set a value, creating the key.
+    /// Set a value, creating the key. `General\Language` (a LANGID) also sets the starting guess for the game's
+    /// text code page (`s3_runtime::codepage`).
     pub fn set_value(&mut self, path: &[String], v: RegValue) {
+        if v.name.eq_ignore_ascii_case("Language") && path.join("\\").eq_ignore_ascii_case(GENERAL_KEY) {
+            if let Some(lang) = v.as_dword() {
+                s3_runtime::codepage::set_language_hint(lang);
+            }
+        }
         self.create_key(path);
         let k = self.key_mut(path).unwrap();
         let lk = v.name.to_ascii_lowercase();
