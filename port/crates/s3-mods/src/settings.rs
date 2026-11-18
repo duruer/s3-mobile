@@ -79,6 +79,8 @@ pub struct Settings {
     pub vibrate_messages: bool,
     /// Control-group buttons 1..6 (tap = select / centre, long press = assign; `crate::unit_orders`).
     pub group_shortcuts: bool,
+    /// Draw the game's mouse cursor (issue #3: useless on a touch screen; `crate::cursor_layer`). On by default.
+    pub show_cursor: bool,
 }
 
 impl Default for Settings {
@@ -99,6 +101,7 @@ impl Default for Settings {
             vibrate_touch: true,
             vibrate_messages: true,
             group_shortcuts: false,
+            show_cursor: true,
         }
     }
 }

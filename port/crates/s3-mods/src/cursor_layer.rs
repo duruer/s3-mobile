@@ -5,6 +5,9 @@
 //! layer, this mod turns that off (`CursorState::disabled`) and draws the same image here: at the window position
 //! of the emulated mouse (through the shown viewport, so it stays where the finger / mouse is) and at a constant
 //! size (the cursor's size in a 600 px high frame shown full height, `Layer::ui`).
+//!
+//! Setting `show_cursor` off (issue #3) hides the cursor everywhere: no window-layer cursor and
+//! `CursorState::disabled` set, so the frame does not draw it either.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,12 +69,18 @@ fn to_rgba(img: &CursorImage) -> Image {
 impl CursorMod {
     /// Read the cursor state; turn the frame cursor off while the window layer is shown.
     fn update(&mut self, m: &mut Machine) {
-        self.active = m.state::<crate::ModsState>().borrow_mut().layer_sink.is_some();
+        let (active, show) = {
+            let st = m.state::<crate::ModsState>();
+            let g = st.borrow_mut();
+            (g.layer_sink.is_some(), g.settings.show_cursor)
+        };
+        self.active = active;
         let (mx, my) = (m.input.mouse_x, m.input.mouse_y);
         let cs = m.state::<CursorState>();
         let mut c = cs.borrow_mut();
-        c.disabled = self.active;
-        if !self.active || c.show_count < 0 || c.current == 0 {
+        // Setting "Mouse cursor: off" (issue #3) hides it in both places (frame and window layer).
+        c.disabled = self.active || !show;
+        if !self.active || !show || c.show_count < 0 || c.current == 0 {
             self.want = None;
             return;
         }

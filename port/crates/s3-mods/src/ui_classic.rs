@@ -211,6 +211,8 @@ enum FloatBtn {
     UnitPaths,
     /// Shown while the menu is open: group buttons 1..6 on / off.
     Groups,
+    /// Shown while the menu is open: mouse cursor on / off (issue #3).
+    Cursor,
     /// Shown while the menu is open: vibration all / touch / messages / off.
     Vibration,
 }
@@ -386,7 +388,7 @@ impl ClassicTouch {
             let hw = self.q(150.0);
             let mut y = menu.1;
             let mut x = right - hw - self.q(8.0);
-            let mut ks = vec![FloatBtn::GameMenu, FloatBtn::GameTime, FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut, FloatBtn::UnitPaths, FloatBtn::Groups, FloatBtn::Vibration];
+            let mut ks = vec![FloatBtn::GameMenu, FloatBtn::GameTime, FloatBtn::HudMode, FloatBtn::Fps, FloatBtn::FpsPos, FloatBtn::FpsLimit, FloatBtn::Filter, FloatBtn::Screen, FloatBtn::ZoomIn, FloatBtn::ZoomOut, FloatBtn::UnitPaths, FloatBtn::Groups, FloatBtn::Cursor, FloatBtn::Vibration];
             if self.speed.is_some() {
                 ks.insert(1, FloatBtn::SpeedChoice);
             }
@@ -561,6 +563,7 @@ impl ClassicTouch {
                 }),
                 FloatBtn::Vibration => (BG, crate::settings::vibration_label(&crate::settings(m))),
                 FloatBtn::Groups => (BG, if crate::settings(m).group_shortcuts { "Groups: on" } else { "Groups: off" }),
+                FloatBtn::Cursor => (BG, if crate::settings(m).show_cursor { "Cursor: on" } else { "Cursor: off" }),
                 FloatBtn::ZoomIn | FloatBtn::ZoomOut | FloatBtn::FpsLimit | FloatBtn::FpsPos | FloatBtn::Filter | FloatBtn::Speed | FloatBtn::SpeedChoice => (BG, ""),
             };
             let zoom_label;
@@ -727,12 +730,14 @@ impl Mod for ClassicTouch {
                                     self.dirty = true;
                                     return ModEvent::Consumed;
                                 }
-                                FloatBtn::UnitPaths | FloatBtn::Groups | FloatBtn::Vibration => {
+                                FloatBtn::UnitPaths | FloatBtn::Groups | FloatBtn::Cursor | FloatBtn::Vibration => {
                                     let mut s = crate::settings(m);
                                     if k == FloatBtn::UnitPaths {
                                         s.unit_paths = s.unit_paths.next();
                                     } else if k == FloatBtn::Vibration {
                                         crate::settings::cycle_vibration(&mut s);
+                                    } else if k == FloatBtn::Cursor {
+                                        s.show_cursor = !s.show_cursor;
                                     } else {
                                         s.group_shortcuts = !s.group_shortcuts;
                                     }

@@ -148,6 +148,13 @@ frame, so it grew, shrank and moved with the zoom. With a window layer, `cursor_
 The window position is kept while the game position does not change, so a zoom does not move it on screen.
 Without a window layer (old frontends) the frame cursor stays.
 
+**Mouse cursor setting (2026-11-18, issue #3).** `Settings::show_cursor` (default on; `mods-settings.json`
+`show_cursor`). Off: `CursorMod` sets `CursorState::disabled` and draws nothing, so neither the window layer nor
+the frame shows the cursor (on a touch screen it only sits where the last finger was). Switches: launcher
+Settings "Mouse cursor: on/off", HUD Settings row 5 "Cursor: on/off", Classic floating menu "Cursor: on/off".
+Test `cursor_setting_hides_the_cursor` (s3-mods). The headless `--screenshot` is the raw guest frame (no cursor in
+either case), so it cannot show the difference.
+
 **Panel texts in the window layer (2026-11-08, panel-text).** The game draws its in-game texts (panel labels and
 numbers, save slots, "Settlers / > 20 % Carriers", tooltips, clock, end banner, map labels) with `DrawTextA` into a
 1-bpp DIB and copies its set bits onto the frame (RE: game-state-ui.md section 6 "Text DIB composite"). Enlarged

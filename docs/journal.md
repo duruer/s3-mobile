@@ -3,6 +3,15 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-18 (c) — setting to hide the mouse cursor (issue #3)
+
+- Request: the cursor is useless on a phone (it stays where the last finger was). New `Settings::show_cursor`
+  (default on). Off: `cursor_layer::CursorMod` sets `CursorState::disabled` and draws nothing.
+- Switches in the launcher Settings, HUD Settings (dialog widened to 400 units, row 5 in thirds) and the Classic
+  floating menu -> [display.md](porting/display.md) "Mouse cursor setting".
+- Verified by test `cursor_setting_hides_the_cursor` and the launcher preview. Not on a phone yet. Headless
+  `--screenshot` writes the raw guest frame without a cursor, so it cannot show it.
+
 ## 2026-11-18 (b) — README redesign for end users
 
 - README rewritten for players: hero banner, feature grid, the two UI modes, 3-step setup, gestures, FAQ in

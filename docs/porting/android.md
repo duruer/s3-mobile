@@ -154,7 +154,7 @@ size change (fold / unfold) and only republished when the list hash changes.
   **Play** (green; grey "Play (game files missing)" opens Game files), Settings, Game files, Quit, last message
   ("The game was closed ..." or the engine error). Wide windows (>= 640 dp) use two columns.
 - **Settings**: buttons with the in-game labels (UI: Classic Touch / Mobile HUD, Screen, Filter, FPS counter,
-  FPS limit (+ display Hz like the game menu), FPS position, Fast speed, Game time, Unit paths, Group buttons,
+  FPS limit (+ display Hz like the game menu), FPS position, Fast speed, Game time, Unit paths, Group buttons, Mouse cursor,
   Vibration, HUD - / HUD n% / HUD +); each tap edits and saves `mods-settings.json` (`Settings::save`) at once.
   "Internet multiplayer relay" text field (soft keyboard; Enter or a tap elsewhere saves `relay-url.txt`,
   "Default" deletes it = built-in LAN relay). `run_engine` reads `relay-url.txt` at every start (and clears

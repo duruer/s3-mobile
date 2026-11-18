@@ -146,7 +146,8 @@ The app is not in the App Store. You install it from your computer with your own
 - **Type:** tap a text field of the game, such as the game name, and the keyboard opens. When the game asks for
   your serial number, the keyboard opens by itself. Type the number with its dashes and press Enter. A tap with
   three fingers also opens or closes the keyboard.
-- **Settings** on the app's start screen has the display mode, the frame rate limit and more.
+- **Settings** on the app's start screen has the display mode, the frame rate limit and more. You can also hide
+  the mouse cursor there (**Mouse cursor: off**), or in the game menu.
 
 ## ❓ FAQ
 

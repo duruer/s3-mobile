@@ -81,6 +81,7 @@ enum Act {
     GameTime,
     UnitPaths,
     Groups,
+    Cursor,
     Vibration,
     Hud(i32),
     EditRelay,
@@ -413,6 +414,7 @@ impl Launcher {
             Act::GameTime => s.show_game_time = !s.show_game_time,
             Act::UnitPaths => s.unit_paths = s.unit_paths.next(),
             Act::Groups => s.group_shortcuts = !s.group_shortcuts,
+            Act::Cursor => s.show_cursor = !s.show_cursor,
             Act::Vibration => cycle_vibration(s),
             Act::Hud(d) => s.hud_scale = ((s.hud_scale * 10.0).round() / 10.0 + d as f32 * 0.1).clamp(0.7, 1.5),
             _ => {}
@@ -697,6 +699,7 @@ impl Launcher {
             ((if s.show_game_time { "Game time: on" } else { "Game time: off" }).into(), Act::GameTime),
             (format!("Unit paths: {}", s.unit_paths.label()), Act::UnitPaths),
             ((if s.group_shortcuts { "Group buttons: on" } else { "Group buttons: off" }).into(), Act::Groups),
+            ((if s.show_cursor { "Mouse cursor: on" } else { "Mouse cursor: off" }).into(), Act::Cursor),
             (vibration_label(&s).into(), Act::Vibration),
         ];
         let mut yy = y;

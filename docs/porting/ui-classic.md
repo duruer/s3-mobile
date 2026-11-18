@@ -113,3 +113,6 @@ gold and a hint shows above the group row. Optional group buttons **1..6** at th
 (tap select / centre, long press assign). Menu column toggles "Paths: selected / all units" and "Groups: on / off";
 the column now continues in a second column to the left when the window is too short. Details:
 [touch.md](touch.md#unit-orders-paths-groups-unit-orders-2026-11-08).
+
+**2026-11-18 (issue #3):** floating menu has "Cursor: on/off" (`FloatBtn::Cursor`, between Groups and
+Vibration): hides the game's mouse cursor ([display.md](display.md) "Mouse cursor setting").

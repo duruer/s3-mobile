@@ -280,3 +280,7 @@ The selection card has a second row **Waypoint / Patrol / No fight** (armed = hi
 Settings dialog rows 6/7 are now halves: "UI: > Classic Touch" | "Unit paths: selected / all", "Group buttons: on /
 off" | "< Back". Group buttons 1..6 sit above the bottom bar (right of the minimap card, or above it on narrow
 windows). Details: [touch.md](touch.md#unit-orders-paths-groups-unit-orders-2026-11-08).
+
+**2026-11-18 (issue #3):** Settings dialog 400 units wide (was 320); row 5 has three buttons: "Full map: on/off" |
+"Game time: on/off" | "Cursor: on/off" (`Action::ToggleCursor`, `Settings::show_cursor`, see
+[display.md](display.md) "Mouse cursor setting"). 8 rows still fill the height at scale 1, so no ninth row.

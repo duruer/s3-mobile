@@ -107,6 +107,8 @@ pub(crate) enum Action {
     ToggleUnitPaths,
     /// Settings: group buttons 1..6 on / off.
     ToggleGroups,
+    /// Settings: mouse cursor shown / hidden (issue #3).
+    ToggleCursor,
     /// Settings: vibration all / touch / messages / off.
     CycleVibration,
     Destroy,
@@ -530,6 +532,11 @@ impl MobileHud {
                 s.group_shortcuts = !s.group_shortcuts;
                 let _ = crate::set_settings(m, s);
             }
+            Action::ToggleCursor => {
+                let mut s = crate::settings(m);
+                s.show_cursor = !s.show_cursor;
+                let _ = crate::set_settings(m, s);
+            }
             Action::Destroy => {
                 if self.now < self.destroy_armed_ms {
                     if let Some(b) = self.snap.as_ref().map(|s| s.building).filter(|&b| b != 0) {
@@ -936,7 +943,8 @@ impl MobileHud {
     fn draw_settings(&mut self, m: &mut Machine, c: &mut Layer) {
         let bh = self.u(40.0);
         let gap = self.u(7.0);
-        let inner = self.dialog(c, 8, "Settings");
+        // 400 units wide (not 320): row 5 has three buttons. 8 rows fill the height at scale 1 (480 - bar).
+        let inner = self.dialog_w(c, 8, 400.0, "Settings");
         let half = (inner.w - gap) / 2;
         let third = (inner.w - 2 * gap) / 3;
         let row = |i: i32| inner.y + i * (bh + gap);
@@ -956,11 +964,13 @@ impl MobileHud {
         self.button(c, Rect::new(inner.x, row(4), third, bh), "HUD -", BTN_BG, Action::MenuScale(-1));
         c.text_centered(inner.x + third + gap, row(4), third, bh, self.k() * 14.0, Weight::Bold, TEXT, &format!("HUD {:.0}%", self.scale_pref * 100.0));
         self.button(c, Rect::new(inner.x + 2 * (third + gap), row(4), third, bh), "HUD +", BTN_BG, Action::MenuScale(1));
-        let fm = if self.fullscreen_map { "Full-screen map: on" } else { "Full-screen map: off" };
-        self.button(c, Rect::new(inner.x, row(5), half, bh), fm, BTN_BG, Action::MenuToggleFullMap);
-        let gt = if crate::game_time::enabled(m) { "Game time: on" } else { "Game time: off" };
-        self.button(c, Rect::new(inner.x + half + gap, row(5), half, bh), gt, BTN_BG, Action::ToggleGameTime);
         let st = crate::settings(m);
+        let fm = if self.fullscreen_map { "Full map: on" } else { "Full map: off" };
+        self.button(c, Rect::new(inner.x, row(5), third, bh), fm, BTN_BG, Action::MenuToggleFullMap);
+        let gt = if crate::game_time::enabled(m) { "Game time: on" } else { "Game time: off" };
+        self.button(c, Rect::new(inner.x + third + gap, row(5), third, bh), gt, BTN_BG, Action::ToggleGameTime);
+        let cu = if st.show_cursor { "Cursor: on" } else { "Cursor: off" };
+        self.button(c, Rect::new(inner.x + 2 * (third + gap), row(5), inner.w - 2 * (third + gap), bh), cu, BTN_BG, Action::ToggleCursor);
         let mode_label = if st.ui_mode == UiMode::MobileHud { "UI: > Classic Touch" } else { "UI: > Mobile HUD" };
         self.button(c, Rect::new(inner.x, row(6), half, bh), mode_label, BTN_BG, Action::MenuToggleMode);
         let up = format!("Unit paths: {}", st.unit_paths.label());

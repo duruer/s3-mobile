@@ -339,3 +339,33 @@ fn text_field_hooks_need_the_160_code() {
     assert!(!text_input::install(&mut m), "zeroed code is not the 1.60 build");
     assert!(m.hook_addrs().is_none());
 }
+
+#[test]
+fn cursor_setting_hides_the_cursor() {
+    use s3_runtime::cursor::{builtin_arrow, CursorState};
+    let (mut m, _) = machine("cursor");
+    {
+        let st = m.state::<CursorState>();
+        let mut c = st.borrow_mut();
+        c.images.insert(1, Arc::new(builtin_arrow()));
+        c.current = 1;
+        c.show_count = 0;
+    }
+    let mut cm = crate::cursor_layer::CursorMod::default();
+    // Default: shown (frame cursor, no window layer).
+    cm.tick(&mut m, 0);
+    assert!(m.state::<CursorState>().borrow_mut().visible_image().is_some());
+    // Issue #3: setting off hides it.
+    let mut s = crate::settings(&mut m);
+    s.show_cursor = false;
+    crate::set_settings(&mut m, s).unwrap();
+    cm.tick(&mut m, 0);
+    assert!(m.state::<CursorState>().borrow_mut().visible_image().is_none());
+    assert!(!cm.wants_draw());
+    // Back on.
+    let mut s = crate::settings(&mut m);
+    s.show_cursor = true;
+    crate::set_settings(&mut m, s).unwrap();
+    cm.tick(&mut m, 0);
+    assert!(m.state::<CursorState>().borrow_mut().visible_image().is_some());
+}
