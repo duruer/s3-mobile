@@ -78,9 +78,11 @@
 - **Classic Touch** keeps the familiar side panel and makes it finger-friendly. A magnifier shows the button under
   your finger, with its name, so you always hit the right one.
 - **Mobile HUD** gives the whole screen to the map. It adds a bottom bar, big build menus, a minimap and unit cards,
-  like a modern mobile strategy game.
+  like a modern mobile strategy game. Specialists have their own buttons (for example "Find Resources" for
+  geologists), and the Stats page has the tool and weapon production.
 
-You can switch between them any time in the game menu.
+You can switch between them any time in the game menu. In Mobile HUD, the **Classic panel** button (on the unit
+card and in the game menu) switches in one tap.
 
 ## 🚀 Get started
 

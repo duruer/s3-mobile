@@ -3,6 +3,19 @@
 Newest first. One entry per session: what was done, what was learned, links to docs updated.
 
 
+## 2026-11-19 — Mobile HUD gaps (issue #2): specialist orders, Tools and Weapons, one-tap Classic panel
+
+- RE (static, `scratch/re-ui/s3.asm`): the unit page (page 5) has one button per selection kind `[gd+0x2d298]`:
+  soldiers "Hold Position" = command 0x1b, war machines "Take ammunition" = 0x19 per machine, pioneers / geologists /
+  thieves = command 0x0e (patrol) at the selection's average tile. Goods tab 2: 0x07 rush orders (0..20), 0x08 share
+  (0..16) in the economy sector record `gd+0xe145e8 + sector*0x2e0`; the sector comes from `[logic+0x88/0x8c/0x90]`,
+  computed only while page 2/3 is shown -> [game-state-ui](reverse-engineering/game-state-ui.md) section 8,
+  [game-state-units](reverse-engineering/game-state-units.md).
+- HUD: selection card row 3 (kind button + "Classic panel"), menu "Classic panel", Tools and Weapons sheet (from
+  Stats and the toolsmith / weaponsmith) -> [ui-hud](porting/ui-hud.md) "Missing features".
+- VERIFIED in s3run: geologist prospects after "Find Resources", tool values change, Classic panel keeps the selection.
+- Found: Scythe (0x20) and Fishing rod (0x11) were swapped in `ui_hud_data::GOODS`.
+
 ## 2026-11-18 (c) — setting to hide the mouse cursor (issue #3)
 
 - Request: the cursor is useless on a phone (it stays where the last finger was). New `Settings::show_cursor`

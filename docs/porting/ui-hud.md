@@ -217,7 +217,7 @@ mode (only behind the "Preparing touch HUD" cover during the icon harvest). The 
 | Settlers sheet tabs (page 3) | Counts per type stay (Population / Occupations); **Recruitment** natively: 1 / 5 New Geologists, Thieves, Pioneers, Pioneers to Carriers (game texts; Amazon texts for race 3) | VERIFIED (geologist + 5 pioneers created) |
 | Goods sheet tabs (page 2) | The sheet itself is the Inventory (title = the game's "Inventory"); the other tabs are dropped | – |
 
-Left (not native yet; no button any more): goods tabs Tools and Weapons, Priority of Buildings, Priority of Goods
+Left (not native yet; no button any more): goods tabs Priority of Buildings, Priority of Goods
 (economy commands 0x07/0x08/0x0a/0x0b/0x11, not RE'd), settlers tab Production statistics, soldier recruitment and
 carrier / digger / builder limits on the Recruitment page, building-specific pages (siege workshops "Build
 Catapult...", shipyard / harbour waypoints and ships, storage area "Setting", trade), the building picture and the
@@ -284,3 +284,24 @@ windows). Details: [touch.md](touch.md#unit-orders-paths-groups-unit-orders-2026
 **2026-11-18 (issue #3):** Settings dialog 400 units wide (was 320); row 5 has three buttons: "Full map: on/off" |
 "Game time: on/off" | "Cursor: on/off" (`Action::ToggleCursor`, `Settings::show_cursor`, see
 [display.md](display.md) "Mouse cursor setting"). 8 rows still fill the height at scale 1, so no ninth row.
+
+## Missing features from the original panel (hud-gaps, 2026-11-19, issue #2)
+
+User report: geologist "Find resources" and the toolsmith's tool production were missing, and switching back to the
+classic panel took three taps (Menu > Settings > UI). RE: [game-state-ui.md](../reverse-engineering/game-state-ui.md)
+section 8 "Unit page (page 5)" and "Goods page tab 2".
+
+| What | Where in the HUD | How | Status |
+| --- | --- | --- | --- |
+| Unit page button (Hold Position / Take ammunition / Take land / Find Resources / Steal goods) | Selection card, third row, left (game's own text) | `LogicAction::SelectionOrder`: command 3 if dirty + 0x1b / 0x0e at the selection's average tile / 0x19 per war machine, like the panel | VERIFIED for geologists (job 0x35 / 0xd4, resource signs); others STATIC |
+| Classic panel in one tap | Selection card third row ("Classic panel"); game menu row 3 next to "Settings..." | `ui_mode = ClassicTouch`; the selection and its page 5 stay (screenshot: Classic panel showed "Find Resources" for the same geologist) | VERIFIED |
+| Tools and Weapons | Stats sheet header button (game text `0x80052`); building sheet of toolsmith / weaponsmith (types 0x0c / 0x0d) | `Sheet::Tools`: the game goes to goods page tab 2 (`LogicAction::GoodsTab(2)`) so the logic finds the sector; the snapshot reads `ToolsState` (rush 0..20, share 0..16) from the sector record; "- n +" = command 0x07, tap on the bar = command 0x08 with the tapped value; closing the sheet sets page 0 | VERIFIED (Hammer orders 0 -> 2, share 0 -> 8; weapons start at 16 / 12 / 8 like the original bars) |
+
+Also fixed: `ui_hud_data::GOODS` had Scythe (32) and Fishing rod (17) swapped.
+
+Recipe (window 1280x600, random map; geologists appear near the view centre): start taps as above, then
+`32000:wtap 822 566` (Settlers), `33500:wtap 170 498` (5 New Geologists), `34500:wtap 1241 277` (close),
+`46000:tap 1060 388` (a geologist, game px), `47500:wtap 1041 388` (Move to...), `48500:wtap 760 180` (rock),
+`80000:wtap 1041 495` (Find Resources). Tools: `wtap 1006 566` (Stats), `wtap 1115 371` (Tools and Weapons),
+`wtap 233 331` (Hammer +), `wtap 446 331` (Hammer share 8). Screenshots `scratch/hg/hud/` (local).
+

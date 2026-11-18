@@ -39,7 +39,7 @@ use crate::ui_hud_data::{
 const GOODS_PAGE: u32 = 5;
 /// Harvest step that reads the settler icons of the settlers page, tab Population (the last step).
 const SETTLERS_PAGE: u32 = 6;
-use crate::ui_hud_game::{self as game, GameSnapshot, HudShared, LogicAction};
+use crate::ui_hud_game::{self as game, GameSnapshot, HudShared, LogicAction, SelectionOrder, TOOL_GOODS};
 use crate::ui_hud_minimap::{self as minimap, MapGeom, MiniData};
 use crate::{Mod, ModEvent, ModsState};
 
@@ -138,6 +138,16 @@ pub(crate) enum Action {
     MenuScale(i32),
     /// The minimap widget (drag = pan, tap = full-screen map).
     Minimap,
+    /// Selection card: the original unit page's button for this selection (hold position, find resources, ...).
+    SelOrder(SelectionOrder),
+    /// Open the Tools and Weapons sheet.
+    Tools,
+    /// Tools sheet: rush orders + 1 / - 1.
+    ToolOrder { good: u8, up: bool },
+    /// Tools sheet: production share 0..=16.
+    ToolShare { good: u8, share: u8 },
+    /// Switch to UI mode A "Classic Touch" (issue #2: one tap from the selection card / game menu).
+    ClassicPanel,
     /// Game speed: normal <-> chosen fast speed (single player).
     Speed,
     /// Settings: choose the fast speed (2x..8x).
@@ -176,6 +186,8 @@ pub(crate) enum Sheet {
     Building,
     /// Save game: the 8 slots (or one multiplayer save).
     Save,
+    /// Goods page tab 2 "Tools and Weapons" natively: rush orders and production share per tool / weapon.
+    Tools,
 }
 
 /// Icon harvesting state (see module docs).
@@ -229,6 +241,8 @@ pub struct MobileHud {
     dirty: bool,
     last_snap_ms: u64,
     text_dumped: bool,
+    /// The Tools sheet put the game on goods page tab 2 (the logic finds the sector only there); reset on close.
+    tools_page: bool,
     /// Part of the window that shows the game (window pixels; display `Fit` leaves bars, HUD elements stay inside).
     view: Rect,
     /// Minimap image + camera rectangle (refreshed every `MINI_REFRESH_MS`) and the image as RGBA for the layer.
@@ -277,6 +291,7 @@ impl Default for MobileHud {
             dirty: true,
             last_snap_ms: 0,
             text_dumped: false,
+            tools_page: false,
             view: Rect::new(0, 0, 640, 480),
             mini: None,
             mini_img: None,
@@ -601,6 +616,27 @@ impl MobileHud {
                 m.input.push(HostEvent::Key { vk: 0x50, down: false });
                 self.sheet = Sheet::None;
             }
+            Action::SelOrder(o) => {
+                game::queue(m, LogicAction::SelectionOrder(o));
+                self.set_toast(match o {
+                    SelectionOrder::HoldPosition => "Holding position",
+                    SelectionOrder::TakeAmmo => "Fetching ammunition",
+                    SelectionOrder::Work => "Working around here",
+                });
+            }
+            Action::Tools => {
+                self.sheet = Sheet::Tools;
+                self.tools_page = true;
+                game::queue(m, LogicAction::GoodsTab(2));
+            }
+            Action::ToolOrder { good, up } => game::queue(m, LogicAction::ToolOrder { good, up }),
+            Action::ToolShare { good, share } => game::queue(m, LogicAction::ToolShare { good, share }),
+            Action::ClassicPanel => {
+                let mut s = crate::settings(m);
+                s.ui_mode = UiMode::ClassicTouch;
+                let _ = crate::set_settings(m, s);
+                self.sheet = Sheet::None;
+            }
             Action::MenuToggleMode => {
                 let mut s = crate::settings(m);
                 s.ui_mode = if s.ui_mode == UiMode::MobileHud { UiMode::ClassicTouch } else { UiMode::MobileHud };
@@ -870,6 +906,10 @@ impl MobileHud {
         let total: u32 = rows.iter().map(|r| r.1).sum();
         let inv = self.name(m, 0x80051);
         let inner = self.draw_sheet_frame(c, r, &format!("{inv}: {total}"));
+        // Link to the Tools and Weapons sheet (goods page tab 2), left of the X.
+        let tw = self.u(150.0);
+        let tools = self.name(m, 0x80052);
+        self.button(c, Rect::new(r.x + r.w - self.u(50.0) - tw, r.y + self.u(3.0), tw, self.u(26.0)), &tools, BTN_ACTIVE, Action::Tools);
         let cw = inner.w / cols as i32;
         for (i, (g, n)) in rows.iter().enumerate() {
             let (col, row) = ((i % cols) as i32, (i / cols) as i32);
@@ -921,7 +961,8 @@ impl MobileHud {
             // UI mode A has its own settings column (floating Menu).
             self.button(c, Rect { y: row(2), ..full }, "Quit game", BTN_DANGER, Action::MenuQuit);
         } else {
-            self.button(c, Rect { y: row(2), ..full }, "Settings...", BTN_BG, Action::MenuSettings);
+            self.button(c, Rect::new(inner.x, row(2), half, bh), "Settings...", BTN_BG, Action::MenuSettings);
+            self.button(c, Rect::new(inner.x + half + gap, row(2), half, bh), "Classic panel", BTN_BG, Action::ClassicPanel);
             self.button(c, Rect { y: row(3), ..full }, "Quit game", BTN_DANGER, Action::MenuQuit);
         }
     }
@@ -937,6 +978,63 @@ impl MobileHud {
         let y = inner.y + bh + gap;
         self.button(c, Rect::new(inner.x, y, half, bh), "No", BTN_BG, Action::Menu);
         self.button(c, Rect::new(inner.x + half + gap, y, half, bh), "Yes, quit", BTN_DANGER, Action::MenuQuitYes);
+    }
+
+    /// Tools and Weapons (goods page tab 2) natively: per tool / weapon the rush orders (- n +, command 0x07) and the
+    /// production share bar 0..16 (tap = set, command 0x08), for the sector around the view centre.
+    fn draw_tools_sheet(&mut self, m: &mut Machine, c: &mut Layer) {
+        let Some(s) = self.snap.clone() else { return };
+        let line = self.u(32.0);
+        let per_col = TOOL_GOODS.len().div_ceil(2);
+        let r = self.sheet_rect(c, self.u(58.0) + per_col as i32 * line);
+        let title = self.name(m, 0x80052);
+        let inner = self.draw_sheet_frame(c, r, &title);
+        let px = self.k() * 13.0;
+        let Some(t) = s.tools.clone() else {
+            c.text(inner.x, inner.y, px, Weight::Regular, TEXT_DIM, "Reading the settings of this area ...");
+            return;
+        };
+        let gap = self.u(14.0);
+        let colw = (inner.w - gap) / 2;
+        c.text(inner.x, inner.y - self.u(2.0), self.k() * 11.0, Weight::Regular, TEXT_DIM, "Orders: made first.  Share: normal production (tap the bar).");
+        let y0 = inner.y + self.u(16.0);
+        let bh = line - self.u(6.0);
+        for (i, &(good, label)) in TOOL_GOODS.iter().enumerate() {
+            let (col, row) = ((i / per_col) as i32, (i % per_col) as i32);
+            let x = inner.x + col * (colw + gap);
+            let y = y0 + row * line;
+            let isz = self.u(18.0);
+            match self.good_icon(good).cloned() {
+                Some(img) => blit_fit(c, &img, Rect::new(x, y + (bh - isz) / 2, isz, isz)),
+                None => c.fill_circle(x as f32 + isz as f32 / 2.0, (y + bh / 2) as f32, self.k() * 5.0, good_color(good)),
+            }
+            let ty = y + (bh - measure_text(px, Weight::Regular, label).1) / 2;
+            c.text(x + isz + self.u(4.0), ty, px, Weight::Regular, TEXT, label);
+            // - n +
+            let bw = self.u(28.0);
+            let ox = x + self.u(104.0);
+            let rush = t.rush.get(i).copied().unwrap_or(0);
+            let share = t.share.get(i).copied().unwrap_or(0).min(game::SHARE_MAX);
+            self.button(c, Rect::new(ox, y, bw, bh), "-", BTN_BG, Action::ToolOrder { good, up: false });
+            c.text_centered(ox + bw, y, self.u(26.0), bh, px, Weight::Bold, if rush > 0 { ACCENT } else { TEXT_DIM }, &rush.to_string());
+            self.button(c, Rect::new(ox + bw + self.u(26.0), y, bw, bh), "+", BTN_BG, Action::ToolOrder { good, up: true });
+            // Share bar: 17 tap zones (0..=16).
+            let bx = ox + 2 * bw + self.u(34.0);
+            let bwid = (x + colw - bx).max(self.u(40.0));
+            let bar_h = self.u(12.0);
+            let by = y + (bh - bar_h) / 2;
+            c.fill_rounded_rect(bx, by, bwid, bar_h, bar_h as f32 / 2.0, BTN_BG);
+            let fill = bwid * share as i32 / game::SHARE_MAX as i32;
+            if fill > 0 {
+                c.fill_rounded_rect(bx, by, fill, bar_h, bar_h as f32 / 2.0, ACCENT);
+            }
+            let zones = game::SHARE_MAX as i32 + 1;
+            for z in 0..zones {
+                let zx = bx + bwid * z / zones;
+                let zw = bwid * (z + 1) / zones - bwid * z / zones;
+                self.add(Rect::new(zx, y, zw, bh), Action::ToolShare { good, share: z as u8 });
+            }
+        }
     }
 
     /// Settings: display (crate::display: mode / filter / FPS counter), zoom, HUD size, full-screen map, UI mode.
@@ -1063,8 +1161,9 @@ impl MobileHud {
             let lines: Vec<(u8, String)> =
                 s.sel_types.iter().take(3).map(|(t, n)| (*t, format!("{n} x {}", settler_label(*t, s.race)))).collect();
             let lh = self.u(20.0);
-            // Two button rows: Move / Deselect, then the modifier orders (waypoint / patrol / no fight).
-            let ch = self.u(34.0) + lines.len() as i32 * lh + 2 * bh + self.u(14.0);
+            // Three button rows: Move / Deselect, the modifier orders (waypoint / patrol / no fight), then the
+            // original unit page's button for this kind (if any) and the switch to the classic panel.
+            let ch = self.u(34.0) + lines.len() as i32 * lh + 3 * bh + self.u(20.0);
             let r = Rect::new(w - cw - self.u(6.0), h - self.u(BAR_H) - ch - self.u(6.0), cw, ch);
             c.fill_rounded_rect(r.x, r.y, r.w, r.h, self.u(10.0) as f32, SHEET_BG);
             self.add(r, Action::Nothing);
@@ -1079,7 +1178,7 @@ impl MobileHud {
                 let ty = y + (isz - measure_text(px, Weight::Regular, l).1) / 2;
                 c.text(r.x + self.u(14.0) + isz, ty, px, Weight::Regular, TEXT, l);
             }
-            let by = r.y + r.h - 2 * bh - self.u(12.0);
+            let by = r.y + r.h - 3 * bh - self.u(18.0);
             let half = (r.w - self.u(26.0)) / 2;
             let armed = crate::unit_orders::armed(m);
             let plain_move = armed.is_none() && crate::right_next(m);
@@ -1090,6 +1189,15 @@ impl MobileHud {
             for (i, o) in crate::unit_orders::Order::ALL.into_iter().enumerate() {
                 let bg = if armed == Some(o) { CARD_HI } else { BTN_BG };
                 self.button(c, Rect::new(r.x + self.u(10.0) + i as i32 * (third + self.u(6.0)), by, third, bh), o.label(), bg, Action::Order(o));
+            }
+            let by = by + bh + self.u(6.0);
+            match SelectionOrder::for_kind(s.sub) {
+                Some((o, tid)) => {
+                    let label = self.name(m, tid);
+                    self.button(c, Rect::new(r.x + self.u(10.0), by, half, bh), &label, BTN_ACTIVE, Action::SelOrder(o));
+                    self.button(c, Rect::new(r.x + self.u(16.0) + half, by, half, bh), "Classic panel", BTN_BG, Action::ClassicPanel);
+                }
+                None => self.button(c, Rect::new(r.x + self.u(10.0), by, r.w - self.u(20.0), bh), "Classic panel", BTN_BG, Action::ClassicPanel),
             }
         } else if s.page == 4 && s.building != 0 {
             let name = self.building_name(m, s.building_type);
@@ -1249,6 +1357,10 @@ impl MobileHud {
                 if t == 0x13 || (0x1a..=0x1c).contains(&t) {
                     actions.push((self.name(m, if t == 0x13 { 0x8005c } else { 0x8005a }), BTN_BG, Action::Settlers));
                 }
+                // Toolsmith / weaponsmith -> goods page tab 2 (0x532122..), our Tools sheet.
+                if t == 0x0c || t == 0x0d {
+                    actions.push((self.name(m, 0x80052), BTN_BG, Action::Tools));
+                }
                 if GARRISON_TYPES.contains(&t) {
                     // Original layout: "add" row above the "remove" row, Maximum / Minimum Garrison at the ends.
                     for &(n, tid) in GARRISON_ACTIONS.iter().filter(|(n, _)| (2..=4).contains(n)).chain(&GARRISON_ACTIONS[6..7]) {
@@ -1391,6 +1503,12 @@ impl Mod for MobileHud {
             self.dirty = true;
         }
         self.scale_pref = scale;
+        if self.tools_page && self.sheet != Sheet::Tools {
+            self.tools_page = false;
+            if self.snap.as_ref().is_some_and(|s| s.page == 2) {
+                game::queue(m, LogicAction::Page { page: 0, sub: None });
+            }
+        }
         if !self.active {
             let req = std::mem::take(&mut m.state::<HudShared>().borrow_mut().classic_menu);
             if req {
@@ -1566,6 +1684,7 @@ impl Mod for MobileHud {
             Sheet::QuitConfirm => self.draw_quit_confirm(c),
             Sheet::Building => self.draw_building_sheet(m, c),
             Sheet::Save => self.draw_save_sheet(m, c),
+            Sheet::Tools => self.draw_tools_sheet(m, c),
             Sheet::Map | Sheet::None => {}
         }
         self.draw_bar(c);

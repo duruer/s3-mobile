@@ -185,6 +185,88 @@ pub enum LogicAction {
     /// Save into slot 1..8 like the panel's slot list (`0x52e69a`): `CLogicThread::0x50ac40(0, slot)`
     /// (single player); in multiplayer the network save command 0xfa (`0x52e510`).
     SaveGame { slot: u32 },
+    /// Unit page (page 5) button of the selection kind (`gd+0x2d298`), `0x52ec5a..0x52fe60` (issue #2).
+    SelectionOrder(SelectionOrder),
+    /// Goods page tab 2 "Tools and Weapons": rush order count of a tool / weapon + 1 or - 1 (command 0x07).
+    ToolOrder { good: u8, up: bool },
+    /// Goods page tab 2: production share slider of a tool / weapon to 0..=16 (command 0x08).
+    ToolShare { good: u8, share: u8 },
+}
+
+/// The one button of the original unit page (page 5) per selection kind (`[gd+0x2d298]`; grid cols 4..0x24,
+/// rows 0x52..0x5b; label drawn by the panel renderer `0x4c0e4f..0x4c0f1c`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionOrder {
+    /// Kind 0 (soldiers), text `0x8011b`: copy the selection if dirty (command 3), then command 0x1b
+    /// `{player, slot}` (`0x52ed91`).
+    HoldPosition,
+    /// Kinds 5 / 6 / 7 (pioneers / geologists / thieves), texts `0x80119` / `0x8011a` / `0x80171`: copy the selection
+    /// if dirty, then command 0x0e (patrol) `{player, slot, x, y}` at the average position of the selected
+    /// settlers (`0x52f9c1`, `0x52fbae`, `0x52fd93`).
+    Work,
+    /// Kind 4 (war machines), text `0x80118`: command 0x19 `{player, id}` for each selected settler of type 0x29
+    /// (`0x52f805`).
+    TakeAmmo,
+}
+
+impl SelectionOrder {
+    /// The order for a selection kind and the game text id of its button.
+    pub fn for_kind(kind: u32) -> Option<(SelectionOrder, u32)> {
+        Some(match kind {
+            0 => (SelectionOrder::HoldPosition, 0x8011b),
+            4 => (SelectionOrder::TakeAmmo, 0x80118),
+            5 => (SelectionOrder::Work, 0x80119),
+            6 => (SelectionOrder::Work, 0x8011a),
+            7 => (SelectionOrder::Work, 0x80171),
+            _ => return None,
+        })
+    }
+}
+
+/// Economy sector records (`gd+0xe145e8`, 0x2e0 bytes each, `+0` owner player). The goods page works on the
+/// sector found around the view centre while page 2 or 3 is shown (`0x521129..0x521268`: `[logic+0x88]` = 1 found,
+/// `[logic+0x8c]` / `[logic+0x90]` = sector high / low byte).
+pub const GD_ECON: u32 = 0x00e1_45e8;
+pub const ECON_SIZE: u32 = 0x2e0;
+/// Per good: rush orders 0..=20 (command 0x07 executor `0x5375c7`).
+pub const ECON_RUSH: u32 = 0x18a;
+/// Per good: production share 0..=16 (command 0x08 executor `0x53767d`, then `gd::0x4ff3c0(sector)`).
+pub const ECON_SHARE: u32 = 0x1ae;
+pub const RUSH_MAX: u8 = 20;
+pub const SHARE_MAX: u8 = 16;
+/// Tools and weapons in the order of the original tab (rows 0x1c..0x45 tools, 0x4c..0x5d weapons); names VERIFIED
+/// from the tab's icons (2026-11-19, s3run screenshot of the original page).
+pub const TOOL_GOODS: [(u8, &str); 10] = [
+    (0x0d, "Hammer"),
+    (0x0c, "Shovel"),
+    (0x0f, "Pickaxe"),
+    (0x0e, "Axe"),
+    (0x10, "Saw"),
+    (0x20, "Scythe"),
+    (0x11, "Fishing rod"),
+    (0x12, "Sword"),
+    (0x13, "Bow"),
+    (0x14, "Spear"),
+];
+
+/// Tools and Weapons tab state of the shown sector.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ToolsState {
+    pub sector: u16,
+    /// Per [`TOOL_GOODS`] entry.
+    pub rush: Vec<u8>,
+    pub share: Vec<u8>,
+}
+
+/// The goods page sector (`None` until the logic found one of the local player's sectors).
+fn goods_sector(m: &mut Machine, g: u32) -> Option<u16> {
+    let logic = m.state::<HudShared>().borrow_mut().logic;
+    if logic == 0 || !readable(m, logic, 0x94) || m.mem.read_u32(logic + 0x88) == 0 {
+        return None;
+    }
+    let sector = ((m.mem.read_u8(logic + 0x8c) as u16) << 8) | m.mem.read_u8(logic + 0x90) as u16;
+    let player = m.mem.read_u32(g + GD_LOCAL_PLAYER);
+    (m.mem.read_u8(g + GD_ECON + sector as u32 * ECON_SIZE) as u32 == player).then_some(sector)
 }
 
 /// The save slot list (index 0 = slot 1).
@@ -556,6 +638,24 @@ fn run_action(m: &mut Machine, logic: u32, a: &LogicAction) -> Result<(), String
             w(m, GD_SUBPAGE, 2);
             w(m, GD_PANEL_DIRTY, 1);
         }
+        LogicAction::SelectionOrder(o) => selection_order(m, logic, g, o)?,
+        LogicAction::ToolOrder { good, up } => {
+            let sector = goods_sector(m, g).ok_or("no goods sector")?;
+            let player = m.mem.read_u32(g + GD_LOCAL_PLAYER) as u8;
+            let req = [0x21, 0x07, 0x0c, 0, good, up as u8, player, (sector >> 8) as u8, sector as u8, 0, 0, 0];
+            crate::call::call_thiscall(m, FN_UI_SOUND, logic, &[if up { 0x2f } else { 0x30 }]);
+            post_request(m, logic, &req)?;
+            crate::call::call_thiscall(m, FN_LOGIC_NOTIFY, logic, &[]);
+        }
+        LogicAction::ToolShare { good, share } => {
+            let sector = goods_sector(m, g).ok_or("no goods sector")?;
+            let player = m.mem.read_u32(g + GD_LOCAL_PLAYER) as u8;
+            let share = share.min(SHARE_MAX);
+            let req = [0x21, 0x08, 0x0c, 0, good, share, player, (sector >> 8) as u8, sector as u8, 0, 0, 0];
+            crate::call::call_thiscall(m, FN_UI_SOUND, logic, &[0x3d]);
+            post_request(m, logic, &req)?;
+            crate::call::call_thiscall(m, FN_LOGIC_NOTIFY, logic, &[]);
+        }
         LogicAction::Recruit { kind, count } => {
             let (x, y) = view_centre_tile(m, g);
             let player = m.mem.read_u32(g + GD_LOCAL_PLAYER) as u8;
@@ -656,12 +756,66 @@ fn post_request(m: &mut Machine, logic: u32, req: &[u8]) -> Result<(), String> {
     let st = m.state::<HudShared>();
     let mut buf = st.borrow_mut().cmd_buf;
     if buf == 0 {
-        buf = m.mem.alloc(16);
+        buf = m.mem.alloc(0x100);
         st.borrow_mut().cmd_buf = buf;
+    }
+    if req.len() > 0x100 {
+        return Err("request too long".into());
     }
     m.mem.write_bytes(buf, req);
     crate::call::call_thiscall(m, FN_QUEUE_POST, q, &[buf, (req.len() / 4) as u32, 1]);
     Ok(())
+}
+
+/// Run a unit-page button like the panel does (see [`SelectionOrder`]). Logic thread only.
+fn selection_order(m: &mut Machine, logic: u32, g: u32, o: SelectionOrder) -> Result<(), String> {
+    let slot = m.mem.read_i32(SEL_SLOT);
+    if !(0..10).contains(&slot) {
+        return Err("no selection".into());
+    }
+    let slot = slot as u32;
+    let n = (m.mem.read_u16(SEL_COUNT + slot * 2) as u32).min(100);
+    if n == 0 {
+        return Err("empty selection".into());
+    }
+    let player = m.mem.read_u32(g + GD_LOCAL_PLAYER) as u8;
+    let ids: Vec<u16> = (0..n).map(|i| m.mem.read_u16(SEL_IDS + slot * 200 + i * 2)).collect();
+    if o == SelectionOrder::TakeAmmo {
+        for &id in &ids {
+            if m.mem.read_u8(g + GD_SETTLERS + id as u32 * 0x40 + 1) == 0x29 {
+                crate::call::call_thiscall(m, FN_UI_SOUND, logic, &[0x39]);
+                post_request(m, logic, &[0x21, 0x19, 0x08, 0, player, (id >> 8) as u8, id as u8, 0])?;
+            }
+        }
+        return Ok(());
+    }
+    crate::call::call_thiscall(m, FN_UI_SOUND, logic, &[0x39]);
+    // Command 3 (copy the UI selection to the logic copy) when the selection changed, as at 0x52ecdf.
+    if m.mem.read_u32(SEL_DIRTY + slot * 4) != 0 {
+        let len = (n.div_ceil(2) + 2) * 4;
+        let mut req = vec![0x21, 0x03, len as u8, 0, player, slot as u8, (n >> 8) as u8, n as u8];
+        for &id in &ids {
+            req.extend([(id >> 8) as u8, id as u8]);
+        }
+        req.resize(len as usize, 0);
+        post_request(m, logic, &req)?;
+        m.mem.write_u32(SEL_DIRTY + slot * 4, 0);
+    }
+    match o {
+        SelectionOrder::HoldPosition => post_request(m, logic, &[0x21, 0x1b, 0x08, 0, player, slot as u8, 0, 0]),
+        _ => {
+            // Average tile of the selected settlers (unsigned sums / count, like the panel).
+            let (mut sx, mut sy) = (0u32, 0u32);
+            for &id in &ids {
+                let e = g + GD_SETTLERS + id as u32 * 0x40;
+                sx += m.mem.read_u16(e + 4) as u32;
+                sy += m.mem.read_u16(e + 6) as u32;
+            }
+            let (x, y) = (sx / n, sy / n);
+            let req = [0x21, 0x0e, 0x0c, 0, player, slot as u8, (x >> 8) as u8, x as u8, (y >> 8) as u8, y as u8, 0, 0];
+            post_request(m, logic, &req)
+        }
+    }
 }
 
 // ---------------------------------------------------------------- reading game state
@@ -750,6 +904,8 @@ pub struct GameSnapshot {
     pub selection: Vec<u16>,
     /// Selected settlers by type: (type, count), most first.
     pub sel_types: Vec<(u8, u32)>,
+    /// Goods page tab 2 shown and a sector found: its tools / weapons settings.
+    pub tools: Option<ToolsState>,
     /// Selected building id (0 = none) and its type.
     pub building: u16,
     pub building_type: u8,
@@ -856,6 +1012,14 @@ pub fn snapshot(m: &mut Machine) -> Option<GameSnapshot> {
             continue;
         }
         s.goods[good] += amount;
+    }
+    if s.page == 2 && m.mem.read_u32(g + GD_GOODS_TAB) == 2 {
+        if let Some(sector) = goods_sector(m, g) {
+            let rec = g + GD_ECON + sector as u32 * ECON_SIZE;
+            let rush = TOOL_GOODS.iter().map(|&(good, _)| m.mem.read_u8(rec + ECON_RUSH + good as u32)).collect();
+            let share = TOOL_GOODS.iter().map(|&(good, _)| m.mem.read_u8(rec + ECON_SHARE + good as u32)).collect();
+            s.tools = Some(ToolsState { sector, rush, share });
+        }
     }
     Some(s)
 }

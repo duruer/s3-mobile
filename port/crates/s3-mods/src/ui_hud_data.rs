@@ -255,8 +255,10 @@ mod tests {
 
 /// Good ids seen in the pile table (`gd+0x123885c`, byte +0) matched to the original Inventory page
 /// (goods page, tab 1) by their amounts on random-map starts (2026-11-05, docs/porting/ui-hud.md):
-/// `(good id, inventory row, inventory column, English label)`. Ids 1/2 (Boards/Stone, both 25 at start) and
-/// 17/32 (Scythe/Fishing rod, both 1) could not be told apart by amount: HYPOTHESIS (ordered like the panel).
+/// `(good id, inventory row, inventory column, English label)`. Ids 1/2 (Boards/Stone, both 25 at start) could not
+/// be told apart by amount: HYPOTHESIS (ordered like the panel). 17 = Fishing rod, 32 = Scythe: VERIFIED 2026-11-19
+/// by the Tools and Weapons tab (row 6 sends good 0x20 and shows the scythe icon, row 7 good 0x11 the rod; the
+/// inventory icons at (2,0) / (2,1) are a rod / a scythe). Until then the two names were swapped.
 /// Logs (3) is a HYPOTHESIS from the gap in the id sequence.
 pub const GOODS: [(u8, u8, u8, &str); 15] = [
     (1, 0, 0, "Boards"),
@@ -269,8 +271,8 @@ pub const GOODS: [(u8, u8, u8, &str); 15] = [
     (14, 1, 3, "Axe"),
     (16, 1, 4, "Saw"),
     (15, 1, 5, "Pickaxe"),
-    (17, 2, 0, "Scythe"),
-    (32, 2, 1, "Fishing rod"),
+    (17, 2, 0, "Fishing rod"),
+    (32, 2, 1, "Scythe"),
     (8, 3, 0, "Fish"),
     (24, 3, 2, "Meat"),
     (4, 3, 5, "Bread"),

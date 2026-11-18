@@ -613,6 +613,47 @@ mapW `[0x730f18]`; `ui_hud_game::view_centre_tile`). VERIFIED: "1 New Geologist"
 into settler types 22 (geologist) and 40 (pioneer). Not done natively: soldier recruitment (`0x8006a..0x8006f`) and
 the carrier / digger / builder limits (`0x80067..0x80069`).
 
+### Unit page (page 5) button per selection kind (hud-gaps, 2026-11-19)
+
+The unit page has one wide button (grid cols 4..0x24, rows 0x52..0x5b; click code `0x52ec5a..0x52fe60`, label drawn by
+`0x4c0e4f..0x4c0f1c` with `0x4d6a30(col 1, row 0x5a, text)`). What it does depends on the selection kind
+`[gd+0x2d298]` (set by the selection code, [game-state-units.md](game-state-units.md)). Every branch first plays
+sound 0x39. `[0x730f64] != 0` is required for the posts, as for all requests.
+
+| Kind | Text | Action | Status |
+| --- | --- | --- | --- |
+| 0 soldiers | `0x8011b` "Hold Position" | if `[0x7ad5f8 + slot*4]` (selection dirty): command 3 (copy the selection) and clear the flag; then command 0x1b `{player, slot}` (8 bytes, `0x52ed91`) | STATIC (same path as kind 6) |
+| 2 / 3 ships | `0x8010d`/`0x8010e` "Ferry" / "Unload ferry" | per selected ship (type 0x2c) on a tile with a harbour flag 5/6: command 0x16 `{player, id}` | STATIC, not in the HUD |
+| 4 war machines | `0x80118` "Take ammunition" | per selected settler of type 0x29: command 0x19 `{player, id_hi, id_lo}` (8 bytes, `0x52f805`) | STATIC |
+| 5 pioneers | `0x80119` "Take land" | command 3 if dirty, then command 0x0e (the patrol order) `{player, slot, x, y}` (12 bytes) at the average tile of the selected settlers (`0x52f9c1`) | STATIC (same path as kind 6) |
+| 6 geologists | `0x8011a` "Find Resources" | same as kind 5 (`0x52fbae`) | VERIFIED: a geologist moved onto rock got job 0x35 / 0xd4 (walk / prospect) and placed resource signs |
+| 7 thieves | `0x80171` "Steal goods" | same as kind 5 (`0x52fd93`) | STATIC |
+
+Kind 1 draws something else (`0x4c0f21`, `[snap+0xc8]`), not analysed. The original button order is how specialists
+start working: the patrol order at their own position. A geologist on grass does nothing (same as the original button).
+
+### Goods page tab 2 "Tools and Weapons" (hud-gaps, 2026-11-19)
+
+The goods page works on one **economy sector**: while page 2 or 3 is shown, the per-frame logic (`0x521129..0x521268`)
+searches the tiles around the view centre (offset table `gd+0x110a58c`) for a sector (u16 at the tile record +0)
+whose record `gd+0xe145e8 + sector*0x2e0` has owner (`+0`) = local player, then sets `[logic+0x88]` = 1,
+`[logic+0x8c]` = sector >> 8, `[logic+0x90]` = sector & 0xff (`[logic+0x88]` = 0 if none). The click code reads these
+two bytes into every request.
+
+| Button | Grid | Request (12 bytes unless noted) | Effect (executor) | Status |
+| --- | --- | --- | --- | --- |
+| "+" / "-" per good (tooltip `0x8005f` "Rush production") | cols 0xe..0x11, rows 0x1c+6k / 0x1f+6k (tools), 0x4c+6k.. (weapons) | 0x07 `{good, 1 = up / 0 = down, player, sector_hi, sector_lo}`; sounds 0x2f / 0x30 | `rec+0x18a+good` += / -= 1, range 0..20 (`0x5375c7`) | VERIFIED (Hammer 0 -> 2) |
+| Share bar per good (tooltip `0x80060` "Standard production") | cols 0x14..0x24 (value = col - 0x14 = 0..16) | 0x08 `{good, value, player, sector_hi, sector_lo}`; sound 0x3d | `rec+0x1ae+good` = value, then `gd::0x4ff3c0(sector)` (`0x53767d`) | VERIFIED (Hammer share 0 -> 8) |
+| "Apply values everywhere" (`0x8005e`) | cols >= 0x22, rows 0x16..0x1b | 0x09 `{1, player, sector_hi, sector_lo}` (8 bytes; same command byte as the move order) | copies the sector's values to the others (HYPOTHESIS) | STATIC |
+
+After each click the code calls `CLogicThread::0x542630()`. Good order on the tab (rows): Hammer 0x0d, Shovel 0x0c,
+Pickaxe 0x0f, Axe 0x0e, Saw 0x10, Scythe 0x20, Fishing rod 0x11, then Sword 0x12, Bow 0x13, Spear 0x14 (icons on the
+original tab, s3run screenshot; until 2026-11-19 our goods table had Scythe / Fishing rod swapped). Start values on
+a random map: tools share 0, Sword 16, Bow 12, Spear 8, all rush counts 0.
+
+Other goods page requests in the same block (not used yet): 0x11 (tab 3, `0x52adb7..`), 0x0a `{.., 1..6}` (tab 4,
+`0x52bdc6..`), 0x09 `{2, ..}` (`0x52c218`).
+
 ### Save (page 7)
 
 - "Save Game" (sub-page 0, `0x52e29a`): `0x4318d0` (thiscall `0x7a7a18`) = multiplayer session. Single player: for

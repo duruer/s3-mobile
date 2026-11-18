@@ -260,7 +260,7 @@ switch at `0x535a9d`.
 | 0x03 | player(1), slot(1), count(2), ids (2 each, high byte first) ... ; byte +2 = `((count+1)/2 + 2) * 4` | `0x534541` (right-click, if dirty) and `0x52ece7`, `0x52f90d`.. | `0x535cb0` | copy the UI selection to the logic copy | VERIFIED (logic copy filled) |
 | 0x09 | player(1), slot(1), x(2), y(2) | `0x53487e` (right-click, no modifier) | `0x536045` (mode 0) | move selected units to tile; on an enemy building/unit this is the attack order (HYPOTHESIS: target classification inside the executor) | VERIFIED (units walked to the tile) |
 | 0x0d | same | `0x5345fc` (Shift + right-click) | `0x536045` (mode 1) | add a waypoint (see [Orders](#orders-waypoints-patrol-unit-paths)) | VERIFIED |
-| 0x0e | same | `0x534787` (Alt + right-click; a special case with a thief (settler type 0x17) on land of an allied player shows a text message `0x80174` instead) | `0x536045` (mode 2) | patrol between the current position and the target | VERIFIED |
+| 0x0e | same | unit page "Take land" / "Find Resources" / "Steal goods" (kinds 5/6/7) at the average tile of the selection: starts the specialists' work (game-state-ui.md section 8, VERIFIED for geologists); `0x534787` (Alt + right-click; a special case with a thief (settler type 0x17) on land of an allied player shows a text message `0x80174` instead) | `0x536045` (mode 2) | patrol between the current position and the target | VERIFIED |
 | 0x0f | same | `0x534814` (Ctrl + right-click) | `0x536045` (mode 3) | move ignoring enemies on the way (manual); not inspected further | STATIC + manual |
 | 0x06 | building id(2), player(1); length 8 | `0x52fee7` (destroy button in the building panel, mode 4, `[gd+0x2d298] == 1`) | `0x53729c` -> `gd::CrushBuilding` `0x4d9250` | destroy building | STATIC |
 | 0x04 | building id(2), new flag(1) = bit 0 of building +0x18 toggled, player(1); length 8 | `0x531d65` (building panel, sounds 0x35/0x36) | `0x536fbf` | Stop / Resume Working (Stop / Resume Building on sites) | VERIFIED (site, 2026-11-08) |
@@ -269,9 +269,13 @@ switch at `0x535a9d`.
 | 0xf5 / 0xf6 | building id(2), owner(1); length 8 | `0x531eb3` / `0x531f2c` (building page) | | construction site highest priority on / off | VERIFIED |
 | 0xfa | player(1); length 8 | `0x52e510` (multiplayer "Save Game") | | network save | STATIC |
 | 0x05 | x(2), y(2), ..., building id | `0x53330e` (building panel, `[gd+0x2d298] = 3`) | `0x5370b4` | set a building's work area / target to a tile (HYPOTHESIS) | STATIC |
-| 0x07, 0x08, 0x0a, 0x0b, 0x11 | economy sector / goods index / value | panel code `0x528c65..0x52e040` | `0x5375c7`, `0x53767d`, `0x53919d`, `0x5395b5`, `0x537728` (0x10 = recruitment, below; executor `0x539f30` HYPOTHESIS) | economy settings in the economy sector table `gd+0xe145e8` (0x2e0 bytes each): goods distribution / transport priorities / tool and weapon production (HYPOTHESIS for which is which) | STATIC |
+| 0x07 | good(1), up(1), player(1), sector(2) | goods tab 2 "+" / "-" (`0x528c65..`) | `0x5375c7` | rush orders of a tool / weapon (`sector record +0x18a + good`, 0..20) | VERIFIED (game-state-ui.md section 8) |
+| 0x08 | good(1), value 0..16(1), player(1), sector(2) | goods tab 2 share bar (`0x52976e..`) | `0x53767d` | production share (`+0x1ae + good`), then `gd::0x4ff3c0(sector)` | VERIFIED |
+| 0x0a, 0x0b, 0x11 | economy sector / goods index / value | panel code `0x52adb7..0x52e040` | `0x53919d`, `0x5395b5`, `0x537728` (0x10 = recruitment, below; executor `0x539f30` HYPOTHESIS) | economy settings in the economy sector table `gd+0xe145e8` (0x2e0 bytes each): goods distribution / priorities (HYPOTHESIS for which is which) | STATIC |
+| 0x1b | player(1), slot(1); length 8 | unit page kind 0 "Hold Position" (`0x52ed91`), after command 3 if the selection is dirty | | soldiers hold their position | STATIC |
+| 0x19 | player(1), id(2); length 8 | unit page kind 4 "Take ammunition", once per war machine (type 0x29) | | war machine fetches ammunition | STATIC |
 | 0x12, 0x14, 0x15, 0x17 | player, building id, tile x/y, panel action | `0x533439`, `0x5335c9`, `0x5338f4`, `0x533729`, `0x530b43` | `0x5377cf`, `0x538e45`, `0x53888e`, `0x538f19` | building-panel actions with a target tile (0x14/0x17 only for building types 0x20/0x21: HYPOTHESIS harbour/shipyard) | STATIC |
-| 0x13, 0x16, 0x18, 0x19, 0x1a, 0x1b, 0x1c | 8-byte requests | `0x52d68b`, `0x52f5ff`, `0x5300bc`.. | see table | unknown | STATIC |
+| 0x13, 0x16, 0x18, 0x1a, 0x1c | 8-byte requests (0x16: ferry, unit page kinds 2/3) | `0x52d68b`, `0x52f5ff`, `0x5300bc`.. | see table | unknown | STATIC |
 | 0xf1..0xff | | `0x52e510` (0xfa), `0x531eb3` (0xf5), `0x531f2c` (0xf6) | `0x53a1af..0x53b34e` | system: save/load (`slot%2i.sav`), quit, game status, multiplayer save | STATIC |
 
 Executor callee hints (STATIC): 0x02 -> `0x51b4d0`, 0x11 -> `0x51bc20`, 0x12 -> `0x5236b0`, 0x13 -> `0x4dda10`,
